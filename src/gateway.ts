@@ -4,7 +4,7 @@ import { createServer as createHttpsServer, type Server as HttpsServer } from 'n
 import { BlockList, isIP } from 'node:net'
 import { WebSocket, WebSocketServer, type RawData } from 'ws'
 import { MobileApprovalDecisionError } from './approval.js'
-import type { DeviceApprovalOutcome, DeviceApprovalSource } from './device-approval.js'
+import { normalizeHighRiskDeviceCommand, type DeviceApprovalOutcome, type DeviceApprovalSource, type HighRiskDeviceCommand } from './device-approval.js'
 import { FileEventLogStore, RetainedEventLog, type JarvisEvent } from './event-log.js'
 import { HarnessBridge, HarnessBridgeError, type HarnessClient } from './harness-bridge.js'
 import { HarnessEventBridge, type ConversationEventSource } from './harness-events.js'
@@ -59,6 +59,7 @@ export interface JarvisGatewayOptions {
   harnessRequestTimeoutMs?: number
   harnessEvents?: ConversationEventSource
   deviceApprovals?: DeviceApprovalSource
+  deviceCommandToken?: string
   eventLog?: RetainedEventLog
   eventStatePath?: string
   eventHandshakeTimeoutMs?: number
@@ -187,7 +188,7 @@ function sendHarnessError(response: ServerResponse, correlationId: string, error
   sendJson(response, status, correlationId, { error: message, code, correlationId })
 }
 
-function bearerToken(request: IncomingMessage, scheme: 'Bearer' | 'Device' | 'Session'): string | undefined {
+function bearerToken(request: IncomingMessage, scheme: 'Bearer' | 'Device' | 'Session' | 'DeviceCommand'): string | undefined {
   const value = request.headers.authorization
   const prefix = `${scheme} `
   return typeof value === 'string' && value.startsWith(prefix) ? value.slice(prefix.length) : undefined
@@ -275,6 +276,12 @@ function validateBindHost(value: string): { host: string, loopback: boolean } {
   return { host: value, loopback: value === '127.0.0.1' || value === '::1' }
 }
 
+function isLoopbackAddress(value: string | undefined): boolean {
+  if (value === undefined) return false
+  const normalized = value.startsWith('::ffff:') ? value.slice('::ffff:'.length) : value
+  return normalized === '127.0.0.1' || normalized === '::1'
+}
+
 function validateTls(options: GatewayTlsOptions | undefined): GatewayTlsOptions | undefined {
   if (options === undefined) return undefined
   const present = (value: string | Buffer): boolean => typeof value === 'string' ? value.length > 0 : value.byteLength > 0
@@ -285,6 +292,9 @@ function validateTls(options: GatewayTlsOptions | undefined): GatewayTlsOptions 
 
 export function createJarvisGateway(options: JarvisGatewayOptions): JarvisGateway {
   if (options.ownerToken.length < 16) throw new Error('ownerToken must contain at least 16 characters')
+  if (options.deviceCommandToken !== undefined && options.deviceCommandToken.length < 16) {
+    throw new Error('deviceCommandToken must contain at least 16 characters')
+  }
   const authority = options.authority ?? new PairingAuthority(
     undefined,
     undefined,
@@ -661,6 +671,36 @@ export function createJarvisGateway(options: JarvisGatewayOptions): JarvisGatewa
         sessions.revokeDevice(sessionPrincipal.nodeId)
         disconnectEventDevice(sessionPrincipal.nodeId, 'device access revoked')
         sessionPrincipal = undefined
+      }
+      if (parts[0] === 'v1' && parts[1] === 'device-commands') {
+        if (!binding.loopback || options.deviceCommandToken === undefined) {
+          sendJson(response, 404, correlationId, { error: 'route not found', correlationId })
+          return
+        }
+        if (!isLoopbackAddress(request.socket.remoteAddress)) {
+          sendJson(response, 403, correlationId, { error: 'loopback device command required', correlationId })
+          return
+        }
+        if (!sameSecret(options.deviceCommandToken, bearerToken(request, 'DeviceCommand'))) {
+          sendJson(response, 401, correlationId, { error: 'device command authentication required', correlationId })
+          return
+        }
+        if (request.method !== 'POST' || parts.length !== 2 || options.deviceApprovals?.requestApproval === undefined) {
+          sendJson(response, options.deviceApprovals?.requestApproval === undefined ? 503 : 405, correlationId, {
+            error: options.deviceApprovals?.requestApproval === undefined ? 'device approval service is unavailable' : 'method not allowed',
+            ...(options.deviceApprovals?.requestApproval === undefined ? { code: 'device_approval_unavailable' } : {}),
+            correlationId,
+          })
+          return
+        }
+        const body = await readJson(request, maxBodyBytes)
+        if (!record(body) || !exactFields(body, [
+          'commandId', 'idempotencyKey', 'capability', 'externalEntityId', 'service', 'expectedState', 'serviceData',
+        ])) throw new Error('device command body is invalid')
+        const command = normalizeHighRiskDeviceCommand(body as unknown as HighRiskDeviceCommand)
+        const approval = await options.deviceApprovals.requestApproval(command)
+        sendJson(response, 202, correlationId, { approval })
+        return
       }
       if (request.method === 'POST' && parts.length === 3 && parts[0] === 'v1' && parts[1] === 'sessions' && parts[2] === 'refresh') {
         const body = await readJson(request, maxBodyBytes)

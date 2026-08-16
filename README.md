@@ -89,6 +89,16 @@ Gateway 原型单独启动，必须通过环境变量提供 Owner Token：
 JARVIS_OWNER_TOKEN='use-a-local-secret-of-at-least-16-characters' npm run start:gateway
 ```
 
+如需启用 Harness 的 `jarvis_device_control` 工具，必须为 Gateway 和 Harness 进程设置同一个、独立于 Owner Token 的本地令牌：
+
+```bash
+export JARVIS_DEVICE_COMMAND_TOKEN='use-a-separate-local-secret-of-at-least-16-characters'
+export JARVIS_DEVICE_GATEWAY_URL='http://127.0.0.1:3090'
+JARVIS_OWNER_TOKEN='use-a-local-secret-of-at-least-16-characters' npm run start:gateway
+```
+
+Harness 进程会继承这两个变量，并通过 loopback Gateway 的 `POST /v1/device-commands` 创建脱敏审批记录。`JARVIS_DEVICE_GATEWAY_URL` 只能指向 `127.0.0.1` 或 `[::1]`；两个进程必须使用同一个内部令牌。当前工具结果只表示审批已创建，配对 PWA 仍需批准，真实 Home Assistant 适配器和物理设备执行尚未装配。
+
 默认模式只监听 `127.0.0.1:3090`，并只连接 `http://127.0.0.1:3080` 的 Harness。可用 `JARVIS_HARNESS_URL` 指向其他 `127.0.0.1` 端口，`JARVIS_HARNESS_TIMEOUT_MS` 默认 10000；非 loopback Harness 地址会在启动前被拒绝。配对状态原子写入未纳入 Git 的 `data/pairing-state.json`。节点和客户端 WebSocket 分别只接受 `/v1/node` 与 `/v1/events`，并各自限制消息大小、握手时间和连接数。
 
 Gateway 启动后可从 `http://127.0.0.1:3090/app/` 打开移动端应用外壳。默认资源目录为项目内 `web/`，部署时可通过 `JARVIS_PWA_ROOT` 指向同一组受审计资源；Gateway 只服务固定清单中的文件，未知 `/app/*` 路径不会访问文件系统。

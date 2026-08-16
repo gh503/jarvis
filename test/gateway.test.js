@@ -988,6 +988,38 @@ test('authenticates normalized smart-device approvals without exposing command p
   }
 })
 
+test('accepts only loopback internal device-command submissions and returns a redacted approval', async () => {
+  const authority = new PairingAuthority()
+  issueCredential(authority)
+  const deviceApprovals = new InMemoryDeviceApprovalStore(new DeviceApprovalGate(() => 1_000))
+  const deviceCommandToken = 'device-command-token-for-tests'
+  const service = createJarvisGateway({ ownerToken, authority, deviceApprovals, deviceCommandToken })
+  const gateway = await service.start()
+  const body = {
+    commandId: 'lock-command-gateway', idempotencyKey: 'lock-once-gateway', capability: 'lock.set',
+    externalEntityId: 'lock.front_door', service: 'unlock', serviceData: { token: 'private-provider-token' }, expectedState: 'unlocked',
+  }
+  const headers = { 'content-type': 'application/json', authorization: `DeviceCommand ${deviceCommandToken}` }
+  try {
+    assert.equal((await request(gateway, '/v1/device-commands', {
+      method: 'POST', headers: { ...headers, authorization: 'DeviceCommand wrong-token' }, body: JSON.stringify(body),
+    })).status, 401)
+    const response = await request(gateway, '/v1/device-commands', { method: 'POST', headers, body: JSON.stringify(body) })
+    assert.equal(response.status, 202)
+    const responseBody = await response.json()
+    assert.equal(responseBody.approval.capability, 'lock.set')
+    assert.doesNotMatch(JSON.stringify(responseBody), /private-provider-token/)
+    assert.equal((await request(gateway, '/v1/device-approvals')).status, 401)
+    assert.deepEqual(deviceApprovals.listApprovals(), [responseBody.approval])
+    const invalid = await request(gateway, '/v1/device-commands', {
+      method: 'POST', headers, body: JSON.stringify({ ...body, capability: 'switch.set' }),
+    })
+    assert.equal(invalid.status, 400)
+  } finally {
+    await service.stop()
+  }
+})
+
 test('publishes smart-device approval lifecycle events and replays them to authenticated clients', async () => {
   const authority = new PairingAuthority()
   issueCredential(authority)

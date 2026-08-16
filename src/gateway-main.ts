@@ -1,5 +1,6 @@
 import { readFileSync, statSync } from 'node:fs'
 import { join, resolve } from 'node:path'
+import { InMemoryDeviceApprovalStore } from './device-approval.js'
 import { createJarvisGateway, type GatewayTlsOptions } from './gateway.js'
 import { acquireRuntimeLease } from './runtime-lease.js'
 
@@ -25,6 +26,7 @@ const harnessRequestTimeoutMs = process.env.JARVIS_HARNESS_TIMEOUT_MS === undefi
 if (!Number.isInteger(harnessRequestTimeoutMs) || harnessRequestTimeoutMs < 1) {
   throw new Error('JARVIS_HARNESS_TIMEOUT_MS must be a positive integer')
 }
+const deviceCommandToken = process.env.JARVIS_DEVICE_COMMAND_TOKEN
 const tlsKeyPath = process.env.JARVIS_GATEWAY_TLS_KEY
 const tlsCertPath = process.env.JARVIS_GATEWAY_TLS_CERT
 if ((tlsKeyPath === undefined) !== (tlsCertPath === undefined)) {
@@ -44,9 +46,17 @@ const lease = await acquireRuntimeLease(runtimeDir, 'gateway')
 let gateway: ReturnType<typeof createJarvisGateway>
 
 try {
+  const gatewayOptions = {
+    ownerToken, pairingStatePath: statePath, sessionStatePath, eventStatePath, bindHost, harnessOrigin,
+    harnessRequestTimeoutMs, pwaRoot,
+    ...(deviceCommandToken === undefined ? {} : {
+      deviceCommandToken,
+      deviceApprovals: new InMemoryDeviceApprovalStore(),
+    }),
+  }
   gateway = tls === undefined
-    ? createJarvisGateway({ ownerToken, pairingStatePath: statePath, sessionStatePath, eventStatePath, bindHost, harnessOrigin, harnessRequestTimeoutMs, pwaRoot })
-    : createJarvisGateway({ ownerToken, pairingStatePath: statePath, sessionStatePath, eventStatePath, bindHost, harnessOrigin, harnessRequestTimeoutMs, pwaRoot, tls })
+    ? createJarvisGateway(gatewayOptions)
+    : createJarvisGateway({ ...gatewayOptions, tls })
   const running = await gateway.start(configuredPort)
   console.log(`Jarvis Gateway listening on ${running.origin}`)
 } catch (error) {

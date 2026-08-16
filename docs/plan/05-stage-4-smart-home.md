@@ -162,8 +162,24 @@ Implemented in the current increment:
 
 Deferred to later increments:
 
-- Cross-process runtime configuration between the Harness tool producer and Gateway-owned device bridge.
+- Real Home Assistant adapter wiring behind the Gateway-owned device bridge.
 - Real Home Assistant credentials, deployment, and physical-device evidence.
+
+### Cross-process device command producer
+
+Current increment: loopback-only Harness-to-Gateway command submission tracked by [#74](https://github.com/gh503/jarvis/issues/74).
+
+Implemented in the current increment:
+
+- The Harness `jarvis_device_control` tool submits only normalized `lock.set` and `alarm.set` commands to `POST /v1/device-commands`.
+- The endpoint requires a separate `DeviceCommand` token, accepts loopback connections only, and returns a redacted approval record without `serviceData`.
+- `JARVIS_DEVICE_COMMAND_TOKEN` must be identical in the Harness and Gateway processes; `JARVIS_DEVICE_GATEWAY_URL` may target only `127.0.0.1` or `[::1]`.
+- The result means that an approval was created. It does not mean that Home Assistant or a physical device executed the command.
+
+Deferred to later increments:
+
+- Real Home Assistant adapter assembly and provider credential configuration.
+- Real device execution and physical acceptance evidence.
 
 Acceptance:
 
