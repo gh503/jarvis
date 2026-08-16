@@ -988,6 +988,79 @@ test('authenticates normalized smart-device approvals without exposing command p
   }
 })
 
+test('publishes smart-device approval lifecycle events and replays them to authenticated clients', async () => {
+  const authority = new PairingAuthority()
+  issueCredential(authority)
+  const sessions = new SessionAuthority()
+  const access = sessions.issue('node-1')
+  const deviceApprovals = new InMemoryDeviceApprovalStore(new DeviceApprovalGate(() => 1_000))
+  const harnessEvents = fakeConversationEvents()
+  const service = createJarvisGateway({ ownerToken, authority, sessions, deviceApprovals, harnessEvents })
+  const gateway = await service.start()
+  const endpoint = `ws://127.0.0.1:${gateway.port}/v1/events`
+  const sockets = []
+  const nextEvent = (inbox, label) => Promise.race([
+    inbox.next(),
+    new Promise((_, reject) => setTimeout(() => reject(new Error(`timed out waiting for ${label}`)), 2_000)),
+  ])
+  const command = {
+    commandId: 'lock-command-live', idempotencyKey: 'lock-once-live', capability: 'lock.set',
+    externalEntityId: 'lock.front_door', service: 'lock_unlock', serviceData: { token: 'secret' }, expectedState: 'unlocked',
+  }
+  try {
+    const socket = new WebSocket(endpoint)
+    sockets.push(socket)
+    const inbox = socketInbox(socket)
+    await new Promise((resolve, reject) => {
+      socket.once('open', resolve)
+      socket.once('error', reject)
+    })
+    socket.send(JSON.stringify({ type: 'events.authenticate', accessToken: access.accessToken }))
+    const ready = await nextEvent(inbox, 'initial ready')
+    assert.equal(ready.type, 'events.ready')
+
+    const pending = deviceApprovals.request('device-approval-live', command)
+    let pendingEvent = await nextEvent(inbox, 'device approval pending')
+    while (pendingEvent.type !== 'device.approval.pending') pendingEvent = await nextEvent(inbox, 'device approval pending after sync')
+    assert.deepEqual({
+      type: pendingEvent.type, approval: pendingEvent.approval, serviceData: pendingEvent.approval.serviceData,
+    }, { type: 'device.approval.pending', approval: pending, serviceData: undefined })
+    socket.send(JSON.stringify({ type: 'events.ack', cursor: pendingEvent.cursor }))
+
+    deviceApprovals.decideApproval('device-approval-live', pending.digest, 'rejected', 'decision-live')
+    const resolvedEvent = await nextEvent(inbox, 'device approval resolved')
+    assert.deepEqual({
+      type: resolvedEvent.type, approvalId: resolvedEvent.approvalId, outcome: resolvedEvent.outcome,
+    }, { type: 'device.approval.resolved', approvalId: pending.approvalId, outcome: 'rejected' })
+    socket.send(JSON.stringify({ type: 'events.ack', cursor: resolvedEvent.cursor }))
+    const socketClosed = new Promise((resolve, reject) => {
+      socket.once('close', resolve)
+      socket.once('error', reject)
+    })
+    socket.close()
+    await socketClosed
+
+    const replaySocket = new WebSocket(endpoint)
+    sockets.push(replaySocket)
+    const replayInbox = socketInbox(replaySocket)
+    await new Promise((resolve, reject) => {
+      replaySocket.once('open', resolve)
+      replaySocket.once('error', reject)
+    })
+    replaySocket.send(JSON.stringify({ type: 'events.authenticate', accessToken: access.accessToken, cursor: ready.cursor }))
+    const replayReady = await nextEvent(replayInbox, 'replay ready')
+    assert.equal(replayReady.type, 'events.ready')
+    const replayed = []
+    for (let index = 0; index < replayReady.replayCount; index += 1) replayed.push(await nextEvent(replayInbox, 'replayed event'))
+    assert.deepEqual(replayed.filter(event => event.type.startsWith('device.approval.')).map(event => event.type), [
+      'device.approval.pending', 'device.approval.resolved',
+    ])
+  } finally {
+    for (const socket of sockets) socket.terminate()
+    await service.stop()
+  }
+})
+
 test('authenticates conversation events, replays retained cursors, and closes revoked sessions', async () => {
   const authority = new PairingAuthority()
   issueCredential(authority)

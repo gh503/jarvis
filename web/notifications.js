@@ -77,6 +77,20 @@ function notificationForEvent(event) {
       resource: { view: 'activity', approvalId: event.approvalId },
     }
   }
+  if (event.type === 'device.approval.pending' && RESOURCE_ID_PATTERN.test(event.approval?.approvalId ?? '')) {
+    return {
+      id: `device-approval:${event.approval.approvalId}:pending`, category: 'approval',
+      title: '有一项智能设备审批等待处理', body: 'Jarvis 有一项高风险智能设备操作等待你的决定。',
+      resource: { view: 'activity', approvalId: event.approval.approvalId },
+    }
+  }
+  if (event.type === 'device.approval.resolved' && RESOURCE_ID_PATTERN.test(event.approvalId ?? '')) {
+    return {
+      id: `device-approval:${event.approvalId}:resolved`, category: 'approval',
+      title: '智能设备审批状态已更新', body: 'Jarvis 的一项智能设备操作审批已经完成。',
+      resource: { view: 'activity', approvalId: event.approvalId },
+    }
+  }
   if (event.type === 'conversation.status' && RESOURCE_ID_PATTERN.test(event.conversationId ?? '')
     && event.running === false) {
     return {

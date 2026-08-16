@@ -74,9 +74,9 @@ function parseApprovalList(value) {
 function validDeviceApproval(value) {
   return value !== null && typeof value === 'object' && ID_PATTERN.test(value.approvalId)
     && (value.capability === 'lock.set' || value.capability === 'alarm.set')
-    && typeof value.externalEntityId === 'string' && value.externalEntityId.length > 0
-    && typeof value.service === 'string' && value.service.length > 0
-    && typeof value.expectedState === 'string' && value.expectedState.length > 0
+    && typeof value.externalEntityId === 'string' && value.externalEntityId.length > 0 && value.externalEntityId.length <= 256
+    && typeof value.service === 'string' && value.service.length > 0 && value.service.length <= 64
+    && typeof value.expectedState === 'string' && value.expectedState.length > 0 && value.expectedState.length <= 128
     && typeof value.digest === 'string' && /^[0-9a-f]{64}$/.test(value.digest)
     && value.risk === 'high' && Number.isFinite(value.expiresAt)
 }
@@ -118,6 +118,8 @@ function eventDescription(event) {
   if (event.type === 'conversation.error') return '对话执行失败'
   if (event.type === 'approval.pending') return '收到待审批操作'
   if (event.type === 'approval.resolved') return event.outcome === 'allowed-once' ? '操作已允许一次' : '操作未获允许'
+  if (event.type === 'device.approval.pending') return '收到智能设备待审批操作'
+  if (event.type === 'device.approval.resolved') return event.outcome === 'allowed-once' ? '智能设备操作已允许一次' : '智能设备操作未获允许'
   return '正在重新同步对话'
 }
 
@@ -576,6 +578,16 @@ export class ConversationsClient {
       this.approvalSubmittedIds.delete(event.approvalId)
       for (const key of this.approvalDecisionKeys.keys()) {
         if (key.startsWith(`${event.approvalId}:`)) this.approvalDecisionKeys.delete(key)
+      }
+    } else if (event.type === 'device.approval.pending' && validDeviceApproval(event.approval)) {
+      this.deviceApprovals = [event.approval, ...this.deviceApprovals.filter(item => item.approvalId !== event.approval.approvalId)]
+        .sort((left, right) => right.expiresAt - left.expiresAt)
+    } else if (event.type === 'device.approval.resolved' && ID_PATTERN.test(event.approvalId)
+      && ['allowed-once', 'rejected'].includes(event.outcome)) {
+      this.deviceApprovals = this.deviceApprovals.filter(item => item.approvalId !== event.approvalId)
+      this.deviceApprovalSubmittedIds.delete(event.approvalId)
+      for (const key of this.deviceApprovalDecisionKeys.keys()) {
+        if (key.startsWith(`${event.approvalId}:`)) this.deviceApprovalDecisionKeys.delete(key)
       }
     } else {
       socket.close(CLOSE_PROTOCOL, 'unsupported event')

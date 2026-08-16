@@ -227,6 +227,18 @@ test('creates redacted, deduplicated notifications from normalized events', asyn
   const restarted = new NotificationCenter({ store, permission: 'default' })
   await restarted.initialize()
   assert.equal(restarted.history[0].id, 'approval:approval-1:pending')
+
+  const deviceEvent = {
+    version: 1, cursor: 'A'.repeat(22) + '.9', occurredAt: 1_700_000_000_001,
+    type: 'device.approval.pending',
+    approval: {
+      approvalId: 'device-approval-1', capability: 'lock.set', externalEntityId: 'lock.front_door',
+      service: 'lock_unlock', expectedState: 'unlocked', digest: 'b'.repeat(64), risk: 'high', expiresAt: 1_700_000_060_000,
+    },
+  }
+  assert.equal(await center.ingestEvent(deviceEvent), true)
+  assert.equal(systemNotifications.at(-1).body.includes('lock.front_door'), false)
+  assert.deepEqual(systemNotifications.at(-1).resource, { view: 'activity', approvalId: 'device-approval-1' })
 })
 
 test('quiet hours and rate limits suppress system presentation but retain history', async () => {

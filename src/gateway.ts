@@ -344,6 +344,7 @@ export function createJarvisGateway(options: JarvisGatewayOptions): JarvisGatewa
   let server: GatewayServer | undefined
   let nodeSocketServer: WebSocketServer | undefined
   let eventSocketServer: WebSocketServer | undefined
+  let deviceApprovalUnsubscribe: (() => void) | undefined
   let harnessAvailable = false
   let harnessWasAvailable = false
   const nodeConnections = new Map<string, WebSocket>()
@@ -1094,6 +1095,7 @@ export function createJarvisGateway(options: JarvisGatewayOptions): JarvisGatewa
           const host = binding.host.includes(':') ? `[${binding.host}]` : binding.host
           const protocol = secure ? 'https' : 'http'
           try {
+            deviceApprovalUnsubscribe = options.deviceApprovals?.subscribe?.(event => eventLog.publish(event))
             harnessEvents.start({
               onEvent: event => { eventLog.publish(event) },
               onAvailability: handleHarnessAvailability,
@@ -1105,6 +1107,8 @@ export function createJarvisGateway(options: JarvisGatewayOptions): JarvisGatewa
             eventSocketServer?.close()
             nodeSocketServer = undefined
             eventSocketServer = undefined
+            deviceApprovalUnsubscribe?.()
+            deviceApprovalUnsubscribe = undefined
             failedServer?.close()
             reject(error)
             return
@@ -1127,6 +1131,8 @@ export function createJarvisGateway(options: JarvisGatewayOptions): JarvisGatewa
       server = undefined
       nodeSocketServer = undefined
       eventSocketServer = undefined
+      deviceApprovalUnsubscribe?.()
+      deviceApprovalUnsubscribe = undefined
       for (const state of connectionStates.values()) clearTimeout(state.handshakeTimer)
       for (const state of eventConnectionStates.values()) {
         clearTimeout(state.handshakeTimer)

@@ -115,8 +115,24 @@ Implemented in the current increment:
 
 Deferred to later increments:
 
-- PWA rendering, event-stream notifications, and real adapter dispatch.
-- Real lock/alarm service calls and physical-device acceptance.
+- Real adapter dispatch.
+- Physical lock/alarm service calls and hardware acceptance.
+
+### Real-time approval events
+
+Current increment: normalized smart-device approval lifecycle events tracked by [#68](https://github.com/gh503/jarvis/issues/68).
+
+Implemented in the current increment:
+
+- Approval sources can publish `device.approval.pending` and `device.approval.resolved` through the authenticated retained Gateway event stream.
+- Events use an explicit public allowlist and exclude service data, provider credentials, owner tokens, and raw adapter payloads.
+- PWA clients converge their smart-device approval list from live events and cursor-based replay without requiring polling.
+- Notification records use fixed redacted text and never include target service data.
+
+Deferred to later increments:
+
+- Dispatching an approved lock or alarm command through a real adapter.
+- Real Home Assistant or MQTT deployment evidence and physical-device acceptance.
 
 Acceptance:
 

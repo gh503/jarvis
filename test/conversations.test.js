@@ -10,6 +10,10 @@ const approval = {
   action: 'open_app', target: 'notes', arguments: { application: 'notes' }, digest: 'a'.repeat(64), risk: 'high',
   requestedAt: 1_000, expiresAt: Date.now() + 60_000, canAllow: true, blockReason: null,
 }
+const deviceApproval = {
+  approvalId: 'device-approval-one', capability: 'lock.set', externalEntityId: 'lock.front_door',
+  service: 'lock_unlock', expectedState: 'unlocked', digest: 'b'.repeat(64), risk: 'high', expiresAt: Date.now() + 60_000,
+}
 
 function memoryStore() {
   const values = new Map()
@@ -354,6 +358,18 @@ test('converges live approval requested and resolved events', async () => {
   })
   await tick()
   assert.deepEqual(states.at(-1).approvals, [])
+  sockets[0].message({
+    version: 1, type: 'device.approval.pending', cursor: `${'A'.repeat(22)}.4`, occurredAt: 4_000,
+    approval: deviceApproval,
+  })
+  await tick()
+  assert.deepEqual(states.at(-1).deviceApprovals, [deviceApproval])
+  sockets[0].message({
+    version: 1, type: 'device.approval.resolved', cursor: `${'A'.repeat(22)}.5`, occurredAt: 5_000,
+    approvalId: deviceApproval.approvalId, outcome: 'rejected',
+  })
+  await tick()
+  assert.deepEqual(states.at(-1).deviceApprovals, [])
 })
 
 test('converges a server-side device revocation across an active browser tab', async () => {

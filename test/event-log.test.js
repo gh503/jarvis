@@ -88,6 +88,21 @@ test('persists public approval events without Harness transport identifiers', as
   }
 })
 
+test('retains redacted smart-device approval events and rejects private fields', () => {
+  const log = new RetainedEventLog()
+  const approval = {
+    approvalId: 'device-approval-one', capability: 'lock.set', externalEntityId: 'lock.front_door',
+    service: 'lock_unlock', expectedState: 'unlocked', digest: 'b'.repeat(64), risk: 'high', expiresAt: 61_000,
+  }
+  const pending = log.publish({ type: 'device.approval.pending', approval })
+  const resolved = log.publish({ type: 'device.approval.resolved', approvalId: approval.approvalId, outcome: 'rejected' })
+  assert.deepEqual(log.replay().events, [])
+  assert.deepEqual(log.replay(pending.cursor).events, [resolved])
+  assert.throws(() => log.publish({
+    type: 'device.approval.pending', approval: { ...approval, serviceData: { token: 'private' } },
+  }), /payload/)
+})
+
 test('rejects invalid payloads and oversized single events before publication', () => {
   const log = new RetainedEventLog({ maxBytes: 256 })
   assert.throws(() => log.publish({ type: 'conversation.status', conversationId: '../private', running: true }), /payload/)
