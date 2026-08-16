@@ -20,6 +20,9 @@ test('expires access, rotates refresh tokens, and revokes the family on reuse', 
   assert.deepEqual(authority.authenticate(first.accessToken), {
     sessionId: first.sessionId, familyId: first.familyId, nodeId: 'node-1',
   })
+  assert.deepEqual(authority.identifyRefresh(first.refreshToken), {
+    sessionId: first.sessionId, familyId: first.familyId, nodeId: 'node-1',
+  })
 
   now = first.accessExpiresAt
   assert.equal(authority.authenticate(first.accessToken), undefined)
@@ -28,11 +31,14 @@ test('expires access, rotates refresh tokens, and revokes the family on reuse', 
   assert.equal(second.familyId, first.familyId)
   assert.notEqual(second.accessToken, first.accessToken)
   assert.notEqual(second.refreshToken, first.refreshToken)
+  assert.equal(authority.identifyRefresh(first.refreshToken), undefined)
+  assert.equal(authority.identifyRefresh(second.refreshToken)?.sessionId, first.sessionId)
   assert.equal(authority.authenticate(first.accessToken), undefined)
   assert.equal(authority.authenticate(second.accessToken)?.nodeId, 'node-1')
 
   assert.throws(() => authority.refresh(first.refreshToken), sessionError('reuse'))
   assert.equal(authority.authenticate(second.accessToken), undefined)
+  assert.equal(authority.identifyRefresh(second.refreshToken), undefined)
   assert.equal(authority.list()[0].revokeReason, 'refresh-reuse')
 })
 

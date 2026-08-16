@@ -199,7 +199,7 @@ test('runs authenticated pairing, device rotation, and owner revocation over ver
     const rejectedRotation = await request(gateway, '/v1/devices/node-1', {
       method: 'POST', headers: { authorization: `Device ${second.credential}` },
     })
-    assert.equal(rejectedRotation.status, 400)
+    assert.equal(rejectedRotation.status, 401)
   } finally {
     await service.stop()
   }
@@ -369,6 +369,114 @@ test('rejects oversized and malformed requests without exposing secrets', async 
   }
 })
 
+test('limits sources before reading request bodies and returns retry metadata', async () => {
+  const service = createJarvisGateway({
+    ownerToken,
+    maxBodyBytes: 8,
+    sourceRateLimit: { capacity: 1, refillPerSecond: 0.001, maxKeys: 8 },
+  })
+  const gateway = await service.start()
+  try {
+    assert.equal((await request(gateway, '/v1/health')).status, 200)
+    const limited = await request(gateway, '/v1/pairing/requests', {
+      method: 'POST',
+      headers: {
+        authorization: `Bearer ${ownerToken}`,
+        'content-type': 'application/json',
+        'x-forwarded-for': '203.0.113.20',
+      },
+      body: JSON.stringify({ oversized: 'this body must never be parsed' }),
+    })
+    assert.equal(limited.status, 429)
+    assert.equal(limited.headers.get('retry-after'), '1000')
+    assert.equal(limited.headers.get('x-ratelimit-limit'), '1')
+    assert.equal(limited.headers.get('x-ratelimit-remaining'), '0')
+    assert.equal(limited.headers.get('cache-control'), 'no-store')
+    assert.match(limited.headers.get('x-correlation-id') ?? '', /^[0-9a-f-]{36}$/)
+    assert.equal((await limited.json()).code, 'rate_limited')
+  } finally {
+    await service.stop()
+  }
+})
+
+test('isolates owner, device, and session identity limits after authentication', async () => {
+  const authority = new PairingAuthority()
+  const firstCredential = issueCredential(authority, 'node-1')
+  const secondCredential = issueCredential(authority, 'node-2')
+  const service = createJarvisGateway({
+    ownerToken,
+    authority,
+    sourceRateLimit: { capacity: 100, refillPerSecond: 100, maxKeys: 8 },
+    identityRateLimit: { capacity: 1, refillPerSecond: 0.001, maxKeys: 8 },
+  })
+  const gateway = await service.start()
+  const createSession = (nodeId, credential) => request(gateway, '/v1/sessions', {
+    method: 'POST',
+    headers: { authorization: `Device ${credential}`, 'content-type': 'application/json' },
+    body: JSON.stringify({ nodeId }),
+  })
+  try {
+    const invalid = await createSession('node-1', 'invalid-device-credential')
+    assert.equal(invalid.status, 401)
+
+    const first = await createSession('node-1', firstCredential)
+    assert.equal(first.status, 201)
+    const firstTokens = await first.json()
+    assert.equal((await createSession('node-1', firstCredential)).status, 429)
+    assert.equal((await createSession('node-2', secondCredential)).status, 201)
+
+    const sessionHeaders = { authorization: `Session ${firstTokens.accessToken}` }
+    assert.equal((await request(gateway, '/v1/sessions/current', { headers: sessionHeaders })).status, 200)
+    assert.equal((await request(gateway, '/v1/sessions/current', { headers: sessionHeaders })).status, 429)
+
+    const ownerHeaders = { authorization: `Bearer ${ownerToken}` }
+    assert.equal((await request(gateway, '/v1/sessions', { headers: ownerHeaders })).status, 200)
+    const ownerLimited = await request(gateway, '/v1/sessions', { headers: ownerHeaders })
+    assert.equal(ownerLimited.status, 429)
+    assert.equal(ownerLimited.headers.get('x-ratelimit-limit'), '1')
+  } finally {
+    await service.stop()
+  }
+})
+
+test('detects refresh reuse even after the session identity limit is exhausted', async () => {
+  const authority = new PairingAuthority()
+  issueCredential(authority)
+  const sessions = new SessionAuthority()
+  const first = sessions.issue('node-1')
+  const service = createJarvisGateway({
+    ownerToken,
+    authority,
+    sessions,
+    sourceRateLimit: { capacity: 100, refillPerSecond: 100, maxKeys: 8 },
+    identityRateLimit: { capacity: 2, refillPerSecond: 0.001, maxKeys: 8 },
+  })
+  const gateway = await service.start()
+  const refresh = token => request(gateway, '/v1/sessions/refresh', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ refreshToken: token }),
+  })
+  try {
+    const rotatedResponse = await refresh(first.refreshToken)
+    assert.equal(rotatedResponse.status, 200)
+    const rotated = await rotatedResponse.json()
+    assert.equal((await request(gateway, '/v1/sessions/current', {
+      headers: { authorization: `Session ${rotated.accessToken}` },
+    })).status, 200)
+
+    const reused = await refresh(first.refreshToken)
+    assert.equal(reused.status, 401)
+    assert.equal((await reused.json()).code, 'refresh_reuse_detected')
+    assert.equal(sessions.get(first.sessionId).revokeReason, 'refresh-reuse')
+    assert.equal((await request(gateway, '/v1/sessions/current', {
+      headers: { authorization: `Session ${rotated.accessToken}` },
+    })).status, 401)
+  } finally {
+    await service.stop()
+  }
+})
+
 test('isolates the node WebSocket path and requires authentication as the first message', async () => {
   const service = createJarvisGateway({ ownerToken })
   const gateway = await service.start()
@@ -395,6 +503,67 @@ test('isolates the node WebSocket path and requires authentication as the first 
     socket.close()
   } finally {
     await service.stop()
+  }
+})
+
+test('rate limits WebSocket upgrades by source and authenticated node identity', async () => {
+  const sourceLimitedService = createJarvisGateway({
+    ownerToken,
+    sourceRateLimit: { capacity: 1, refillPerSecond: 0.001, maxKeys: 8 },
+  })
+  const sourceGateway = await sourceLimitedService.start()
+  try {
+    assert.equal((await request(sourceGateway, '/v1/health')).status, 200)
+    await new Promise((resolve, reject) => {
+      const socket = new WebSocket(`ws://127.0.0.1:${sourceGateway.port}/v1/node`)
+      socket.once('unexpected-response', (_request, response) => {
+        try {
+          assert.equal(response.statusCode, 429)
+          assert.equal(response.headers['x-ratelimit-limit'], '1')
+          assert.match(response.headers['x-correlation-id'] ?? '', /^[0-9a-f-]{36}$/)
+          response.resume()
+          resolve()
+        } catch (error) {
+          reject(error)
+        }
+      })
+      socket.once('error', reject)
+    })
+  } finally {
+    await sourceLimitedService.stop()
+  }
+
+  const authority = new PairingAuthority()
+  const credential = issueCredential(authority)
+  const identityLimitedService = createJarvisGateway({
+    ownerToken,
+    authority,
+    sourceRateLimit: { capacity: 100, refillPerSecond: 100, maxKeys: 8 },
+    identityRateLimit: { capacity: 1, refillPerSecond: 0.001, maxKeys: 8 },
+  })
+  const identityGateway = await identityLimitedService.start()
+  try {
+    const issued = await request(identityGateway, '/v1/sessions', {
+      method: 'POST',
+      headers: { authorization: `Device ${credential}`, 'content-type': 'application/json' },
+      body: JSON.stringify({ nodeId: 'node-1' }),
+    })
+    assert.equal(issued.status, 201)
+    const rejection = await new Promise((resolve, reject) => {
+      const socket = new WebSocket(`ws://127.0.0.1:${identityGateway.port}/v1/node`)
+      socket.once('open', () => socket.send(JSON.stringify({
+        type: 'node.authenticate',
+        protocolVersion: 1,
+        nodeId: 'node-1',
+        credential,
+      })))
+      socket.once('message', data => resolve(JSON.parse(data.toString())))
+      socket.once('error', reject)
+    })
+    assert.equal(rejection.type, 'node.rejected')
+    assert.equal(rejection.reason, 'node rate limit exceeded')
+  } finally {
+    await identityLimitedService.stop()
   }
 })
 

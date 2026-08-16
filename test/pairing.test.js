@@ -44,6 +44,7 @@ test('wrong verification code does not issue a credential', () => {
   assert.throws(() => authority.confirm(request.requestId, '000000'), /incorrect/)
   const issued = authority.confirm(request.requestId, request.verificationCode)
   assert.equal(authority.authenticate('node-1', issued.credential), true)
+  assert.equal(authority.identify(issued.credential), 'node-1')
 })
 
 test('expired pairing requests cannot be confirmed', () => {
@@ -74,7 +75,9 @@ test('rotation invalidates the old credential while preserving device identity',
   assert.equal(rotated.generation, 2)
   assert.equal(rotated.publicKey, first.publicKey)
   assert.equal(authority.authenticate('node-1', first.credential), false)
+  assert.equal(authority.identify(first.credential), undefined)
   assert.equal(authority.authenticate('node-1', rotated.credential), true)
+  assert.equal(authority.identify(rotated.credential), 'node-1')
   assert.throws(() => authority.rotate('node-1', first.credential), /invalid or revoked/)
 })
 
@@ -85,6 +88,7 @@ test('revocation blocks current and future authentication', () => {
   const issued = authority.confirm(request.requestId, request.verificationCode)
   assert.equal(authority.revoke('node-1'), true)
   assert.equal(authority.authenticate('node-1', issued.credential), false)
+  assert.equal(authority.identify(issued.credential), undefined)
   assert.equal(authority.revoke('node-1'), false)
   assert.throws(() => authority.rotate('node-1', issued.credential), /invalid or revoked/)
 })

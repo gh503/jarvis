@@ -6,12 +6,15 @@ import { WebSocket, WebSocketServer, type RawData } from 'ws'
 import { NODE_PROTOCOL_VERSION, parseNodeRegistration, type NodeRegistration } from './node-capabilities.js'
 import type { NodeCommand } from './node-command.js'
 import { FilePairingStateStore, PairingAuthority } from './pairing.js'
+import { TokenBucketRateLimiter, type RateLimitDecision, type TokenBucketRateLimiterOptions } from './rate-limit.js'
 import { FileSessionStateStore, SessionAuthenticationError, SessionAuthority, type SessionPrincipal } from './sessions.js'
 
 const MAX_BODY_BYTES = 32 * 1024
 const NODE_PATH = '/v1/node'
 const NODE_HANDSHAKE_TIMEOUT_MS = 10_000
 const MAX_NODE_CONNECTIONS = 128
+const DEFAULT_SOURCE_RATE_LIMIT = { capacity: 60, refillPerSecond: 1, maxKeys: 4_096 }
+const DEFAULT_IDENTITY_RATE_LIMIT = { capacity: 120, refillPerSecond: 2, maxKeys: 1_024 }
 const ALLOWED_BIND_ADDRESSES = new BlockList()
 ALLOWED_BIND_ADDRESSES.addAddress('127.0.0.1', 'ipv4')
 ALLOWED_BIND_ADDRESSES.addAddress('::1', 'ipv6')
@@ -40,6 +43,8 @@ export interface JarvisGatewayOptions {
   tls?: GatewayTlsOptions
   sessions?: SessionAuthority
   sessionStatePath?: string
+  sourceRateLimit?: TokenBucketRateLimiterOptions
+  identityRateLimit?: TokenBucketRateLimiterOptions
 }
 
 export interface RunningGateway {
@@ -78,9 +83,15 @@ function requestCorrelationId(request: IncomingMessage): string {
   return randomUUID()
 }
 
-function sendJson(response: ServerResponse, status: number, correlationId: string, value: unknown): void {
+function sendJson(
+  response: ServerResponse,
+  status: number,
+  correlationId: string,
+  value: unknown,
+  headers: Record<string, string | number> = {},
+): void {
   if (status === 204) {
-    response.writeHead(status, { 'cache-control': 'no-store', 'x-correlation-id': correlationId })
+    response.writeHead(status, { 'cache-control': 'no-store', 'x-correlation-id': correlationId, ...headers })
     response.end()
     return
   }
@@ -90,8 +101,25 @@ function sendJson(response: ServerResponse, status: number, correlationId: strin
     'content-length': Buffer.byteLength(body),
     'cache-control': 'no-store',
     'x-correlation-id': correlationId,
+    ...headers,
   })
   response.end(body)
+}
+
+function rateLimitHeaders(decision: RateLimitDecision): Record<string, string | number> {
+  return {
+    'retry-after': Math.max(1, Math.ceil(decision.retryAfterMs / 1_000)),
+    'x-ratelimit-limit': decision.limit,
+    'x-ratelimit-remaining': decision.remaining,
+  }
+}
+
+function sendRateLimited(response: ServerResponse, correlationId: string, decision: RateLimitDecision): void {
+  sendJson(response, 429, correlationId, {
+    error: 'rate limit exceeded',
+    code: 'rate_limited',
+    correlationId,
+  }, rateLimitHeaders(decision))
 }
 
 function bearerToken(request: IncomingMessage, scheme: 'Bearer' | 'Device' | 'Session'): string | undefined {
@@ -137,9 +165,18 @@ function sendSocket(socket: WebSocket, message: Record<string, unknown>): boolea
   return true
 }
 
-function rejectUpgrade(socket: import('node:stream').Duplex, status: 403 | 404 | 503): void {
-  const reason = status === 403 ? 'Forbidden' : status === 404 ? 'Not Found' : 'Service Unavailable'
-  socket.end(`HTTP/1.1 ${status} ${reason}\r\nConnection: close\r\nContent-Length: 0\r\n\r\n`)
+function rejectUpgrade(
+  socket: import('node:stream').Duplex,
+  status: 403 | 404 | 429 | 503,
+  headers: Record<string, string | number> = {},
+): void {
+  const reasons = { 403: 'Forbidden', 404: 'Not Found', 429: 'Too Many Requests', 503: 'Service Unavailable' }
+  const lines = Object.entries(headers).map(([name, value]) => `${name}: ${value}\r\n`).join('')
+  socket.end(`HTTP/1.1 ${status} ${reasons[status]}\r\n${lines}Connection: close\r\nContent-Length: 0\r\n\r\n`)
+}
+
+function sourceKey(request: IncomingMessage): string {
+  return request.socket.remoteAddress ?? 'unknown'
 }
 
 function routeParts(request: IncomingMessage): string[] {
@@ -192,6 +229,8 @@ export function createJarvisGateway(options: JarvisGatewayOptions): JarvisGatewa
   if (!binding.loopback && tls === undefined) throw new Error('TLS is required for non-loopback Gateway binding')
   const secure = tls !== undefined
   const scope = binding.loopback ? 'loopback-only' : 'private-network-only'
+  const sourceRateLimiter = new TokenBucketRateLimiter(options.sourceRateLimit ?? DEFAULT_SOURCE_RATE_LIMIT)
+  const identityRateLimiter = new TokenBucketRateLimiter(options.identityRateLimit ?? DEFAULT_IDENTITY_RATE_LIMIT)
   let server: GatewayServer | undefined
   let socketServer: WebSocketServer | undefined
   const nodeConnections = new Map<string, WebSocket>()
@@ -233,6 +272,11 @@ export function createJarvisGateway(options: JarvisGatewayOptions): JarvisGatewa
         rejectNode(socket, 'node authentication rejected')
         return
       }
+      const identityDecision = identityRateLimiter.consume(`device:${message.nodeId}`)
+      if (!identityDecision.allowed) {
+        rejectNode(socket, 'node rate limit exceeded')
+        return
+      }
       state.nodeId = message.nodeId
       state.phase = 'register'
       sendSocket(socket, { type: 'node.authenticated', correlationId: state.correlationId })
@@ -266,10 +310,10 @@ export function createJarvisGateway(options: JarvisGatewayOptions): JarvisGatewa
     }
   }
 
-  const handleNodeConnection = (socket: WebSocket): void => {
+  const handleNodeConnection = (socket: WebSocket, request: IncomingMessage): void => {
     const state: NodeConnectionState = {
       phase: 'authenticate',
-      correlationId: randomUUID(),
+      correlationId: requestCorrelationId(request),
       handshakeTimer: setTimeout(() => rejectNode(socket, 'node handshake timed out'), nodeHandshakeTimeoutMs),
     }
     state.handshakeTimer.unref()
@@ -287,8 +331,13 @@ export function createJarvisGateway(options: JarvisGatewayOptions): JarvisGatewa
 
   const handle = async (request: IncomingMessage, response: ServerResponse): Promise<void> => {
     const correlationId = requestCorrelationId(request)
-    const parts = routeParts(request)
     try {
+      const sourceDecision = sourceRateLimiter.consume(sourceKey(request))
+      if (!sourceDecision.allowed) {
+        sendRateLimited(response, correlationId, sourceDecision)
+        return
+      }
+      const parts = routeParts(request)
       if (request.method === 'GET' && parts.length === 2 && parts[0] === 'v1' && parts[1] === 'health') {
         sendJson(response, 200, correlationId, {
           service: 'jarvis-gateway',
@@ -300,6 +349,7 @@ export function createJarvisGateway(options: JarvisGatewayOptions): JarvisGatewa
       }
       const ownerAuthenticated = sameSecret(options.ownerToken, bearerToken(request, 'Bearer'))
       const deviceCredential = bearerToken(request, 'Device')
+      const deviceNodeId = deviceCredential === undefined ? undefined : authority.identify(deviceCredential)
       const sessionToken = bearerToken(request, 'Session')
       let sessionPrincipal: SessionPrincipal | undefined = sessionToken === undefined
         ? undefined
@@ -311,6 +361,19 @@ export function createJarvisGateway(options: JarvisGatewayOptions): JarvisGatewa
       if (request.method === 'POST' && parts.length === 3 && parts[0] === 'v1' && parts[1] === 'sessions' && parts[2] === 'refresh') {
         const body = await readJson(request, maxBodyBytes)
         if (!record(body) || typeof body.refreshToken !== 'string') throw new Error('session refresh body is invalid')
+        const refreshPrincipal = sessions.identifyRefresh(body.refreshToken)
+        if (refreshPrincipal !== undefined) {
+          if (!authority.isActive(refreshPrincipal.nodeId)) {
+            sessions.revokeDevice(refreshPrincipal.nodeId)
+            sendJson(response, 401, correlationId, { error: 'session device is revoked', code: 'device_revoked', correlationId })
+            return
+          }
+          const identityDecision = identityRateLimiter.consume(`session:${refreshPrincipal.sessionId}`)
+          if (!identityDecision.allowed) {
+            sendRateLimited(response, correlationId, identityDecision)
+            return
+          }
+        }
         try {
           const refreshed = sessions.refresh(body.refreshToken)
           if (!authority.isActive(refreshed.nodeId)) {
@@ -326,14 +389,28 @@ export function createJarvisGateway(options: JarvisGatewayOptions): JarvisGatewa
         }
         return
       }
+      const identityKey = ownerAuthenticated
+        ? 'owner'
+        : deviceNodeId !== undefined
+          ? `device:${deviceNodeId}`
+          : sessionPrincipal === undefined
+            ? undefined
+            : `session:${sessionPrincipal.sessionId}`
+      if (identityKey !== undefined) {
+        const identityDecision = identityRateLimiter.consume(identityKey)
+        if (!identityDecision.allowed) {
+          sendRateLimited(response, correlationId, identityDecision)
+          return
+        }
+      }
       if (request.method === 'POST' && parts.length === 2 && parts[0] === 'v1' && parts[1] === 'sessions') {
-        if (deviceCredential === undefined) {
+        if (deviceNodeId === undefined) {
           sendJson(response, 401, correlationId, { error: 'device authentication required', correlationId })
           return
         }
         const body = await readJson(request, maxBodyBytes)
         if (!record(body) || typeof body.nodeId !== 'string') throw new Error('session request body is invalid')
-        if (!authority.authenticate(body.nodeId, deviceCredential)) {
+        if (body.nodeId !== deviceNodeId) {
           sendJson(response, 401, correlationId, { error: 'device credential is invalid or revoked', correlationId })
           return
         }
@@ -348,7 +425,7 @@ export function createJarvisGateway(options: JarvisGatewayOptions): JarvisGatewa
         sendJson(response, 200, correlationId, sessions.get(sessionPrincipal.sessionId))
         return
       }
-      if (parts[0] !== 'v1' || (!ownerAuthenticated && deviceCredential === undefined && sessionPrincipal === undefined)) {
+      if (parts[0] !== 'v1' || (!ownerAuthenticated && deviceNodeId === undefined && sessionPrincipal === undefined)) {
         sendJson(response, 401, correlationId, { error: 'authentication required', correlationId })
         return
       }
@@ -403,7 +480,7 @@ export function createJarvisGateway(options: JarvisGatewayOptions): JarvisGatewa
       if (parts.length === 3 && parts[1] === 'devices' && typeof parts[2] === 'string') {
         const nodeId = parts[2]
         if (request.method === 'POST' && parts.length === 3 && parts[2] === nodeId) {
-          if (deviceCredential === undefined) {
+          if (deviceNodeId === undefined || deviceCredential === undefined || deviceNodeId !== nodeId) {
             sendJson(response, 401, correlationId, { error: 'device authentication required', correlationId })
             return
           }
@@ -445,6 +522,16 @@ export function createJarvisGateway(options: JarvisGatewayOptions): JarvisGatewa
       socketServer = new WebSocketServer({ noServer: true, maxPayload: maxBodyBytes })
       socketServer.on('connection', handleNodeConnection)
       server.on('upgrade', (request, socket, head) => {
+        const correlationId = requestCorrelationId(request)
+        const sourceDecision = sourceRateLimiter.consume(sourceKey(request))
+        if (!sourceDecision.allowed) {
+          rejectUpgrade(socket, 429, {
+            ...rateLimitHeaders(sourceDecision),
+            'cache-control': 'no-store',
+            'x-correlation-id': correlationId,
+          })
+          return
+        }
         const path = new URL(request.url ?? '/', 'http://127.0.0.1').pathname
         if (path !== NODE_PATH) {
           rejectUpgrade(socket, 404)
