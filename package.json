@@ -13,6 +13,8 @@
     "test": "npm run build && node --test test/*.test.js",
     "start": "./scripts/start-mac.sh",
     "start:gateway": "./scripts/start-gateway.sh",
+    "backup": "npm run build --silent && node dist/backup-main.js backup",
+    "restore": "npm run build --silent && node dist/backup-main.js restore",
     "pair:node": "npm run build --silent && node dist/node-pairing-main.js",
     "verify": "npm run typecheck && npm test",
     "verify:runtime": "./scripts/verify-local-runtime.sh"

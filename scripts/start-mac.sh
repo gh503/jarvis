@@ -15,4 +15,5 @@ export DSH_PERMISSION_MODE=workspace-write
 export JARVIS_DATA_DIR="${JARVIS_DATA_DIR:-$ROOT/data}"
 
 PORT="${JARVIS_PORT:-3080}"
-exec "${NPM_BIN:-npm}" exec -- dsh web --patch "$ROOT/cordis.patch.yml" --host 127.0.0.1 --port "$PORT"
+exec node dist/runtime-main.js harness -- \
+  "${NPM_BIN:-npm}" exec -- dsh web --patch "$ROOT/cordis.patch.yml" --host 127.0.0.1 --port "$PORT"

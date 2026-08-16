@@ -12,6 +12,7 @@
 - [总体架构](docs/plan/architecture.md)
 - [开发旅程与里程碑](docs/plan/00-development-journey.md)
 - [完整阶段计划](docs/plan/README.md)
+- [备份与恢复](docs/operations/backup-restore.md)
 - [贡献指南](CONTRIBUTING.md)
 - [安全策略](SECURITY.md)
 
@@ -36,6 +37,7 @@
 - Gateway 可由设备凭据签发短期访问会话；refresh 每次轮换，旧 refresh 复用、Owner 登出或设备撤销都会使会话族失效。
 - Gateway 通过固定 allowlist bridge 访问 loopback Harness；远程会话 API 只返回归一化的标题和最终用户/助手文本，不透传本机路径、内部事件、tool 或 reasoning 数据。
 - Gateway 已提供认证的 `/v1/events` WebSocket：只推送归一化会话事件，支持有界持久化游标重放；重启、游标过期或 Harness 事件中断时明确要求客户端全量刷新。
+- 已提供离线一致性备份和原子恢复命令；运行租约阻止在 Harness 或 Gateway 活跃时复制状态，恢复前校验结构、权限和 SHA-256。
 
 ## 环境要求
 
@@ -116,13 +118,24 @@ JARVIS_OWNER_TOKEN='the-same-local-owner-token' npm run pair:node -- \
 ./scripts/uninstall-launch-agent.sh
 ```
 
+## 备份与恢复
+
+备份和恢复必须在 Harness 与 Gateway 都停止后执行；命令会检查运行租约并拒绝在线操作：
+
+```bash
+npm run backup -- --output backups/jarvis-backup.jarvis
+npm run restore -- --archive backups/jarvis-backup.jarvis
+```
+
+归档包含 Harness 会话、工作区映射、提醒、审计和已有 Gateway 状态，文件权限为 `0600`。它不包含 `.env`、Harness 模型凭据、Keychain 项、Owner Token 或 TLS 私钥。当前归档未加密，应只保存在受保护磁盘；完整停止、验证和跨机器恢复步骤见[备份与恢复指南](docs/operations/backup-restore.md)。
+
 ## 数据与安全
 
 - Harness 会话：`.dsh/sessions/`
 - Jarvis 提醒：`data/reminders.json`
 - Jarvis 审计：`data/audit.jsonl`
 - Gateway 配对、访问会话和有界归一化事件：`data/pairing-state.json`、`data/session-state.json`、`data/event-state.json`
-- API Key：仅存放在未纳入 Git 的 `.env`
+- API Key：存放在未纳入 Git 的 `.env` 或 Harness 本机凭据存储，均不进入备份归档
 - 网络：Harness 始终只限本机回环；Gateway 仅可绑定明确的回环、私网或 overlay IP，非回环强制 TLS，禁止直接暴露到互联网
 
 这是单用户文字版 MVP，尚不包含手机 UI、语音、智能家居、任意终端、文件操作和消息发送。Gateway 已提供认证、设备身份、受控会话 API 和可恢复的实时事件；客户端不得直接暴露或调用 Harness Web 服务。
