@@ -10,8 +10,9 @@ if (!Number.isInteger(configuredPort) || configuredPort < 0 || configuredPort > 
   throw new Error('JARVIS_GATEWAY_PORT must be an integer from 0 to 65535')
 }
 
-const statePath = process.env.JARVIS_PAIRING_STATE
-  ?? join(process.env.JARVIS_DATA_DIR ?? join(process.cwd(), 'data'), 'pairing-state.json')
+const dataPath = process.env.JARVIS_DATA_DIR ?? join(process.cwd(), 'data')
+const statePath = process.env.JARVIS_PAIRING_STATE ?? join(dataPath, 'pairing-state.json')
+const sessionStatePath = process.env.JARVIS_SESSION_STATE ?? join(dataPath, 'session-state.json')
 const bindHost = process.env.JARVIS_GATEWAY_HOST ?? '127.0.0.1'
 const tlsKeyPath = process.env.JARVIS_GATEWAY_TLS_KEY
 const tlsCertPath = process.env.JARVIS_GATEWAY_TLS_CERT
@@ -29,8 +30,8 @@ if (tlsKeyPath !== undefined && tlsCertPath !== undefined) {
 }
 
 const gateway = tls === undefined
-  ? createJarvisGateway({ ownerToken, pairingStatePath: statePath, bindHost })
-  : createJarvisGateway({ ownerToken, pairingStatePath: statePath, bindHost, tls })
+  ? createJarvisGateway({ ownerToken, pairingStatePath: statePath, sessionStatePath, bindHost })
+  : createJarvisGateway({ ownerToken, pairingStatePath: statePath, sessionStatePath, bindHost, tls })
 const running = await gateway.start(configuredPort)
 console.log(`Jarvis Gateway listening on ${running.origin}`)
 

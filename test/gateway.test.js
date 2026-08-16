@@ -11,6 +11,7 @@ import { NodeAgent } from '../dist/node-agent.js'
 import { MAC_NODE_CAPABILITIES } from '../dist/node-capabilities.js'
 import { NodePolicy } from '../dist/node-command.js'
 import { PairingAuthority, createDeviceIdentity } from '../dist/pairing.js'
+import { SessionAuthority } from '../dist/sessions.js'
 
 const ownerToken = 'owner-token-for-gateway-tests'
 
@@ -201,6 +202,154 @@ test('runs authenticated pairing, device rotation, and owner revocation over ver
     assert.equal(rejectedRotation.status, 400)
   } finally {
     await service.stop()
+  }
+})
+
+test('issues, refreshes, inventories, and revokes device-bound access sessions', async () => {
+  let now = 10_000
+  const authority = new PairingAuthority()
+  const credential = issueCredential(authority)
+  const sessions = new SessionAuthority({
+    now: () => now,
+    accessTtlMs: 1_000,
+    refreshTtlMs: 10_000,
+  })
+  const service = createJarvisGateway({ ownerToken, authority, sessions })
+  const gateway = await service.start()
+  const deviceHeaders = { authorization: `Device ${credential}`, 'content-type': 'application/json' }
+  const ownerHeaders = { authorization: `Bearer ${ownerToken}` }
+  let lastCreateResponse
+  const createSession = async () => {
+    const response = await request(gateway, '/v1/sessions', {
+      method: 'POST', headers: deviceHeaders, body: JSON.stringify({ nodeId: 'node-1' }),
+    })
+    assert.equal(response.status, 201)
+    lastCreateResponse = response
+    return response.json()
+  }
+  try {
+    const unauthorized = await request(gateway, '/v1/sessions')
+    assert.equal(unauthorized.status, 401)
+    const badDevice = await request(gateway, '/v1/sessions', {
+      method: 'POST',
+      headers: { authorization: 'Device invalid-device-credential', 'content-type': 'application/json' },
+      body: JSON.stringify({ nodeId: 'node-1' }),
+    })
+    assert.equal(badDevice.status, 401)
+
+    const first = await createSession()
+    assert.equal(lastCreateResponse.headers.get('cache-control'), 'no-store')
+    const current = await request(gateway, '/v1/sessions/current', {
+      headers: { authorization: `Session ${first.accessToken}` },
+    })
+    assert.equal(current.status, 200)
+    assert.equal((await current.json()).nodeId, 'node-1')
+
+    const inventory = await request(gateway, '/v1/sessions', { headers: ownerHeaders })
+    assert.equal(inventory.status, 200)
+    const inventoryText = await inventory.text()
+    assert.doesNotMatch(inventoryText, new RegExp(first.accessToken))
+    assert.doesNotMatch(inventoryText, new RegExp(first.refreshToken))
+    assert.equal(JSON.parse(inventoryText).sessions[0].sessionId, first.sessionId)
+
+    now += 500
+    const refreshedResponse = await request(gateway, '/v1/sessions/refresh', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ refreshToken: first.refreshToken }),
+    })
+    assert.equal(refreshedResponse.status, 200)
+    const refreshed = await refreshedResponse.json()
+    assert.equal((await request(gateway, '/v1/sessions/current', {
+      headers: { authorization: `Session ${first.accessToken}` },
+    })).status, 401)
+    assert.equal((await request(gateway, '/v1/sessions/current', {
+      headers: { authorization: `Session ${refreshed.accessToken}` },
+    })).status, 200)
+
+    const reused = await request(gateway, '/v1/sessions/refresh', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ refreshToken: first.refreshToken }),
+    })
+    assert.equal(reused.status, 401)
+    assert.equal((await reused.json()).code, 'refresh_reuse_detected')
+    assert.equal((await request(gateway, '/v1/sessions/current', {
+      headers: { authorization: `Session ${refreshed.accessToken}` },
+    })).status, 401)
+
+    const ownerRevoked = await createSession()
+    assert.equal((await request(gateway, `/v1/sessions/${ownerRevoked.sessionId}`, {
+      method: 'DELETE', headers: ownerHeaders,
+    })).status, 204)
+    assert.equal((await request(gateway, '/v1/sessions/current', {
+      headers: { authorization: `Session ${ownerRevoked.accessToken}` },
+    })).status, 401)
+
+    const deviceRevoked = await createSession()
+    assert.equal((await request(gateway, '/v1/devices/node-1', {
+      method: 'DELETE', headers: ownerHeaders,
+    })).status, 204)
+    assert.equal((await request(gateway, '/v1/sessions/current', {
+      headers: { authorization: `Session ${deviceRevoked.accessToken}` },
+    })).status, 401)
+    assert.equal(sessions.get(deviceRevoked.sessionId).revokeReason, 'device')
+  } finally {
+    await service.stop()
+  }
+})
+
+test('fails closed when persisted device revocation precedes session revocation', async () => {
+  const authority = new PairingAuthority()
+  const credential = issueCredential(authority)
+  const sessions = new SessionAuthority()
+  const tokens = sessions.issue('node-1')
+  assert.equal(authority.authenticate('node-1', credential), true)
+  assert.equal(authority.revoke('node-1'), true)
+
+  const service = createJarvisGateway({ ownerToken, authority, sessions })
+  const gateway = await service.start()
+  try {
+    const response = await request(gateway, '/v1/sessions/current', {
+      headers: { authorization: `Session ${tokens.accessToken}` },
+    })
+    assert.equal(response.status, 401)
+    assert.equal(sessions.get(tokens.sessionId).revokeReason, 'device')
+  } finally {
+    await service.stop()
+  }
+})
+
+test('restores Gateway access sessions from digest-only state after restart', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'jarvis-gateway-sessions-'))
+  const sessionStatePath = join(directory, 'session-state.json')
+  const authority = new PairingAuthority()
+  const credential = issueCredential(authority)
+  let service = createJarvisGateway({ ownerToken, authority, sessionStatePath })
+  let gateway = await service.start()
+  try {
+    const issuedResponse = await request(gateway, '/v1/sessions', {
+      method: 'POST',
+      headers: { authorization: `Device ${credential}`, 'content-type': 'application/json' },
+      body: JSON.stringify({ nodeId: 'node-1' }),
+    })
+    assert.equal(issuedResponse.status, 201)
+    const issued = await issuedResponse.json()
+    await service.stop()
+
+    const stored = await readFile(sessionStatePath, 'utf8')
+    assert.doesNotMatch(stored, new RegExp(issued.accessToken))
+    assert.doesNotMatch(stored, new RegExp(issued.refreshToken))
+    service = createJarvisGateway({ ownerToken, authority, sessionStatePath })
+    gateway = await service.start()
+    const restored = await request(gateway, '/v1/sessions/current', {
+      headers: { authorization: `Session ${issued.accessToken}` },
+    })
+    assert.equal(restored.status, 200)
+    assert.equal((await restored.json()).sessionId, issued.sessionId)
+  } finally {
+    await service.stop()
+    await rm(directory, { recursive: true, force: true })
   }
 })
 
