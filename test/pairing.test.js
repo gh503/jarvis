@@ -1,6 +1,9 @@
 import assert from 'node:assert/strict'
+import { mkdtemp, readFile, rm, stat } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import test from 'node:test'
-import { PairingAuthority, createDeviceIdentity } from '../dist/pairing.js'
+import { FilePairingStateStore, PairingAuthority, createDeviceIdentity } from '../dist/pairing.js'
 
 const requestInput = (identity, overrides = {}) => ({
   nodeId: 'node-1',
@@ -84,6 +87,30 @@ test('revocation blocks current and future authentication', () => {
   assert.equal(authority.authenticate('node-1', issued.credential), false)
   assert.equal(authority.revoke('node-1'), false)
   assert.throws(() => authority.rotate('node-1', issued.credential), /invalid or revoked/)
+})
+
+test('persists credential digests and revocation across authority restart', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'jarvis-pairing-'))
+  try {
+    const path = join(directory, 'pairing-state.json')
+    const identity = createDeviceIdentity()
+    const firstAuthority = new PairingAuthority(() => 1_000, 60_000, new FilePairingStateStore(path))
+    const request = firstAuthority.createRequest(requestInput(identity))
+    const issued = firstAuthority.confirm(request.requestId, request.verificationCode)
+    const stored = await readFile(path, 'utf8')
+    assert.doesNotMatch(stored, new RegExp(issued.credential))
+    assert.equal((await stat(path)).mode & 0o777, 0o600)
+
+    const restarted = new PairingAuthority(() => 1_000, 60_000, new FilePairingStateStore(path))
+    assert.equal(restarted.authenticate('node-1', issued.credential), true)
+    assert.throws(() => restarted.confirm(request.requestId, request.verificationCode), /already been used/)
+    assert.equal(restarted.revoke('node-1'), true)
+
+    const restoredAgain = new PairingAuthority(() => 1_000, 60_000, new FilePairingStateStore(path))
+    assert.equal(restoredAgain.authenticate('node-1', issued.credential), false)
+  } finally {
+    await rm(directory, { recursive: true, force: true })
+  }
 })
 
 test('rejects unsafe pairing data and unsupported platforms', () => {

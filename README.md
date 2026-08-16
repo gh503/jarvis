@@ -72,7 +72,7 @@ Gateway 原型单独启动，必须通过环境变量提供 Owner Token：
 JARVIS_OWNER_TOKEN='use-a-local-secret-of-at-least-16-characters' npm run start:gateway
 ```
 
-它只监听 `127.0.0.1:3090`，当前设备状态保存在内存中，不是可直接暴露给手机的生产 Gateway；正式远程访问还需要持久化、TLS/private overlay、WebSocket 事件和限流。
+它只监听 `127.0.0.1:3090`，配对状态默认原子写入未纳入 Git 的 `data/pairing-state.json`；当前仍不是可直接暴露给手机的生产 Gateway，正式远程访问还需要 TLS/private overlay、WebSocket 事件和限流。
 
 确认前台运行正常后执行：
 

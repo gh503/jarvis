@@ -1,4 +1,6 @@
 import { createHash, generateKeyPairSync, randomBytes, randomInt, timingSafeEqual } from 'node:crypto'
+import { chmodSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs'
+import { dirname } from 'node:path'
 
 export const DEFAULT_PAIRING_TTL_MS = 5 * 60_000
 
@@ -29,6 +31,24 @@ export interface IssuedCredential {
   issuedAt: number
 }
 
+export interface PairingStateSnapshot {
+  version: 1
+  requests: Array<PairingRequest & { used: boolean }>
+  devices: Array<{
+    nodeId: string
+    publicKey: string
+    credentialDigest: string
+    generation: number
+    issuedAt: number
+    revoked: boolean
+  }>
+}
+
+export interface PairingStateStore {
+  load(): PairingStateSnapshot | undefined
+  save(snapshot: PairingStateSnapshot): void
+}
+
 interface CredentialRecord {
   nodeId: string
   publicKey: string
@@ -40,6 +60,28 @@ interface CredentialRecord {
 
 interface PendingPairing extends PairingRequest {
   used: boolean
+}
+
+export class FilePairingStateStore implements PairingStateStore {
+  constructor(readonly path: string) {}
+
+  load(): PairingStateSnapshot | undefined {
+    try {
+      return JSON.parse(readFileSync(this.path, 'utf8')) as PairingStateSnapshot
+    } catch (error: unknown) {
+      if (error instanceof Error && 'code' in error && error.code === 'ENOENT') return undefined
+      throw new Error('pairing state could not be read')
+    }
+  }
+
+  save(snapshot: PairingStateSnapshot): void {
+    mkdirSync(dirname(this.path), { recursive: true, mode: 0o700 })
+    const temporary = `${this.path}.${process.pid}.${randomBytes(8).toString('hex')}.tmp`
+    writeFileSync(temporary, `${JSON.stringify(snapshot, null, 2)}\n`, { encoding: 'utf8', mode: 0o600, flag: 'wx' })
+    chmodSync(temporary, 0o600)
+    renameSync(temporary, this.path)
+    chmodSync(this.path, 0o600)
+  }
 }
 
 function validateIdentifier(value: string, field: string): string {
@@ -90,10 +132,12 @@ export class PairingAuthority {
   constructor(
     private readonly now: () => number = Date.now,
     private readonly pairingTtlMs = DEFAULT_PAIRING_TTL_MS,
+    private readonly store?: PairingStateStore,
   ) {
     if (!Number.isInteger(pairingTtlMs) || pairingTtlMs < 1_000) {
       throw new RangeError('pairingTtlMs must be at least one second')
     }
+    this.restore(this.store?.load())
   }
 
   createRequest(input: PairingRequestInput): PairingRequest {
@@ -112,6 +156,7 @@ export class PairingAuthority {
       used: false,
     }
     this.requests.set(request.requestId, request)
+    this.persist()
     return { ...request }
   }
 
@@ -144,7 +189,66 @@ export class PairingAuthority {
     const record = this.devices.get(nodeId)
     if (record === undefined || record.revoked) return false
     record.revoked = true
+    this.persist()
     return true
+  }
+
+  private persist(): void {
+    this.store?.save({
+      version: 1,
+      requests: [...this.requests.values()].map(request => ({ ...request })),
+      devices: [...this.devices.values()].map(device => ({
+        nodeId: device.nodeId,
+        publicKey: device.publicKey,
+        credentialDigest: device.credentialDigest.toString('base64url'),
+        generation: device.generation,
+        issuedAt: device.issuedAt,
+        revoked: device.revoked,
+      })),
+    })
+  }
+
+  private restore(snapshot: PairingStateSnapshot | undefined): void {
+    if (snapshot === undefined) return
+    if (snapshot.version !== 1 || !Array.isArray(snapshot.requests) || !Array.isArray(snapshot.devices)) {
+      throw new Error('pairing state has an unsupported format')
+    }
+    for (const request of snapshot.requests) {
+      if (typeof request.requestId !== 'string' || !/^[A-Za-z0-9_-]{16,64}$/.test(request.requestId)
+        || typeof request.verificationCode !== 'string' || !/^\d{6}$/.test(request.verificationCode)
+        || typeof request.expiresAt !== 'number' || !Number.isFinite(request.expiresAt)
+        || typeof request.used !== 'boolean') throw new Error('pairing state contains an invalid request')
+      const restored: PendingPairing = {
+        requestId: request.requestId,
+        nodeId: validateIdentifier(request.nodeId, 'nodeId'),
+        publicKey: validatePublicKey(request.publicKey),
+        displayName: validateText(request.displayName, 'displayName'),
+        platform: request.platform,
+        verificationCode: request.verificationCode,
+        expiresAt: request.expiresAt,
+        used: request.used,
+      }
+      if (restored.platform !== 'macos') throw new Error('pairing state contains an unsupported platform')
+      if (this.requests.has(restored.requestId)) throw new Error('pairing state contains duplicate requests')
+      this.requests.set(restored.requestId, restored)
+    }
+    for (const device of snapshot.devices) {
+      if (typeof device.credentialDigest !== 'string' || typeof device.generation !== 'number'
+        || !Number.isInteger(device.generation) || device.generation < 1
+        || typeof device.issuedAt !== 'number' || !Number.isFinite(device.issuedAt)
+        || typeof device.revoked !== 'boolean') throw new Error('pairing state contains an invalid device')
+      const digest = Buffer.from(device.credentialDigest, 'base64url')
+      const restored: CredentialRecord = {
+        nodeId: validateIdentifier(device.nodeId, 'nodeId'),
+        publicKey: validatePublicKey(device.publicKey),
+        credentialDigest: digest,
+        generation: device.generation,
+        issuedAt: device.issuedAt,
+        revoked: device.revoked,
+      }
+      if (digest.length !== 32 || this.devices.has(restored.nodeId)) throw new Error('pairing state contains duplicate or invalid devices')
+      this.devices.set(restored.nodeId, restored)
+    }
   }
 
   private requireAuthenticated(nodeId: string, credential: string): CredentialRecord {
@@ -166,6 +270,7 @@ export class PairingAuthority {
       issuedAt,
       revoked: false,
     })
+    this.persist()
     return { nodeId, publicKey, credential, generation, issuedAt }
   }
 }

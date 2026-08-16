@@ -1,12 +1,13 @@
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http'
 import { randomUUID, timingSafeEqual } from 'node:crypto'
-import { PairingAuthority } from './pairing.js'
+import { FilePairingStateStore, PairingAuthority } from './pairing.js'
 
 const MAX_BODY_BYTES = 32 * 1024
 
 export interface JarvisGatewayOptions {
   ownerToken: string
   authority?: PairingAuthority
+  pairingStatePath?: string
   maxBodyBytes?: number
 }
 
@@ -80,7 +81,11 @@ export function createJarvisGateway(options: JarvisGatewayOptions): {
   stop(): Promise<void>
 } {
   if (options.ownerToken.length < 16) throw new Error('ownerToken must contain at least 16 characters')
-  const authority = options.authority ?? new PairingAuthority()
+  const authority = options.authority ?? new PairingAuthority(
+    undefined,
+    undefined,
+    options.pairingStatePath === undefined ? undefined : new FilePairingStateStore(options.pairingStatePath),
+  )
   const maxBodyBytes = options.maxBodyBytes ?? MAX_BODY_BYTES
   if (!Number.isInteger(maxBodyBytes) || maxBodyBytes < 1) throw new RangeError('maxBodyBytes must be positive')
   let server: Server | undefined
