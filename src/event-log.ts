@@ -3,6 +3,7 @@ import { chmodSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'n
 import { dirname } from 'node:path'
 import type { ConversationMessage } from './harness-bridge.js'
 import type { MobileApproval, MobileApprovalOutcome } from './approval.js'
+import type { DeviceApprovalRequest, DeviceApprovalOutcome } from './device-approval.js'
 
 const DEFAULT_MAX_EVENTS = 512
 const DEFAULT_MAX_BYTES = 8 * 1024 * 1024
@@ -19,6 +20,8 @@ export type JarvisEventPayload =
   | { type: 'conversation.error'; conversationId: string; code: 'harness_agent_error' }
   | { type: 'approval.pending'; approval: MobileApproval }
   | { type: 'approval.resolved'; approvalId: string; conversationId: string; outcome: MobileApprovalOutcome | 'cancelled' | 'unavailable' }
+  | { type: 'device.approval.pending'; approval: DeviceApprovalRequest }
+  | { type: 'device.approval.resolved'; approvalId: string; outcome: DeviceApprovalOutcome }
   | { type: 'sync.required'; reason: SyncReason }
 
 export type JarvisEvent = JarvisEventPayload & {
@@ -107,6 +110,18 @@ function validApproval(value: unknown): value is MobileApproval {
     && (value.blockReason === 'evidence_missing' || value.blockReason === 'unsupported_action')
 }
 
+function validDeviceApproval(value: unknown): value is DeviceApprovalRequest {
+  return record(value) && exactFields(value, [
+    'approvalId', 'capability', 'externalEntityId', 'service', 'expectedState', 'digest', 'risk', 'expiresAt',
+  ]) && validId(value.approvalId)
+    && (value.capability === 'lock.set' || value.capability === 'alarm.set')
+    && typeof value.externalEntityId === 'string' && value.externalEntityId.length > 0 && value.externalEntityId.length <= 256
+    && typeof value.service === 'string' && value.service.length > 0 && value.service.length <= 64
+    && typeof value.expectedState === 'string' && value.expectedState.length > 0 && value.expectedState.length <= 128
+    && typeof value.digest === 'string' && /^[0-9a-f]{64}$/.test(value.digest)
+    && value.risk === 'high' && typeof value.expiresAt === 'number' && Number.isFinite(value.expiresAt)
+}
+
 function validPayload(value: Record<string, unknown>): boolean {
   if (value.type === 'conversation.created') {
     return exactFields(value, ['version', 'eventId', 'cursor', 'occurredAt', 'type', 'conversation'])
@@ -138,6 +153,14 @@ function validPayload(value: Record<string, unknown>): boolean {
       && validId(value.approvalId) && validId(value.conversationId)
       && (value.outcome === 'allowed-once' || value.outcome === 'rejected'
         || value.outcome === 'cancelled' || value.outcome === 'unavailable')
+  }
+  if (value.type === 'device.approval.pending') {
+    return exactFields(value, ['version', 'eventId', 'cursor', 'occurredAt', 'type', 'approval'])
+      && validDeviceApproval(value.approval)
+  }
+  if (value.type === 'device.approval.resolved') {
+    return exactFields(value, ['version', 'eventId', 'cursor', 'occurredAt', 'type', 'approvalId', 'outcome'])
+      && validId(value.approvalId) && (value.outcome === 'allowed-once' || value.outcome === 'rejected')
   }
   return value.type === 'sync.required' && exactFields(value, ['version', 'eventId', 'cursor', 'occurredAt', 'type', 'reason'])
     && (value.reason === 'gateway_restarted' || value.reason === 'harness_disconnected')

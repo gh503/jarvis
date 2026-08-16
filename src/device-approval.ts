@@ -1,4 +1,5 @@
 import { APPROVAL_TTL_MS, ApprovalLedger, commandDigest } from './approval.js'
+import type { JarvisEventPayload } from './event-log.js'
 
 export type HighRiskDeviceCapability = 'lock.set' | 'alarm.set'
 
@@ -48,6 +49,7 @@ export interface DeviceApprovalSource {
     outcome: DeviceApprovalOutcome,
     idempotencyKey: string,
   ): DeviceApprovalDecisionReceipt | Promise<DeviceApprovalDecisionReceipt>
+  subscribe?(listener: (event: Extract<JarvisEventPayload, { type: `device.approval.${string}` }>) => void): () => void
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -151,12 +153,14 @@ interface StoredDeviceDecision {
 export class InMemoryDeviceApprovalStore implements DeviceApprovalSource {
   private readonly pending = new Map<string, PendingDeviceApproval>()
   private readonly decisions = new Map<string, StoredDeviceDecision>()
+  private readonly listeners = new Set<(event: Extract<JarvisEventPayload, { type: `device.approval.${string}` }>) => void>()
 
   constructor(private readonly gate = new DeviceApprovalGate()) {}
 
   request(approvalId: string, command: HighRiskDeviceCommand): DeviceApprovalRequest {
     const request = this.gate.request(approvalId, command)
     this.pending.set(request.approvalId, { command, request })
+    this.emit({ type: 'device.approval.pending', approval: { ...request } })
     return request
   }
 
@@ -191,6 +195,16 @@ export class InMemoryDeviceApprovalStore implements DeviceApprovalSource {
     else this.gate.cancel(normalizedApprovalId)
     const receipt = { approvalId: normalizedApprovalId, outcome, accepted: true as const }
     this.decisions.set(normalizedIdempotencyKey, { fingerprint, receipt })
+    this.emit({ type: 'device.approval.resolved', approvalId: normalizedApprovalId, outcome })
     return receipt
+  }
+
+  subscribe(listener: (event: Extract<JarvisEventPayload, { type: `device.approval.${string}` }>) => void): () => void {
+    this.listeners.add(listener)
+    return () => this.listeners.delete(listener)
+  }
+
+  private emit(event: Extract<JarvisEventPayload, { type: `device.approval.${string}` }>): void {
+    for (const listener of this.listeners) listener(event)
   }
 }
