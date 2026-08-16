@@ -1,4 +1,9 @@
 import assert from 'node:assert/strict'
+import { execFileSync, spawnSync } from 'node:child_process'
+import { chmod, mkdtemp, readFile, rm } from 'node:fs/promises'
+import { request as httpsRequest } from 'node:https'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import test from 'node:test'
 import WebSocket from 'ws'
 import { createJarvisGateway } from '../dist/gateway.js'
@@ -10,7 +15,52 @@ import { PairingAuthority, createDeviceIdentity } from '../dist/pairing.js'
 const ownerToken = 'owner-token-for-gateway-tests'
 
 async function request(gateway, path, options = {}) {
-  return fetch(`http://127.0.0.1:${gateway.port}${path}`, options)
+  if (!gateway.secure) return fetch(`${gateway.origin}${path}`, options)
+  return new Promise((resolve, reject) => {
+    const requestValue = httpsRequest(`${gateway.origin}${path}`, {
+      method: options.method,
+      headers: options.headers,
+      rejectUnauthorized: false,
+    }, response => {
+      const chunks = []
+      response.on('data', chunk => chunks.push(Buffer.from(chunk)))
+      response.on('end', () => {
+        const body = Buffer.concat(chunks).toString('utf8')
+        resolve({
+          status: response.statusCode,
+          headers: {
+            get(name) {
+              const value = response.headers[name.toLowerCase()]
+              return Array.isArray(value) ? value.join(', ') : value ?? null
+            },
+          },
+          json: async () => JSON.parse(body),
+          text: async () => body,
+        })
+      })
+    })
+    requestValue.once('error', reject)
+    if (options.body !== undefined) requestValue.write(options.body)
+    requestValue.end()
+  })
+}
+
+async function createTlsMaterial() {
+  const directory = await mkdtemp(join(tmpdir(), 'jarvis-gateway-tls-'))
+  const keyPath = join(directory, 'key.pem')
+  const certPath = join(directory, 'cert.pem')
+  execFileSync('/usr/bin/openssl', [
+    'req', '-x509', '-newkey', 'rsa:2048', '-nodes',
+    '-subj', '/CN=127.0.0.1', '-days', '1',
+    '-keyout', keyPath, '-out', certPath,
+  ], { stdio: 'ignore' })
+  return {
+    tls: { key: await readFile(keyPath), cert: await readFile(certPath) },
+    keyPath,
+    certPath,
+    directory,
+    cleanup: () => rm(directory, { recursive: true, force: true }),
+  }
 }
 
 async function waitFor(predicate, message, timeoutMs = 2_000) {
@@ -56,12 +106,63 @@ test('serves loopback health and protects versioned routes with owner auth', asy
     assert.equal(new URL(`http://127.0.0.1:${gateway.port}`).hostname, '127.0.0.1')
     const health = await request(gateway, '/v1/health')
     assert.equal(health.status, 200)
-    assert.equal((await health.json()).scope, 'loopback-only')
+    assert.deepEqual(await health.json(), {
+      service: 'jarvis-gateway', status: 'ok', scope: 'loopback-only', transport: 'http',
+    })
     const unauthorized = await request(gateway, '/v1/pairing/requests', { method: 'POST' })
     assert.equal(unauthorized.status, 401)
     assert.match(unauthorized.headers.get('x-correlation-id') ?? '', /^[0-9a-f-]{36}$/)
   } finally {
     await service.stop()
+  }
+})
+
+test('rejects public, wildcard, named, and plaintext private-network bindings', () => {
+  assert.throws(() => createJarvisGateway({ ownerToken, bindHost: '0.0.0.0' }), /specific loopback/)
+  assert.throws(() => createJarvisGateway({ ownerToken, bindHost: '8.8.8.8' }), /specific loopback/)
+  assert.throws(() => createJarvisGateway({ ownerToken, bindHost: 'gateway.local' }), /specific loopback/)
+  assert.throws(() => createJarvisGateway({ ownerToken, bindHost: '100.64.0.10' }), /TLS is required/)
+  assert.doesNotThrow(() => createJarvisGateway({
+    ownerToken,
+    bindHost: '100.64.0.10',
+    tls: { key: 'configured-key', cert: 'configured-cert' },
+  }))
+})
+
+test('gateway entrypoint rejects incomplete TLS and permissive private-key files', async () => {
+  const material = await createTlsMaterial()
+  const environment = Object.fromEntries(
+    Object.entries(process.env).filter(([name]) => !name.startsWith('JARVIS_GATEWAY_TLS_')),
+  )
+  try {
+    const incomplete = spawnSync(process.execPath, ['dist/gateway-main.js'], {
+      encoding: 'utf8',
+      env: {
+        ...environment,
+        JARVIS_OWNER_TOKEN: ownerToken,
+        JARVIS_GATEWAY_PORT: '0',
+        JARVIS_GATEWAY_TLS_KEY: material.keyPath,
+      },
+    })
+    assert.notEqual(incomplete.status, 0)
+    assert.match(incomplete.stderr, /must be configured together/)
+
+    await chmod(material.keyPath, 0o644)
+    const permissive = spawnSync(process.execPath, ['dist/gateway-main.js'], {
+      encoding: 'utf8',
+      env: {
+        ...environment,
+        JARVIS_OWNER_TOKEN: ownerToken,
+        JARVIS_GATEWAY_PORT: '0',
+        JARVIS_GATEWAY_TLS_KEY: material.keyPath,
+        JARVIS_GATEWAY_TLS_CERT: material.certPath,
+        JARVIS_DATA_DIR: material.directory,
+      },
+    })
+    assert.notEqual(permissive.status, 0)
+    assert.match(permissive.stderr, /mode 0600 or stricter/)
+  } finally {
+    await material.cleanup()
   }
 })
 
@@ -148,13 +249,14 @@ test('isolates the node WebSocket path and requires authentication as the first 
   }
 })
 
-test('authenticates a real node, preserves idempotency across reconnect, and revokes active access', async () => {
+test('authenticates a real node over WSS, preserves idempotency across reconnect, and revokes active access', async () => {
   const authority = new PairingAuthority()
   const credential = issueCredential(authority)
-  const service = createJarvisGateway({ ownerToken, authority })
+  const material = await createTlsMaterial()
+  const service = createJarvisGateway({ ownerToken, authority, tls: material.tls })
   let gateway = await service.start()
   let executions = 0
-  const socketFactory = () => new WebSocket(`ws://127.0.0.1:${gateway.port}/v1/node`)
+  const socketFactory = endpoint => new WebSocket(endpoint, { rejectUnauthorized: false })
   const agent = new NodeAgent(nodeAgentConfig(
     `wss://127.0.0.1:${gateway.port}/v1/node`,
     credential,
@@ -175,6 +277,10 @@ test('authenticates a real node, preserves idempotency across reconnect, and rev
   }
   let rejectedAgent
   try {
+    assert.equal(gateway.secure, true)
+    assert.match(gateway.origin, /^https:\/\/127\.0\.0\.1:/)
+    const health = await request(gateway, '/v1/health')
+    assert.equal((await health.json()).transport, 'https')
     await agent.start()
     await waitFor(() => agent.state === 'ready', 'node did not become ready')
     assert.deepEqual(service.connectedNodeIds(), ['node-1'])
@@ -214,5 +320,6 @@ test('authenticates a real node, preserves idempotency across reconnect, and rev
     rejectedAgent?.stop()
     agent.stop()
     await service.stop()
+    await material.cleanup()
   }
 })

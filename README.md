@@ -73,7 +73,19 @@ Gateway 原型单独启动，必须通过环境变量提供 Owner Token：
 JARVIS_OWNER_TOKEN='use-a-local-secret-of-at-least-16-characters' npm run start:gateway
 ```
 
-它只监听 `127.0.0.1:3090`，配对状态默认原子写入未纳入 Git 的 `data/pairing-state.json`。节点 WebSocket 同样只接受 loopback 上的 `/v1/node`，并限制消息大小、握手时间和连接数。当前仍不是可直接暴露给手机的生产 Gateway；正式远程访问还需要 TLS/private overlay、外部用户认证与限流，以及可从游标恢复的会话事件。
+默认模式只监听 `127.0.0.1:3090`，配对状态原子写入未纳入 Git 的 `data/pairing-state.json`。节点 WebSocket 只接受 `/v1/node`，并限制消息大小、握手时间和连接数。
+
+Gateway 也支持绑定到明确的 RFC 1918、Tailscale CGNAT 或 IPv6 ULA 地址。非 loopback 模式强制 HTTPS/WSS，拒绝公网地址、主机名和通配地址；TLS 私钥文件权限必须为 `0600` 或更严格：
+
+```bash
+JARVIS_OWNER_TOKEN='use-a-local-secret-of-at-least-16-characters' \
+JARVIS_GATEWAY_HOST='100.64.0.10' \
+JARVIS_GATEWAY_TLS_KEY='/private/path/gateway-key.pem' \
+JARVIS_GATEWAY_TLS_CERT='/private/path/gateway-certificate-chain.pem' \
+npm run start:gateway
+```
+
+证书必须由连接设备信任并覆盖客户端使用的 Gateway 名称。该配置不会安装或管理 Tailscale，也不能直接暴露到互联网；手机访问仍需短期用户会话、速率限制、Harness bridge 和可从游标恢复的事件同步。
 
 Gateway 运行后，可以在另一个终端为当前 Mac 创建身份并完成人工验证码确认：
 
