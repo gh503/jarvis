@@ -12,7 +12,8 @@
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "npm run build && node --test test/*.test.js",
     "start": "./scripts/start-mac.sh",
-    "verify": "npm run typecheck && npm test"
+    "verify": "npm run typecheck && npm test",
+    "verify:runtime": "./scripts/verify-local-runtime.sh"
   },
   "dependencies": {
     "@deepseek-ai/cordis": "4.0.1",
