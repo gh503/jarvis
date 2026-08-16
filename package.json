@@ -19,6 +19,7 @@
     "pair:approve": "npm run build --silent && node dist/pairing-approval-main.js",
     "verify": "npm run typecheck && npm test",
     "verify:runtime": "./scripts/verify-local-runtime.sh",
+    "check:gateway": "./scripts/check-private-gateway.sh",
     "verify:release": "./scripts/verify-release-macos.sh",
     "release:archive": "./scripts/build-release-archive.sh"
   },

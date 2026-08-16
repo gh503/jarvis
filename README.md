@@ -13,6 +13,7 @@
 - [开发旅程与里程碑](docs/plan/00-development-journey.md)
 - [完整阶段计划](docs/plan/README.md)
 - [备份与恢复](docs/operations/backup-restore.md)
+- [私网恢复与 Gateway 诊断](docs/operations/private-network-recovery.md)
 - [v0.1.0 发布说明](docs/releases/v0.1.0.md)
 - [贡献指南](CONTRIBUTING.md)
 - [安全策略](SECURITY.md)
