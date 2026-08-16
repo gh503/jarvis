@@ -28,6 +28,7 @@
     "@deepseek-ai/dsh": "0.1.0-rc.6",
     "@deepseek-ai/dsh-host-webserver": "0.1.0-rc.6",
     "@deepseek-ai/dsh-tools": "0.1.0-rc.6",
+    "mqtt": "5.15.2",
     "ws": "8.21.3"
   },
   "devDependencies": {
