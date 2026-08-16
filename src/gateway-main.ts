@@ -18,6 +18,7 @@ const eventStatePath = process.env.JARVIS_EVENT_STATE ?? join(dataPath, 'event-s
 const runtimeDir = resolve(process.env.JARVIS_RUNTIME_DIR ?? join(process.cwd(), '.jarvis-runtime'))
 const bindHost = process.env.JARVIS_GATEWAY_HOST ?? '127.0.0.1'
 const harnessOrigin = process.env.JARVIS_HARNESS_URL ?? 'http://127.0.0.1:3080'
+const pwaRoot = resolve(process.env.JARVIS_PWA_ROOT ?? join(process.cwd(), 'web'))
 const harnessRequestTimeoutMs = process.env.JARVIS_HARNESS_TIMEOUT_MS === undefined
   ? 10_000
   : Number(process.env.JARVIS_HARNESS_TIMEOUT_MS)
@@ -44,8 +45,8 @@ let gateway: ReturnType<typeof createJarvisGateway>
 
 try {
   gateway = tls === undefined
-    ? createJarvisGateway({ ownerToken, pairingStatePath: statePath, sessionStatePath, eventStatePath, bindHost, harnessOrigin, harnessRequestTimeoutMs })
-    : createJarvisGateway({ ownerToken, pairingStatePath: statePath, sessionStatePath, eventStatePath, bindHost, harnessOrigin, harnessRequestTimeoutMs, tls })
+    ? createJarvisGateway({ ownerToken, pairingStatePath: statePath, sessionStatePath, eventStatePath, bindHost, harnessOrigin, harnessRequestTimeoutMs, pwaRoot })
+    : createJarvisGateway({ ownerToken, pairingStatePath: statePath, sessionStatePath, eventStatePath, bindHost, harnessOrigin, harnessRequestTimeoutMs, pwaRoot, tls })
   const running = await gateway.start(configuredPort)
   console.log(`Jarvis Gateway listening on ${running.origin}`)
 } catch (error) {

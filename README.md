@@ -38,6 +38,7 @@
 - Gateway 可由设备凭据签发短期访问会话；refresh 每次轮换，旧 refresh 复用、Owner 登出或设备撤销都会使会话族失效。
 - Gateway 通过固定 allowlist bridge 访问 loopback Harness；远程会话 API 只返回归一化的标题和最终用户/助手文本，不透传本机路径、内部事件、tool 或 reasoning 数据。
 - Gateway 已提供认证的 `/v1/events` WebSocket：只推送归一化会话事件，支持有界持久化游标重放；重启、游标过期或 Harness 事件中断时明确要求客户端全量刷新。
+- Gateway 已从 `/app/` 提供响应式 PWA 外壳、安装清单和离线应用缓存；未配对时只显示真实连接状态，不缓存或伪装账户数据。真机安装仍待指定首台 iPhone 或 Android 后验收。
 - 已提供离线一致性备份和原子恢复命令；运行租约阻止在 Harness 或 Gateway 活跃时复制状态，恢复前校验结构、权限和 SHA-256。
 
 ## 环境要求
@@ -80,6 +81,8 @@ JARVIS_OWNER_TOKEN='use-a-local-secret-of-at-least-16-characters' npm run start:
 ```
 
 默认模式只监听 `127.0.0.1:3090`，并只连接 `http://127.0.0.1:3080` 的 Harness。可用 `JARVIS_HARNESS_URL` 指向其他 `127.0.0.1` 端口，`JARVIS_HARNESS_TIMEOUT_MS` 默认 10000；非 loopback Harness 地址会在启动前被拒绝。配对状态原子写入未纳入 Git 的 `data/pairing-state.json`。节点和客户端 WebSocket 分别只接受 `/v1/node` 与 `/v1/events`，并各自限制消息大小、握手时间和连接数。
+
+Gateway 启动后可从 `http://127.0.0.1:3090/app/` 打开移动端应用外壳。默认资源目录为项目内 `web/`，部署时可通过 `JARVIS_PWA_ROOT` 指向同一组受审计资源；Gateway 只服务固定清单中的文件，未知 `/app/*` 路径不会访问文件系统。
 
 短期 Session token 可访问 `GET/POST /v1/conversations`、`GET /v1/conversations/:id`、`POST /v1/conversations/:id/messages` 和 `POST /v1/conversations/:id/cancel`。消息只接受最多 16 KiB 的纯文本；远程 slash command 被拒绝。`/v1/events` 不在 URL 携带令牌，第一条消息必须是 `events.authenticate`；同源浏览器或无 Origin 的受信客户端可连接。客户端保存每个事件的 `cursor`，重连时提交该游标；若缓冲已淘汰、Gateway 重启或上游连续性丢失，`events.ready`/`sync.required` 会要求先重新读取会话快照。
 
@@ -145,7 +148,7 @@ npm run restore -- --archive backups/jarvis-backup.jarvis
 - API Key：存放在未纳入 Git 的 `.env` 或 Harness 本机凭据存储，均不进入备份归档
 - 网络：Harness 始终只限本机回环；Gateway 仅可绑定明确的回环、私网或 overlay IP，非回环强制 TLS，禁止直接暴露到互联网
 
-这是单用户文字版 MVP，尚不包含手机 UI、语音、智能家居、任意终端、文件操作和消息发送。Gateway 已提供认证、设备身份、受控会话 API 和可恢复的实时事件；客户端不得直接暴露或调用 Harness Web 服务。
+这是单用户文字版 MVP；手机端目前只有可安装的离线应用外壳，尚未接入设备配对、移动对话、审批、通知，也不包含语音、智能家居、任意终端、文件操作和消息发送。Gateway 已提供认证、设备身份、受控会话 API 和可恢复的实时事件；客户端不得直接暴露或调用 Harness Web 服务。
 
 ## 上游边界
 

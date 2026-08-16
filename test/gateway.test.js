@@ -154,6 +154,64 @@ test('serves loopback health and protects versioned routes with owner auth', asy
   }
 })
 
+test('serves the exact PWA shell routes with restrictive browser headers', async () => {
+  const service = createJarvisGateway({ ownerToken, pwaRoot: join(process.cwd(), 'web') })
+  const gateway = await service.start()
+  try {
+    const root = await request(gateway, '/', { redirect: 'manual' })
+    assert.equal(root.status, 308)
+    assert.equal(root.headers.get('location'), '/app/')
+
+    const index = await request(gateway, '/app/')
+    assert.equal(index.status, 200)
+    assert.match(index.headers.get('content-type') ?? '', /^text\/html/)
+    assert.equal(index.headers.get('cache-control'), 'no-cache')
+    assert.match(index.headers.get('content-security-policy') ?? '', /default-src 'self'/)
+    assert.match(index.headers.get('content-security-policy') ?? '', /frame-ancestors 'none'/)
+    assert.equal(index.headers.get('permissions-policy'), 'camera=(), geolocation=(), microphone=()')
+    assert.equal(index.headers.get('x-content-type-options'), 'nosniff')
+    assert.match(await index.text(), /<title>Jarvis<\/title>/)
+
+    const manifest = await request(gateway, '/app/manifest.webmanifest')
+    assert.equal(manifest.status, 200)
+    assert.match(manifest.headers.get('content-type') ?? '', /^application\/manifest\+json/)
+    assert.deepEqual(await manifest.json(), {
+      id: '/app/',
+      name: 'Jarvis',
+      short_name: 'Jarvis',
+      description: 'Private mobile companion for Jarvis',
+      lang: 'zh-CN',
+      start_url: '/app/',
+      scope: '/app/',
+      display: 'standalone',
+      background_color: '#f5f7f6',
+      theme_color: '#161b1a',
+      icons: [
+        { src: '/app/icon-192.png', sizes: '192x192', type: 'image/png', purpose: 'any' },
+        { src: '/app/icon-512.png', sizes: '512x512', type: 'image/png', purpose: 'any' },
+      ],
+    })
+
+    const head = await request(gateway, '/app/app.css', { method: 'HEAD' })
+    assert.equal(head.status, 200)
+    assert.match(head.headers.get('content-type') ?? '', /^text\/css/)
+    assert.equal(await head.text(), '')
+
+    const icon = await request(gateway, '/app/icon-192.png')
+    assert.equal(icon.status, 200)
+    assert.equal(icon.headers.get('content-type'), 'image/png')
+
+    const missing = await request(gateway, '/app/private-state.json')
+    assert.equal(missing.status, 404)
+    assert.equal(await missing.text(), '')
+    const unsupported = await request(gateway, '/app/', { method: 'POST' })
+    assert.equal(unsupported.status, 405)
+    assert.equal(unsupported.headers.get('allow'), 'GET, HEAD')
+  } finally {
+    await service.stop()
+  }
+})
+
 test('rejects public, wildcard, named, and plaintext private-network bindings', () => {
   assert.throws(() => createJarvisGateway({ ownerToken, bindHost: '0.0.0.0' }), /specific loopback/)
   assert.throws(() => createJarvisGateway({ ownerToken, bindHost: '8.8.8.8' }), /specific loopback/)
