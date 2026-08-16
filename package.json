@@ -12,6 +12,7 @@
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "npm run build && node --test test/*.test.js",
     "start": "./scripts/start-mac.sh",
+    "start:gateway": "./scripts/start-gateway.sh",
     "verify": "npm run typecheck && npm test",
     "verify:runtime": "./scripts/verify-local-runtime.sh"
   },
