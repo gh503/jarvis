@@ -215,6 +215,11 @@ test('serves the exact PWA shell routes with restrictive browser headers', async
     assert.match(head.headers.get('content-type') ?? '', /^text\/css/)
     assert.equal(await head.text(), '')
 
+    const notifications = await request(gateway, '/app/notifications.js?v=11')
+    assert.equal(notifications.status, 200)
+    assert.match(notifications.headers.get('content-type') ?? '', /^text\/javascript/)
+    assert.match(await notifications.text(), /class NotificationCenter/)
+
     const icon = await request(gateway, '/app/icon-192.png')
     assert.equal(icon.status, 200)
     assert.equal(icon.headers.get('content-type'), 'image/png')

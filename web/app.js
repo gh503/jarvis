@@ -1,5 +1,6 @@
-import { ConversationsClient } from './conversations.js?v=10'
-import { BrowserPairing } from './pairing.js?v=10'
+import { ConversationsClient } from './conversations.js?v=11'
+import { BrowserPairing } from './pairing.js?v=11'
+import { NotificationCenter } from './notifications.js?v=11'
 
 const connectionLabel = document.querySelector('#connection-label')
 const gatewayDetail = document.querySelector('#gateway-detail')
@@ -51,6 +52,18 @@ const approvalList = document.querySelector('#approval-list')
 const approvalEmpty = document.querySelector('#approval-empty')
 const approvalNotice = document.querySelector('#approval-notice')
 const syncValue = document.querySelector('#sync-value')
+const notificationList = document.querySelector('#notification-list')
+const notificationEmpty = document.querySelector('#notification-empty')
+const notificationCount = document.querySelectorAll('[data-notification-count]')
+const markNotificationsReadButton = document.querySelector('#mark-notifications-read-button')
+const clearNotificationsButton = document.querySelector('#clear-notifications-button')
+const notificationPermissionButton = document.querySelector('#notification-permission-button')
+const notificationPermissionDetail = document.querySelector('#notification-permission-detail')
+const notificationCategoryInputs = document.querySelectorAll('[data-notification-category]')
+const quietHoursEnabled = document.querySelector('#notification-quiet-hours-enabled')
+const quietHoursStart = document.querySelector('#notification-quiet-hours-start')
+const quietHoursEnd = document.querySelector('#notification-quiet-hours-end')
+const notificationRateInputs = document.querySelectorAll('[data-notification-rate]')
 let installPrompt
 let probeInProgress = false
 let gatewayReachable = false
@@ -59,6 +72,90 @@ let pairingExpiresAt
 let disconnectBusy = false
 let conversationsClient
 let stateForRendering = { conversations: [], approvals: [], approvalSubmittedIds: [] }
+let notificationState = { history: [], unreadCount: 0, preferences: undefined, permission: 'default' }
+let lastPairingPhase = 'loading'
+
+function showView(name) {
+  for (const panel of document.querySelectorAll('[data-view-panel]')) {
+    const active = panel.dataset.viewPanel === name
+    panel.hidden = !active
+    panel.classList.toggle('is-active', active)
+  }
+  for (const button of document.querySelectorAll('[data-view-target]')) {
+    const active = button.dataset.viewTarget === name
+    button.classList.toggle('is-active', active)
+    if (active) button.setAttribute('aria-current', 'page')
+    else button.removeAttribute('aria-current')
+  }
+}
+
+function notificationLabel(notification) {
+  return notification.category === 'approval' ? '审批动态'
+    : notification.category === 'conversation' ? '对话动态' : '连接动态'
+}
+
+function renderNotifications(state = notificationState) {
+  notificationList.replaceChildren()
+  for (const notification of state.history) {
+    const item = document.createElement('li')
+    item.className = `notification-item ${notification.read ? '' : 'is-unread'}`
+    item.dataset.notificationId = notification.id
+    const button = document.createElement('button')
+    button.type = 'button'
+    button.className = 'notification-link'
+    button.dataset.notificationId = notification.id
+    const heading = document.createElement('strong')
+    heading.textContent = notification.title
+    const body = document.createElement('span')
+    body.textContent = notification.body
+    const meta = document.createElement('small')
+    meta.textContent = `${notificationLabel(notification)} · ${formatDate(notification.occurredAt, true)}`
+    button.append(heading, body, meta)
+    item.append(button)
+    notificationList.append(item)
+  }
+  notificationEmpty.hidden = state.history.length > 0
+  notificationList.hidden = state.history.length === 0
+  for (const count of notificationCount) {
+    count.textContent = String(state.unreadCount)
+    count.hidden = state.unreadCount === 0
+  }
+  markNotificationsReadButton.disabled = state.unreadCount === 0
+  clearNotificationsButton.disabled = state.history.length === 0
+  if (state.preferences !== undefined) {
+    for (const input of notificationCategoryInputs) input.checked = state.preferences.categories[input.dataset.notificationCategory]
+    quietHoursEnabled.checked = state.preferences.quietHours.enabled
+    quietHoursStart.value = state.preferences.quietHours.start
+    quietHoursEnd.value = state.preferences.quietHours.end
+    for (const input of notificationRateInputs) input.value = state.preferences.rateLimits[input.dataset.notificationRate]
+  }
+  notificationPermissionDetail.textContent = state.permission === 'granted' ? '已允许系统通知'
+    : state.permission === 'denied' ? '系统通知已拒绝，可在浏览器设置中恢复'
+      : state.permission === 'unsupported' ? '此浏览器不支持系统通知' : '尚未请求系统通知权限'
+  notificationPermissionButton.disabled = state.permission === 'unsupported' || state.permission === 'granted'
+}
+
+function handleNotificationState(state) {
+  notificationState = state
+  renderNotifications(state)
+}
+
+const notificationCenter = new NotificationCenter({
+  onState: handleNotificationState,
+  systemNotify: notification => {
+    if (typeof Notification === 'undefined' || Notification.permission !== 'granted') return
+    const systemNotification = new Notification(notification.title, { body: notification.body, tag: notification.id })
+    systemNotification.onclick = () => {
+      window.focus()
+      if (pairingPhase !== 'paired' || notification.resource === null) return
+      showView(notification.resource.view)
+      if (notification.resource.conversationId !== undefined && conversationsClient !== undefined) {
+        void conversationsClient.select(notification.resource.conversationId)
+      }
+      systemNotification.close()
+    }
+  },
+})
 
 function updateDeviceSummary() {
   const connected = pairingPhase === 'paired'
@@ -97,7 +194,12 @@ function updateDisconnectControl() {
 }
 
 function handlePairingState(state) {
+  const previousPhase = lastPairingPhase
   pairingPhase = state.phase
+  lastPairingPhase = state.phase
+  if ((state.phase === 'unpaired' || state.phase === 'revoked') && previousPhase !== state.phase) {
+    void notificationCenter.clear()
+  }
   pairingExpiresAt = state.expiresAt
   pairButton.disabled = state.phase === 'loading' || state.phase === 'starting'
   pairingSetup.hidden = state.phase === 'paired' || state.phase === 'paired-offline' || state.phase === 'paired-error'
@@ -163,7 +265,9 @@ function handlePairingState(state) {
 }
 
 const pairing = new BrowserPairing(handlePairingState)
-conversationsClient = new ConversationsClient(pairing, handleConversationState)
+conversationsClient = new ConversationsClient(pairing, handleConversationState, {
+  onEvent: event => notificationCenter.ingestEvent(event),
+})
 handlePairingState({ phase: 'loading' })
 
 function formatDate(value, includeDate = false) {
@@ -398,25 +502,35 @@ async function probeGateway() {
   }
 }
 
-function showView(name) {
-  for (const panel of document.querySelectorAll('[data-view-panel]')) {
-    const active = panel.dataset.viewPanel === name
-    panel.hidden = !active
-    panel.classList.toggle('is-active', active)
-  }
-  for (const button of document.querySelectorAll('[data-view-target]')) {
-    const active = button.dataset.viewTarget === name
-    button.classList.toggle('is-active', active)
-    if (active) button.setAttribute('aria-current', 'page')
-    else button.removeAttribute('aria-current')
-  }
-}
-
 for (const button of document.querySelectorAll('[data-view-target]')) {
   button.addEventListener('click', () => showView(button.dataset.viewTarget))
 }
 
 document.querySelector('#open-settings-button').addEventListener('click', () => showView('settings'))
+notificationList.addEventListener('click', event => {
+  const button = event.target instanceof Element ? event.target.closest('[data-notification-id]') : null
+  if (button === null) return
+  const notification = notificationState.history.find(item => item.id === button.dataset.notificationId)
+  if (notification === undefined) return
+  void notificationCenter.markRead(notification.id)
+  if (pairingPhase !== 'paired' || notification.resource === null) return
+  showView(notification.resource.view)
+  if (notification.resource.conversationId !== undefined) void conversationsClient.select(notification.resource.conversationId)
+})
+markNotificationsReadButton.addEventListener('click', () => { void notificationCenter.markAllRead() })
+clearNotificationsButton.addEventListener('click', () => { void notificationCenter.clear() })
+notificationPermissionButton.addEventListener('click', () => { void notificationCenter.requestSystemPermission() })
+for (const input of notificationCategoryInputs) input.addEventListener('change', () => {
+  void notificationCenter.updatePreferences({ categories: { [input.dataset.notificationCategory]: input.checked } })
+})
+for (const input of notificationRateInputs) input.addEventListener('change', () => {
+  void notificationCenter.updatePreferences({ rateLimits: { [input.dataset.notificationRate]: Number(input.value) } })
+})
+for (const input of [quietHoursEnabled, quietHoursStart, quietHoursEnd]) input.addEventListener('change', () => {
+  void notificationCenter.updatePreferences({
+    quietHours: { enabled: quietHoursEnabled.checked, start: quietHoursStart.value, end: quietHoursEnd.value },
+  })
+})
 pairButton.addEventListener('click', async () => {
   try {
     await pairing.begin(deviceName.value)
@@ -527,7 +641,7 @@ if ('serviceWorker' in navigator) {
 }
 
 void probeGateway()
-void pairing.initialize()
+void notificationCenter.initialize().catch(() => {}).finally(() => { void pairing.initialize() })
 window.setInterval(() => { void probeGateway() }, 30_000)
 window.setInterval(() => {
   if (pairingPhase !== 'pending' || pairingExpiresAt === undefined) return
