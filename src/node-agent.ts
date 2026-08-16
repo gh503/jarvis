@@ -25,7 +25,8 @@ export interface NodeAgentTimers {
 
 export interface NodeAgentConfig {
   endpoint: string
-  credential: string
+  credential?: string
+  credentialProvider?: () => Promise<string | undefined>
   registration: Omit<NodeRegistration, 'protocolVersion'>
   policy: NodePolicy
   execute: (command: NodeCommand) => Promise<unknown>
@@ -95,11 +96,17 @@ export class NodeAgent {
   private reconnectHandle: unknown
   private authenticated = false
   private stopped = true
+  private credentialValue: string | undefined
 
   constructor(private readonly config: NodeAgentConfig) {
     const endpoint = new URL(config.endpoint)
     if (endpoint.protocol !== 'wss:') throw new Error('node agent endpoint must use wss://')
-    if (config.credential.length < 1) throw new Error('node agent credential must not be empty')
+    if ((config.credential === undefined) === (config.credentialProvider === undefined)) {
+      throw new Error('node agent requires exactly one credential source')
+    }
+    if (config.credential !== undefined && config.credential.length < 1) {
+      throw new Error('node agent credential must not be empty')
+    }
     this.registration = createNodeRegistration(config.registration)
     this.socketFactory = config.socketFactory ?? defaultSocketFactory
     this.timers = config.timers ?? defaultTimers()
@@ -121,9 +128,22 @@ export class NodeAgent {
     return this.stateValue
   }
 
-  start(): void {
+  async start(): Promise<void> {
     if (!this.stopped) return
     this.stopped = false
+    try {
+      const credential = this.config.credentialProvider === undefined
+        ? this.config.credential
+        : await this.config.credentialProvider()
+      if (credential === undefined || credential.length < 1) throw new Error('node agent credential is unavailable')
+      if (this.stopped) return
+      this.credentialValue = credential
+    } catch {
+      this.stopped = true
+      this.stateValue = 'stopped'
+      this.credentialValue = undefined
+      throw new Error('node agent credential load failed')
+    }
     this.connect()
   }
 
@@ -131,6 +151,7 @@ export class NodeAgent {
     this.stopped = true
     this.stateValue = 'stopped'
     this.authenticated = false
+    this.credentialValue = undefined
     if (this.reconnectHandle !== undefined) {
       this.timers.clearTimeout(this.reconnectHandle)
       this.reconnectHandle = undefined
@@ -158,7 +179,7 @@ export class NodeAgent {
       type: 'node.authenticate',
       protocolVersion: this.registration.protocolVersion,
       nodeId: this.registration.nodeId,
-      credential: this.config.credential,
+      credential: this.credentialValue,
     })
   }
 
