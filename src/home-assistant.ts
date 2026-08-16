@@ -1,6 +1,38 @@
 import type { DeviceState, DeviceSource, DiscoveredDevice } from './device-registry.js'
+import { commandDigest } from './approval.js'
 
 export type HomeAssistantAdapterState = 'stopped' | 'connecting' | 'syncing' | 'ready' | 'degraded'
+export type HomeAssistantCommandState = 'succeeded' | 'acknowledged-unconfirmed' | 'failed' | 'timed-out' | 'unavailable'
+export type HomeAssistantCommandPhase = 'submitted' | 'acknowledged' | HomeAssistantCommandState
+
+export interface HomeAssistantServiceCommand {
+  commandId: string
+  idempotencyKey: string
+  capability: 'switch.set' | 'light.set' | 'media.play_pause'
+  externalEntityId: string
+  service: string
+  serviceData?: Readonly<Record<string, unknown>>
+  expectedState: string
+  timeoutMs: number
+}
+
+export interface HomeAssistantCommandResult {
+  commandId: string
+  idempotencyKey: string
+  capability: HomeAssistantServiceCommand['capability']
+  state: HomeAssistantCommandState
+  acknowledged: boolean
+  observedState?: string
+  error?: string
+}
+
+export interface HomeAssistantCommandTransition {
+  commandId: string
+  idempotencyKey: string
+  phase: HomeAssistantCommandPhase
+  observedState?: string
+  error?: string
+}
 
 export interface HomeAssistantSocketMessage {
   data: string
@@ -27,6 +59,7 @@ export interface HomeAssistantAdapterOptions {
   onState: (source: DeviceSource, externalEntityId: string, state: DeviceState) => void
   onUnavailable?: (source: DeviceSource, externalEntityId: string) => void
   onStatus?: (state: HomeAssistantAdapterState) => void
+  onCommand?: (transition: HomeAssistantCommandTransition) => void
   timers?: HomeAssistantTimers
   reconnectBaseMs?: number
   reconnectMaxMs?: number
@@ -46,8 +79,27 @@ const ENTITY_CAPABILITIES: Readonly<Record<string, string>> = Object.freeze({
   lock: 'lock.set',
   alarm_control_panel: 'alarm.set',
 })
+const LOW_RISK_SERVICES: Readonly<Record<HomeAssistantServiceCommand['capability'], readonly string[]>> = Object.freeze({
+  'switch.set': ['turn_on', 'turn_off'],
+  'light.set': ['turn_on', 'turn_off'],
+  'media.play_pause': ['media_play', 'media_pause'],
+})
 
 type WireRecord = Record<string, unknown>
+
+interface KnownEntity {
+  capability: string
+  sourceTimestamp: number
+  state: string
+}
+
+interface PendingCommand {
+  command: HomeAssistantServiceCommand
+  requestId: number
+  resolve: (result: HomeAssistantCommandResult) => void
+  acknowledged: boolean
+  timer: unknown
+}
 
 function isRecord(value: unknown): value is WireRecord {
   return typeof value === 'object' && value !== null && !Array.isArray(value)
@@ -148,6 +200,7 @@ export class HomeAssistantAdapter {
   private readonly onState: (source: DeviceSource, externalEntityId: string, state: DeviceState) => void
   private readonly onUnavailable: ((source: DeviceSource, externalEntityId: string) => void) | undefined
   private readonly onStatus: ((state: HomeAssistantAdapterState) => void) | undefined
+  private readonly onCommand: ((transition: HomeAssistantCommandTransition) => void) | undefined
   private readonly timers: HomeAssistantTimers
   private readonly reconnectBaseMs: number
   private readonly reconnectMaxMs: number
@@ -159,7 +212,9 @@ export class HomeAssistantAdapter {
   private pendingSnapshotId: number | undefined
   private state: HomeAssistantAdapterState = 'stopped'
   private reconnectAttempt = 0
-  private knownEntities = new Map<string, number>()
+  private knownEntities = new Map<string, KnownEntity>()
+  private readonly pendingCommands = new Map<number, PendingCommand>()
+  private readonly commandOutcomes = new Map<string, { fingerprint: string; promise: Promise<HomeAssistantCommandResult> }>()
 
   constructor(options: HomeAssistantAdapterOptions) {
     this.url = validateUrl(options.url)
@@ -169,6 +224,7 @@ export class HomeAssistantAdapter {
     this.onState = options.onState
     this.onUnavailable = options.onUnavailable
     this.onStatus = options.onStatus
+    this.onCommand = options.onCommand
     this.timers = options.timers ?? {
       setTimeout: (callback, delayMs) => setTimeout(callback, delayMs),
       clearTimeout: handle => clearTimeout(handle as ReturnType<typeof setTimeout>),
@@ -199,7 +255,65 @@ export class HomeAssistantAdapter {
     this.notifyStatus()
     const socket = this.socket
     this.socket = undefined
+    this.failPendingCommands('unavailable', 'Home Assistant adapter stopped')
     socket?.close()
+  }
+
+  callService(command: HomeAssistantServiceCommand): Promise<HomeAssistantCommandResult> {
+    const normalized = this.validateCommand(command)
+    const fingerprint = commandDigest({
+      idempotencyKey: normalized.idempotencyKey,
+      capability: normalized.capability,
+      externalEntityId: normalized.externalEntityId,
+      service: normalized.service,
+      serviceData: normalized.serviceData ?? {},
+      expectedState: normalized.expectedState,
+      timeoutMs: normalized.timeoutMs,
+    })
+    const existing = this.commandOutcomes.get(normalized.idempotencyKey)
+    if (existing !== undefined) {
+      if (existing.fingerprint === fingerprint) return existing.promise
+      return Promise.resolve(this.finalResult(normalized, 'failed', false, undefined, 'idempotency key was reused for a different command'))
+    }
+    if (this.state !== 'ready' || this.socket === undefined) {
+      const result = this.finalResult(normalized, 'unavailable', false, undefined, 'Home Assistant adapter is not ready')
+      const promise = Promise.resolve(result)
+      this.commandOutcomes.set(normalized.idempotencyKey, { fingerprint, promise })
+      return promise
+    }
+    const knownEntity = this.knownEntities.get(normalized.externalEntityId)
+    if (knownEntity === undefined) {
+      const result = this.finalResult(normalized, 'unavailable', false, undefined, 'Home Assistant entity is not currently available')
+      const promise = Promise.resolve(result)
+      this.commandOutcomes.set(normalized.idempotencyKey, { fingerprint, promise })
+      return promise
+    }
+    if (knownEntity.capability !== normalized.capability) {
+      const result = this.finalResult(normalized, 'failed', false, undefined, 'command capability does not match the registered entity')
+      const promise = Promise.resolve(result)
+      this.commandOutcomes.set(normalized.idempotencyKey, { fingerprint, promise })
+      return promise
+    }
+    let resolveResult!: (result: HomeAssistantCommandResult) => void
+    const promise = new Promise<HomeAssistantCommandResult>(resolve => { resolveResult = resolve })
+    this.commandOutcomes.set(normalized.idempotencyKey, { fingerprint, promise })
+    const requestId = this.send({
+      type: 'call_service',
+      domain: entityDomain(normalized.externalEntityId),
+      service: normalized.service,
+      service_data: normalized.serviceData ?? {},
+      target: { entity_id: normalized.externalEntityId },
+    })
+    const timer = this.timers.setTimeout(() => {
+      const pending = this.pendingCommands.get(requestId)
+      if (pending === undefined) return
+      this.finishCommand(pending, pending.acknowledged ? 'acknowledged-unconfirmed' : 'timed-out', pending.acknowledged ? undefined : 'Home Assistant service acknowledgement timed out')
+    }, normalized.timeoutMs)
+    this.pendingCommands.set(requestId, { command: normalized, requestId, resolve: resolveResult, acknowledged: false, timer })
+    this.emitCommand(normalized, 'submitted')
+    const currentState = this.knownEntities.get(normalized.externalEntityId)?.state
+    if (currentState === normalized.expectedState) this.emitCommand(normalized, 'submitted', currentState)
+    return promise
   }
 
   private connect(): void {
@@ -272,7 +386,11 @@ export class HomeAssistantAdapter {
       }
       try {
         const snapshot = normalizedSnapshot(message.result, this.instance)
-        this.knownEntities = new Map(snapshot.map(device => [device.externalEntityId, device.reportedState?.sourceTimestamp ?? 0]))
+        this.knownEntities = new Map(snapshot.map(device => [device.externalEntityId, {
+          capability: device.capabilities[0] ?? 'unknown',
+          sourceTimestamp: device.reportedState?.sourceTimestamp ?? 0,
+          state: typeof device.reportedState?.value === 'string' ? device.reportedState.value : '',
+        }]))
         this.onSnapshot(snapshot)
       } catch (error) {
         this.protocolFailure(error instanceof Error ? error.message : 'Home Assistant snapshot is invalid')
@@ -292,7 +410,25 @@ export class HomeAssistantAdapter {
       this.notifyStatus()
       return
     }
+    const pending = this.pendingCommands.get(message.id)
+    if (pending !== undefined) {
+      this.receiveCommandResult(message, pending)
+      return
+    }
     this.protocolFailure('unexpected Home Assistant response id')
+  }
+
+  private receiveCommandResult(message: WireRecord, pending: PendingCommand): void {
+    if (!message.success) {
+      this.finishCommand(pending, 'failed', 'Home Assistant rejected the service call')
+      return
+    }
+    pending.acknowledged = true
+    this.emitCommand(pending.command, 'acknowledged')
+    const observedState = this.knownEntities.get(pending.command.externalEntityId)?.state
+    if (observedState === pending.command.expectedState) {
+      this.finishCommand(pending, 'succeeded', undefined, observedState)
+    }
   }
 
   private receiveEvent(message: WireRecord): void {
@@ -305,14 +441,22 @@ export class HomeAssistantAdapter {
       if (data.new_state === null) {
         this.knownEntities.delete(entityId)
         this.onUnavailable?.({ adapter: SOURCE_ADAPTER, instance: this.instance }, entityId)
+        for (const pending of this.pendingCommands.values()) {
+          if (pending.command.externalEntityId === entityId) this.finishCommand(pending, 'unavailable', 'Home Assistant entity disappeared')
+        }
         return
       }
       if (!isRecord(data.new_state)) return
       const parsed = parseEntityState(data.new_state)
-      const previousTimestamp = this.knownEntities.get(entityId) ?? -1
-      if (parsed.state.sourceTimestamp < previousTimestamp) return
-      this.knownEntities.set(entityId, parsed.state.sourceTimestamp)
+      const previous = this.knownEntities.get(entityId)
+      if (previous === undefined || parsed.state.sourceTimestamp < previous.sourceTimestamp) return
+      this.knownEntities.set(entityId, { ...previous, sourceTimestamp: parsed.state.sourceTimestamp, state: String(parsed.state.value) })
       this.onState({ adapter: SOURCE_ADAPTER, instance: this.instance }, entityId, parsed.state)
+      for (const pending of this.pendingCommands.values()) {
+        if (pending.command.externalEntityId === entityId && String(parsed.state.value) === pending.command.expectedState && pending.acknowledged) {
+          this.finishCommand(pending, 'succeeded', undefined, String(parsed.state.value))
+        }
+      }
     } catch {
       this.protocolFailure('Home Assistant state event is invalid')
     }
@@ -339,6 +483,7 @@ export class HomeAssistantAdapter {
     if (socket !== undefined && socket !== this.socket) return
     if (this.state === 'stopped') return
     this.socket = undefined
+    this.failPendingCommands('unavailable', 'Home Assistant connection became unavailable')
     this.resetConnectionState()
     this.state = 'degraded'
     this.notifyStatus()
@@ -363,5 +508,55 @@ export class HomeAssistantAdapter {
 
   private notifyStatus(): void {
     this.onStatus?.(this.state)
+  }
+
+  private validateCommand(command: HomeAssistantServiceCommand): HomeAssistantServiceCommand {
+    if (!isRecord(command)) throw new TypeError('Home Assistant command must be an object')
+    const capability = command.capability
+    if (capability !== 'switch.set' && capability !== 'light.set' && capability !== 'media.play_pause') throw new Error('Home Assistant command capability is not low risk')
+    const commandId = requiredText(command.commandId, 'commandId', 128)
+    const idempotencyKey = requiredText(command.idempotencyKey, 'idempotencyKey', 128)
+    const externalEntityId = requiredText(command.externalEntityId, 'externalEntityId', 256)
+    const service = requiredText(command.service, 'service', 64)
+    if (!LOW_RISK_SERVICES[capability].includes(service)) throw new Error(`service is not allowlisted for ${capability}`)
+    const expectedState = requiredText(command.expectedState, 'expectedState', 128)
+    if (!Number.isInteger(command.timeoutMs) || command.timeoutMs < 1 || command.timeoutMs > 120_000) throw new RangeError('timeoutMs must be an integer between 1 and 120000')
+    if (command.serviceData !== undefined && !isRecord(command.serviceData)) throw new TypeError('serviceData must be an object')
+    commandDigest({ commandId, idempotencyKey, capability, externalEntityId, service, serviceData: command.serviceData ?? {}, expectedState, timeoutMs: command.timeoutMs })
+    return { commandId, idempotencyKey, capability, externalEntityId, service, expectedState, timeoutMs: command.timeoutMs, ...(command.serviceData === undefined ? {} : { serviceData: command.serviceData }) }
+  }
+
+  private emitCommand(command: HomeAssistantServiceCommand, phase: HomeAssistantCommandPhase, observedState?: string, error?: string): void {
+    this.onCommand?.({
+      commandId: command.commandId,
+      idempotencyKey: command.idempotencyKey,
+      phase,
+      ...(observedState === undefined ? {} : { observedState }),
+      ...(error === undefined ? {} : { error }),
+    })
+  }
+
+  private finishCommand(pending: PendingCommand, state: HomeAssistantCommandState, error?: string, observedState?: string): void {
+    if (!this.pendingCommands.has(pending.requestId)) return
+    this.pendingCommands.delete(pending.requestId)
+    this.timers.clearTimeout(pending.timer)
+    this.emitCommand(pending.command, state, observedState, error)
+    pending.resolve(this.finalResult(pending.command, state, pending.acknowledged, observedState, error))
+  }
+
+  private finalResult(command: HomeAssistantServiceCommand, state: HomeAssistantCommandState, acknowledged: boolean, observedState?: string, error?: string): HomeAssistantCommandResult {
+    return {
+      commandId: command.commandId,
+      idempotencyKey: command.idempotencyKey,
+      capability: command.capability,
+      state,
+      acknowledged,
+      ...(observedState === undefined ? {} : { observedState }),
+      ...(error === undefined ? {} : { error }),
+    }
+  }
+
+  private failPendingCommands(state: HomeAssistantCommandState, error: string): void {
+    for (const pending of [...this.pendingCommands.values()]) this.finishCommand(pending, state, error)
   }
 }

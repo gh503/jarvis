@@ -43,6 +43,7 @@ const createAdapter = (overrides = {}) => {
   const snapshots = []
   const stateEvents = []
   const unavailable = []
+  const commandTransitions = []
   const statuses = []
   const timers = []
   const adapter = new HomeAssistantAdapter({
@@ -56,6 +57,7 @@ const createAdapter = (overrides = {}) => {
     onSnapshot: snapshot => snapshots.push(snapshot),
     onState: (source, externalEntityId, state) => stateEvents.push({ source, externalEntityId, state }),
     onUnavailable: (source, externalEntityId) => unavailable.push({ source, externalEntityId }),
+    onCommand: transition => commandTransitions.push(transition),
     onStatus: status => statuses.push(status),
     timers: {
       setTimeout: callback => {
@@ -71,7 +73,7 @@ const createAdapter = (overrides = {}) => {
     reconnectMaxMs: 100,
     ...overrides,
   })
-  return { adapter, sockets, snapshots, stateEvents, unavailable, statuses, timers }
+  return { adapter, sockets, snapshots, stateEvents, unavailable, commandTransitions, statuses, timers }
 }
 
 const completeHandshake = (socket, result = [entity()]) => {
@@ -157,4 +159,136 @@ test('rejects duplicate entities and authentication failures without exposing pr
   failed.sockets[0].frame({ type: 'auth_invalid', message: 'provider-secret-details' })
   assert.equal(failed.adapter.getStatus(), 'degraded')
   assert.equal(JSON.stringify(failed.adapter).includes('provider-secret-details'), false)
+})
+
+test('separates service acknowledgement from observed resulting state', async () => {
+  const context = createAdapter()
+  context.adapter.start()
+  completeHandshake(context.sockets[0])
+  const promise = context.adapter.callService({
+    commandId: 'command-light-on',
+    idempotencyKey: 'once-light-on',
+    capability: 'light.set',
+    externalEntityId: 'light.living_room',
+    service: 'turn_on',
+    expectedState: 'on',
+    timeoutMs: 1000,
+  })
+  assert.deepEqual(context.sockets[0].sent[3], {
+    id: 3,
+    type: 'call_service',
+    domain: 'light',
+    service: 'turn_on',
+    service_data: {},
+    target: { entity_id: 'light.living_room' },
+  })
+  context.sockets[0].frame({ type: 'result', id: 3, success: true, result: { ignored: 'provider-payload' } })
+  assert.equal(context.commandTransitions.at(-1).phase, 'acknowledged')
+  context.sockets[0].frame({ type: 'event', id: 2, event: { event_type: 'state_changed', data: { entity_id: 'light.living_room', new_state: entity({ state: 'on', last_updated: '2026-08-17T01:01:00.000Z' }) } } })
+  assert.deepEqual(await promise, {
+    commandId: 'command-light-on',
+    idempotencyKey: 'once-light-on',
+    capability: 'light.set',
+    state: 'succeeded',
+    acknowledged: true,
+    observedState: 'on',
+  })
+  assert.equal(JSON.stringify(context.commandTransitions).includes('provider-payload'), false)
+})
+
+test('returns acknowledged-unconfirmed when the service is accepted but state never reaches target', async () => {
+  const context = createAdapter()
+  context.adapter.start()
+  completeHandshake(context.sockets[0])
+  const promise = context.adapter.callService({
+    commandId: 'command-light-on',
+    idempotencyKey: 'once-light-on',
+    capability: 'light.set',
+    externalEntityId: 'light.living_room',
+    service: 'turn_on',
+    expectedState: 'on',
+    timeoutMs: 1000,
+  })
+  context.sockets[0].frame({ type: 'result', id: 3, success: true, result: {} })
+  context.timers.at(-1)()
+  assert.deepEqual(await promise, {
+    commandId: 'command-light-on',
+    idempotencyKey: 'once-light-on',
+    capability: 'light.set',
+    state: 'acknowledged-unconfirmed',
+    acknowledged: true,
+  })
+})
+
+test('returns timed-out when Home Assistant never acknowledges the service call', async () => {
+  const context = createAdapter()
+  context.adapter.start()
+  completeHandshake(context.sockets[0])
+  const promise = context.adapter.callService({
+    commandId: 'command-light-on',
+    idempotencyKey: 'timeout-light-on',
+    capability: 'light.set',
+    externalEntityId: 'light.living_room',
+    service: 'turn_on',
+    expectedState: 'on',
+    timeoutMs: 1000,
+  })
+  context.timers.at(-1)()
+  assert.deepEqual(await promise, {
+    commandId: 'command-light-on',
+    idempotencyKey: 'timeout-light-on',
+    capability: 'light.set',
+    state: 'timed-out',
+    acknowledged: false,
+    error: 'Home Assistant service acknowledgement timed out',
+  })
+})
+
+test('enforces low-risk allowlists, entity capability binding, and idempotency', async () => {
+  const context = createAdapter()
+  context.adapter.start()
+  completeHandshake(context.sockets[0])
+  const command = {
+    commandId: 'command-switch',
+    idempotencyKey: 'once-switch',
+    capability: 'switch.set',
+    externalEntityId: 'light.living_room',
+    service: 'turn_on',
+    expectedState: 'on',
+    timeoutMs: 1000,
+  }
+  const mismatch = await context.adapter.callService(command)
+  assert.equal(mismatch.state, 'failed')
+  assert.equal(context.sockets[0].sent.length, 3)
+  assert.throws(() => context.adapter.callService({ ...command, idempotencyKey: 'bad-service', service: 'lock_unlock' }), /not allowlisted/)
+  const first = context.adapter.callService({ ...command, capability: 'light.set', idempotencyKey: 'once-light' })
+  const duplicate = context.adapter.callService({ ...command, capability: 'light.set', idempotencyKey: 'once-light', commandId: 'different-delivery' })
+  assert.strictEqual(first, duplicate)
+  context.sockets[0].frame({ type: 'result', id: 3, success: false, result: null })
+  assert.equal((await first).state, 'failed')
+})
+
+test('marks an acknowledged command unavailable when the adapter disconnects', async () => {
+  const context = createAdapter()
+  context.adapter.start()
+  completeHandshake(context.sockets[0])
+  const promise = context.adapter.callService({
+    commandId: 'command-light-on',
+    idempotencyKey: 'once-light-on',
+    capability: 'light.set',
+    externalEntityId: 'light.living_room',
+    service: 'turn_on',
+    expectedState: 'on',
+    timeoutMs: 1000,
+  })
+  context.sockets[0].frame({ type: 'result', id: 3, success: true, result: {} })
+  context.sockets[0].emit('close')
+  assert.deepEqual(await promise, {
+    commandId: 'command-light-on',
+    idempotencyKey: 'once-light-on',
+    capability: 'light.set',
+    state: 'unavailable',
+    acknowledged: true,
+    error: 'Home Assistant connection became unavailable',
+  })
 })

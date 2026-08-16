@@ -57,7 +57,7 @@ Implemented in the current increment:
 
 Deferred to later increments:
 
-- Home Assistant discovery/subscription and service calls.
+- Home Assistant discovery/subscription and medium/high-risk service calls.
 - MQTT transport and duplicate-delivery handling.
 - Simulator protocol behavior and real-device acceptance.
 
@@ -83,7 +83,24 @@ Deferred to later increments:
 
 - Owner-provided Home Assistant endpoint and credential reference.
 - Real network and named-instance acceptance.
-- Service calls, command acknowledgement, and physical resulting-state reconciliation.
+- Real Home Assistant service behavior and physical-device acceptance.
+
+### Low-risk service reconciliation
+
+Current increment: bounded service calls and observed-state reconciliation tracked by [#60](https://github.com/gh503/jarvis/issues/60).
+
+Implemented in the current increment:
+
+- Allowlisted `switch.set`, `light.set`, and ordinary `media.play_pause` calls only.
+- Entity and capability binding before network dispatch, plus idempotency-key deduplication.
+- Separate `submitted` and `acknowledged` transitions from terminal physical outcomes.
+- `succeeded` requires a later matching `state_changed` observation; unchanged state becomes `acknowledged-unconfirmed`.
+- Disconnects and entity removal produce `unavailable`; command and provider payloads are not returned.
+
+Deferred to later increments:
+
+- Medium/high-risk capability dispatch and phone approval.
+- Real Home Assistant service behavior and physical-device evidence.
 
 Acceptance:
 
