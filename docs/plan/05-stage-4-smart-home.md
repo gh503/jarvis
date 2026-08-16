@@ -1,6 +1,6 @@
 # Stage 4: Home Assistant and MQTT Device Integration
 
-Status: planned
+Status: in progress
 Effort: 8-12 focused engineering days
 
 ## Objective
@@ -33,7 +33,9 @@ Acceptance:
 - Jarvis cannot access entities outside the exposed set.
 - Revoking the integration credential stops access without affecting Home Assistant administration.
 
-### `packages/device-registry`
+### `src/device-registry`
+
+Current increment: normalized registry core only. It is provider-independent and does not connect to Home Assistant, MQTT, or physical devices.
 
 Deliver:
 
@@ -45,6 +47,19 @@ Acceptance:
 
 - Entity rename or disappearance does not silently target another device.
 - Duplicate external identities fail visibly.
+
+Implemented in the current increment:
+
+- Deterministic normalized device and capability records.
+- Stable source/entity/capability identifiers, aliases, and explicit risk overrides.
+- Reported state timestamps and availability transitions; disappearance clears stale state.
+- Serializable records exclude credentials and raw provider payloads.
+
+Deferred to later increments:
+
+- Home Assistant discovery/subscription and service calls.
+- MQTT transport and duplicate-delivery handling.
+- Simulator protocol behavior and real-device acceptance.
 
 ### `packages/device-home-assistant`
 
