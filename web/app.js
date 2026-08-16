@@ -1,5 +1,5 @@
-import { ConversationsClient } from './conversations.js?v=7'
-import { BrowserPairing } from './pairing.js?v=7'
+import { ConversationsClient } from './conversations.js?v=8'
+import { BrowserPairing } from './pairing.js?v=8'
 
 const connectionLabel = document.querySelector('#connection-label')
 const gatewayDetail = document.querySelector('#gateway-detail')
@@ -38,12 +38,16 @@ const conversationNotice = document.querySelector('#conversation-notice')
 const activityFreshness = document.querySelector('#activity-freshness')
 const activityEmpty = document.querySelector('#activity-empty')
 const activityList = document.querySelector('#activity-list')
+const approvalList = document.querySelector('#approval-list')
+const approvalEmpty = document.querySelector('#approval-empty')
+const approvalNotice = document.querySelector('#approval-notice')
 const syncValue = document.querySelector('#sync-value')
 let installPrompt
 let probeInProgress = false
 let pairingPhase = 'loading'
 let pairingExpiresAt
 let conversationsClient
+let stateForRendering = { conversations: [], approvals: [], approvalSubmittedIds: [] }
 
 function updateDeviceSummary() {
   const connected = pairingPhase === 'paired'
@@ -143,7 +147,89 @@ function conversationLabel(conversation) {
   return conversation.title?.trim() || (conversation.blank ? '新对话' : '未命名对话')
 }
 
+function approvalStatus(approval) {
+  if (approval.blockReason === 'expired' || (approval.expiresAt !== null && approval.expiresAt <= Date.now())) return '已过期'
+  if (approval.blockReason === 'evidence_missing') return '仅可拒绝'
+  if (approval.blockReason === 'unsupported_action') return '需在 Mac 处理'
+  return '等待决定'
+}
+
+function approvalCard(approval, mutable, busy) {
+  const item = document.createElement('li')
+  item.className = 'approval-card'
+  item.dataset.approvalId = approval.id
+  const header = document.createElement('div')
+  header.className = 'approval-card-header'
+  const title = document.createElement('strong')
+  title.textContent = approval.action === 'open_app' ? '打开 Mac 应用' : approval.toolName
+  const risk = document.createElement('span')
+  risk.className = 'risk-label'
+  risk.textContent = '高风险'
+  header.append(title, risk)
+  const target = document.createElement('p')
+  target.className = 'approval-target'
+  target.textContent = approval.target ?? '此操作不能从手机批准'
+  const details = document.createElement('dl')
+  details.className = 'approval-details'
+  for (const [label, value] of [
+    ['对话', conversationLabel({
+      title: undefined, blank: false,
+      ...stateForRendering.conversations.find(item => item.id === approval.conversationId),
+    })],
+    ['参数', approval.arguments === null ? '未向手机提供' : JSON.stringify(approval.arguments)],
+    ['状态', approvalStatus(approval)],
+    ['到期', approval.expiresAt === null ? '不允许远程批准' : formatDate(approval.expiresAt, true)],
+  ]) {
+    const term = document.createElement('dt')
+    term.textContent = label
+    const description = document.createElement('dd')
+    description.textContent = value
+    details.append(term, description)
+  }
+  const actions = document.createElement('div')
+  actions.className = 'approval-actions'
+  const reject = document.createElement('button')
+  reject.type = 'button'
+  reject.className = 'secondary-button'
+  reject.dataset.approvalAction = 'rejected'
+  reject.textContent = '拒绝'
+  const cancel = document.createElement('button')
+  cancel.type = 'button'
+  cancel.className = 'secondary-button'
+  cancel.dataset.approvalAction = 'cancel'
+  cancel.textContent = '取消本轮'
+  const allow = document.createElement('button')
+  allow.type = 'button'
+  allow.className = 'primary-button'
+  allow.dataset.approvalAction = 'allowed-once'
+  allow.textContent = '允许一次'
+  reject.disabled = !mutable || busy
+  cancel.disabled = !mutable || busy
+  allow.disabled = !mutable || busy || !approval.canAllow
+    || approval.expiresAt === null || approval.expiresAt <= Date.now()
+  actions.append(reject, cancel, allow)
+  item.append(header, target, details, actions)
+  return item
+}
+
+function renderApprovals(state, mutable) {
+  approvalList.replaceChildren()
+  for (const approval of state.approvals) {
+    const submitted = state.approvalSubmittedIds.includes(approval.id)
+    approvalList.append(approvalCard(approval, mutable, state.approvalBusyId === approval.id || submitted))
+  }
+  approvalEmpty.hidden = state.approvals.length > 0
+  approvalList.hidden = state.approvals.length === 0
+  approvalNotice.hidden = state.message === undefined
+  approvalNotice.textContent = state.message ?? ''
+  for (const count of document.querySelectorAll('[data-approval-count]')) {
+    count.textContent = String(state.approvals.length)
+    count.hidden = state.approvals.length === 0
+  }
+}
+
 function handleConversationState(state) {
+  stateForRendering = state
   const current = state.conversations.find(item => item.id === state.selectedId)
   const mutable = state.phase === 'ready' && pairingPhase === 'paired' && navigator.onLine
   const freshness = state.phase === 'ready'
@@ -230,6 +316,8 @@ function handleConversationState(state) {
   sendButton.disabled = messageInput.disabled || messageInput.value.trim().length === 0
   messageInput.placeholder = current === undefined ? '先新建或选择对话' : state.sending ? '正在发送' : '输入消息'
 
+  renderApprovals(state, mutable)
+
   activityList.replaceChildren()
   for (const activity of state.activity) {
     const item = document.createElement('li')
@@ -311,6 +399,13 @@ conversationListItems.addEventListener('click', event => {
   const button = event.target instanceof Element ? event.target.closest('[data-conversation-id]') : null
   if (button !== null) void conversationsClient.select(button.dataset.conversationId)
 })
+approvalList.addEventListener('click', event => {
+  const button = event.target instanceof Element ? event.target.closest('[data-approval-action]') : null
+  const card = button?.closest('[data-approval-id]')
+  if (button === null || card === null) return
+  if (button.dataset.approvalAction === 'cancel') void conversationsClient.cancelApproval(card.dataset.approvalId)
+  else void conversationsClient.decideApproval(card.dataset.approvalId, button.dataset.approvalAction)
+})
 mobileConversationSelect.addEventListener('change', () => { void conversationsClient.select(mobileConversationSelect.value) })
 newConversationButton.addEventListener('click', () => { void conversationsClient.create() })
 emptyNewConversationButton.addEventListener('click', () => { void conversationsClient.create() })
@@ -387,4 +482,9 @@ window.setInterval(() => {
   const minutes = Math.floor(remainingSeconds / 60)
   const seconds = String(remainingSeconds % 60).padStart(2, '0')
   pairingExpiry.textContent = `剩余 ${minutes}:${seconds}`
+}, 1_000)
+window.setInterval(() => {
+  if (stateForRendering.approvals?.length > 0) {
+    renderApprovals(stateForRendering, stateForRendering.phase === 'ready' && pairingPhase === 'paired' && navigator.onLine)
+  }
 }, 1_000)

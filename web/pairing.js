@@ -1,4 +1,4 @@
-import { deleteDeviceState, readDeviceState, writeDeviceState } from './device-store.js?v=7'
+import { deleteDeviceState, readDeviceState, writeDeviceState } from './device-store.js?v=8'
 
 const MAX_RESPONSE_CHARS = 2 * 1024 * 1024
 

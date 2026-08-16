@@ -55,6 +55,39 @@ test('persists only normalized retained events with private permissions', async 
   }
 })
 
+test('persists public approval events without Harness transport identifiers', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'jarvis-approval-events-'))
+  const path = join(directory, 'event-state.json')
+  try {
+    const first = new RetainedEventLog({ store: new FileEventLogStore(path) })
+    const initial = first.currentCursor()
+    const pending = first.publish({
+      type: 'approval.pending',
+      approval: {
+        id: 'approval-one', conversationId: 'session-one', toolName: 'jarvis_open_app', callId: 'call-one',
+        action: 'open_app', target: 'notes', arguments: { application: 'notes' }, digest: 'a'.repeat(64),
+        risk: 'high', requestedAt: 1_000, expiresAt: 61_000, canAllow: true, blockReason: null,
+      },
+    })
+    const resolved = first.publish({
+      type: 'approval.resolved', approvalId: 'approval-one', conversationId: 'session-one', outcome: 'rejected',
+    })
+    const cursor = first.currentCursor()
+
+    assert.throws(() => first.publish({
+      type: 'approval.pending',
+      approval: { ...pending.approval, rpcId: 'private-rpc-id' },
+    }), /payload/)
+    assert.equal(first.currentCursor(), cursor)
+
+    const restored = new RetainedEventLog({ store: new FileEventLogStore(path) })
+    assert.deepEqual(restored.replay(initial).events, [pending, resolved])
+    assert.doesNotMatch(await readFile(path, 'utf8'), /rpcId|private-rpc-id/)
+  } finally {
+    await rm(directory, { recursive: true, force: true })
+  }
+})
+
 test('rejects invalid payloads and oversized single events before publication', () => {
   const log = new RetainedEventLog({ maxBytes: 256 })
   assert.throws(() => log.publish({ type: 'conversation.status', conversationId: '../private', running: true }), /payload/)

@@ -22,8 +22,8 @@ test('declares a scoped installable manifest and complete offline shell', async 
 
   const serviceWorker = await readFile(join(webRoot, 'sw.js'), 'utf8')
   for (const path of [
-    '/app/', '/app/app.css', '/app/app.js?v=7', '/app/pairing.js?v=7', '/app/device-store.js?v=7',
-    '/app/conversations.js?v=7', '/app/apple-touch-icon.png', '/app/icon.svg',
+    '/app/', '/app/app.css', '/app/app.js?v=8', '/app/pairing.js?v=8', '/app/device-store.js?v=8',
+    '/app/conversations.js?v=8', '/app/apple-touch-icon.png', '/app/icon.svg',
     '/app/icon-192.png', '/app/icon-512.png', '/app/manifest.webmanifest',
   ]) {
     assert.ok(serviceWorker.includes(`'${path}'`), `${path} must be pre-cached`)
@@ -53,6 +53,8 @@ test('keeps the browser client on the public Gateway contract', async () => {
   assert.match(pairingSource, /await this\.initialize\(\)/)
   assert.match(conversationsSource, /events\.authenticate/)
   assert.match(conversationsSource, /authenticatedRequest\('\/v1\/conversations'/)
+  assert.match(conversationsSource, /authenticatedRequest\('\/v1\/approvals'/)
+  assert.match(htmlSource, /id="approval-list"/)
   assert.match(htmlSource, /id="pair-button"[^>]+disabled/)
   assert.doesNotMatch(`${appSource}\n${pairingSource}\n${conversationsSource}`, /@deepseek-ai|dsh|Harness|\/api\//i)
   assert.doesNotMatch(`${appSource}\n${pairingSource}\n${conversationsSource}`, /localStorage|sessionStorage/)

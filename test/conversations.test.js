@@ -5,6 +5,11 @@ import { ConversationsClient } from '../web/conversations.js'
 const cursor = `${'A'.repeat(22)}.1`
 const conversation = { id: 'session-one', title: 'Jarvis plan', updatedAt: 1_000, running: false, blank: false }
 const message = { id: 'message-one', sequence: 1, createdAt: 1_000, role: 'assistant', text: 'Ready' }
+const approval = {
+  id: 'approval-one', conversationId: 'session-one', toolName: 'jarvis_open_app', callId: 'call-one',
+  action: 'open_app', target: 'notes', arguments: { application: 'notes' }, digest: 'a'.repeat(64), risk: 'high',
+  requestedAt: 1_000, expiresAt: Date.now() + 60_000, canAllow: true, blockReason: null,
+}
 
 function memoryStore() {
   const values = new Map()
@@ -63,12 +68,13 @@ function gatewayPairing(calls, overrides = {}) {
       return { accessToken: 'S'.repeat(43) }
     },
     authenticatedRequest: async (path, init = {}) => {
-      calls.push(['request', path, init.method ?? 'GET'])
+      calls.push(['request', path, init.method ?? 'GET', init])
       if (overrides.request !== undefined) {
         const result = await overrides.request(path, init)
         if (result !== undefined) return result
       }
       if (path === '/v1/conversations') return { ok: true, status: 200, value: { conversations: [conversation] } }
+      if (path === '/v1/approvals') return { ok: true, status: 200, value: { approvals: overrides.approvals ?? [] } }
       if (path.startsWith('/v1/conversations/session-one?')) {
         return { ok: true, status: 200, value: { messages: [message], hasMore: false, nextBeforeSequence: null } }
       }
@@ -213,4 +219,89 @@ test('does not advance the event cursor when a required snapshot fails', async (
   await tick()
   assert.equal(store.values.has('event-cursor'), false)
   assert.equal(sockets[0].readyState, 3)
+})
+
+test('keeps approvals memory-only and reuses a decision key after a transport retry', async () => {
+  const calls = []
+  const states = []
+  const sockets = []
+  let attempts = 0
+  const pairing = gatewayPairing(calls, {
+    approvals: [approval],
+    request: async (path, init) => {
+      if (!path.endsWith('/decision')) return undefined
+      attempts += 1
+      return attempts === 1
+        ? { ok: false, status: 503, value: {} }
+        : { ok: true, status: 202, value: { approvalId: approval.id, outcome: 'allowed-once', accepted: true } }
+    },
+  })
+  const client = new ConversationsClient(pairing, state => states.push(state), {
+    store: memoryStore(),
+    location: { origin: 'https://jarvis.internal' },
+    socketFactory: url => {
+      const socket = new FakeSocket(url)
+      sockets.push(socket)
+      return socket
+    },
+    randomUUID: () => '00000000-0000-4000-8000-000000000001',
+  })
+  await client.start()
+  assert.deepEqual(states.at(-1).approvals, [approval])
+  assert.equal(await client.decideApproval(approval.id, 'allowed-once'), false)
+  assert.equal(await client.decideApproval(approval.id, 'allowed-once'), true)
+  const decisionBodies = calls.filter(call => typeof call[1] === 'string' && call[1].endsWith('/decision'))
+  assert.equal(decisionBodies.length, 2)
+  assert.equal(JSON.parse(decisionBodies[0][3].body).idempotencyKey, JSON.parse(decisionBodies[1][3].body).idempotencyKey)
+  const requests = []
+  const capture = gatewayPairing(requests, {
+    approvals: [approval],
+    request: async (path, init) => {
+      if (path.endsWith('/decision')) return {
+        ok: true, status: 202, value: { approvalId: approval.id, outcome: 'rejected', accepted: true },
+      }
+      return undefined
+    },
+  })
+  const captureClient = new ConversationsClient(capture, () => {}, {
+    store: memoryStore(), location: { origin: 'https://jarvis.internal' },
+    socketFactory: url => new FakeSocket(url),
+    randomUUID: () => '00000000-0000-4000-8000-000000000009',
+  })
+  await captureClient.start()
+  assert.equal(await captureClient.decideApproval(approval.id, 'rejected'), true)
+  const submitted = requests.find(call => typeof call[1] === 'string' && call[1].endsWith('/decision'))
+  assert.deepEqual(JSON.parse(submitted[3].body), {
+    digest: approval.digest, outcome: 'rejected', idempotencyKey: '00000000-0000-4000-8000-000000000009',
+  })
+  client.setOnline(false)
+  assert.deepEqual(states.at(-1).approvals, [])
+  assert.equal(await client.decideApproval(approval.id, 'allowed-once'), false)
+})
+
+test('converges live approval requested and resolved events', async () => {
+  const states = []
+  const sockets = []
+  const client = new ConversationsClient(gatewayPairing([]), state => states.push(state), {
+    store: memoryStore(), location: { origin: 'https://jarvis.internal' },
+    socketFactory: url => {
+      const socket = new FakeSocket(url)
+      sockets.push(socket)
+      return socket
+    },
+  })
+  await client.start()
+  await tick()
+  sockets[0].open()
+  sockets[0].message({ type: 'events.ready', cursor, replayCount: 0, requiresSnapshot: false })
+  await tick()
+  sockets[0].message({ version: 1, type: 'approval.pending', cursor: `${'A'.repeat(22)}.2`, occurredAt: 2_000, approval })
+  await tick()
+  assert.equal(states.at(-1).approvals[0].id, approval.id)
+  sockets[0].message({
+    version: 1, type: 'approval.resolved', cursor: `${'A'.repeat(22)}.3`, occurredAt: 3_000,
+    approvalId: approval.id, conversationId: approval.conversationId, outcome: 'rejected',
+  })
+  await tick()
+  assert.deepEqual(states.at(-1).approvals, [])
 })
