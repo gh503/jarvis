@@ -3,6 +3,7 @@ import { createServer as createHttpServer, type IncomingMessage, type Server as 
 import { createServer as createHttpsServer, type Server as HttpsServer } from 'node:https'
 import { BlockList, isIP } from 'node:net'
 import { WebSocket, WebSocketServer, type RawData } from 'ws'
+import { HarnessBridge, HarnessBridgeError, type HarnessClient } from './harness-bridge.js'
 import { NODE_PROTOCOL_VERSION, parseNodeRegistration, type NodeRegistration } from './node-capabilities.js'
 import type { NodeCommand } from './node-command.js'
 import { FilePairingStateStore, PairingAuthority } from './pairing.js'
@@ -45,6 +46,9 @@ export interface JarvisGatewayOptions {
   sessionStatePath?: string
   sourceRateLimit?: TokenBucketRateLimiterOptions
   identityRateLimit?: TokenBucketRateLimiterOptions
+  harness?: HarnessClient
+  harnessOrigin?: string
+  harnessRequestTimeoutMs?: number
 }
 
 export interface RunningGateway {
@@ -122,6 +126,40 @@ function sendRateLimited(response: ServerResponse, correlationId: string, decisi
   }, rateLimitHeaders(decision))
 }
 
+function sendHarnessError(response: ServerResponse, correlationId: string, error: HarnessBridgeError): void {
+  let status = 502
+  let code = 'harness_protocol_error'
+  let message = 'Harness returned an invalid response'
+  if (error.code === 'timeout') {
+    status = 504
+    code = 'harness_timeout'
+    message = 'Harness request timed out'
+  } else if (error.code === 'unavailable') {
+    status = 503
+    code = 'harness_unavailable'
+    message = 'Harness is unavailable'
+  } else if (error.code === 'rejected') {
+    code = 'harness_rejected'
+    message = 'Harness rejected the request'
+    if (error.upstreamCode === 'session-not-found') {
+      status = 404
+      code = 'conversation_not_found'
+      message = 'Conversation was not found'
+    } else if (error.upstreamCode === 'agent-busy') {
+      status = 409
+      code = 'conversation_busy'
+      message = 'Conversation is busy'
+    } else if (error.upstreamCode === 'session-conflict') {
+      status = 409
+      code = 'conversation_conflict'
+      message = 'Conversation conflicts with existing state'
+    } else if (error.upstreamCode === 'bad-request') {
+      status = 400
+    }
+  }
+  sendJson(response, status, correlationId, { error: message, code, correlationId })
+}
+
 function bearerToken(request: IncomingMessage, scheme: 'Bearer' | 'Device' | 'Session'): string | undefined {
   const value = request.headers.authorization
   const prefix = `${scheme} `
@@ -184,6 +222,23 @@ function routeParts(request: IncomingMessage): string[] {
   return parsed.pathname.split('/').filter(Boolean)
 }
 
+function exactFields(value: Record<string, unknown>, allowed: readonly string[]): boolean {
+  return Object.keys(value).every(key => allowed.includes(key))
+}
+
+function requestQuery(request: IncomingMessage): URLSearchParams {
+  return new URL(request.url ?? '/', 'http://127.0.0.1').searchParams
+}
+
+function optionalIntegerParameter(query: URLSearchParams, name: string, minimum: number, maximum: number): number | undefined {
+  const values = query.getAll(name)
+  if (values.length === 0) return undefined
+  if (values.length !== 1 || !/^\d+$/.test(values[0] as string)) throw new Error(`${name} query parameter is invalid`)
+  const value = Number(values[0])
+  if (!Number.isSafeInteger(value) || value < minimum || value > maximum) throw new Error(`${name} query parameter is invalid`)
+  return value
+}
+
 function validateBindHost(value: string): { host: string, loopback: boolean } {
   const family = isIP(value)
   const type = family === 4 ? 'ipv4' : family === 6 ? 'ipv6' : undefined
@@ -229,6 +284,10 @@ export function createJarvisGateway(options: JarvisGatewayOptions): JarvisGatewa
   if (!binding.loopback && tls === undefined) throw new Error('TLS is required for non-loopback Gateway binding')
   const secure = tls !== undefined
   const scope = binding.loopback ? 'loopback-only' : 'private-network-only'
+  const harness = options.harness ?? new HarnessBridge({
+    ...(options.harnessOrigin === undefined ? {} : { origin: options.harnessOrigin }),
+    ...(options.harnessRequestTimeoutMs === undefined ? {} : { timeoutMs: options.harnessRequestTimeoutMs }),
+  })
   const sourceRateLimiter = new TokenBucketRateLimiter(options.sourceRateLimit ?? DEFAULT_SOURCE_RATE_LIMIT)
   const identityRateLimiter = new TokenBucketRateLimiter(options.identityRateLimit ?? DEFAULT_IDENTITY_RATE_LIMIT)
   let server: GatewayServer | undefined
@@ -403,6 +462,53 @@ export function createJarvisGateway(options: JarvisGatewayOptions): JarvisGatewa
           return
         }
       }
+      if (parts[0] === 'v1' && parts[1] === 'conversations') {
+        if (sessionPrincipal === undefined) {
+          sendJson(response, 401, correlationId, { error: 'session authentication required', correlationId })
+          return
+        }
+        const query = requestQuery(request)
+        if (request.method === 'GET' && parts.length === 2) {
+          if ([...query.keys()].length !== 0) throw new Error('conversation list query is invalid')
+          sendJson(response, 200, correlationId, { conversations: await harness.listConversations() })
+          return
+        }
+        if (request.method === 'POST' && parts.length === 2) {
+          if ([...query.keys()].length !== 0) throw new Error('conversation creation query is invalid')
+          const body = await readJson(request, maxBodyBytes)
+          if (!record(body) || !exactFields(body, [])) throw new Error('conversation creation body must be empty')
+          sendJson(response, 201, correlationId, { conversation: await harness.createConversation() })
+          return
+        }
+        if (request.method === 'GET' && parts.length === 3 && typeof parts[2] === 'string') {
+          if ([...query.keys()].some(key => key !== 'beforeSequence' && key !== 'maxMessages')) {
+            throw new Error('conversation history query is invalid')
+          }
+          const beforeSequence = optionalIntegerParameter(query, 'beforeSequence', 0, Number.MAX_SAFE_INTEGER)
+          const maxMessages = optionalIntegerParameter(query, 'maxMessages', 1, 100)
+          sendJson(response, 200, correlationId, await harness.getConversationHistory(parts[2], beforeSequence, maxMessages))
+          return
+        }
+        if (request.method === 'POST' && parts.length === 4 && parts[3] === 'messages' && typeof parts[2] === 'string') {
+          if ([...query.keys()].length !== 0) throw new Error('conversation message query is invalid')
+          const body = await readJson(request, maxBodyBytes)
+          if (!record(body) || !exactFields(body, ['text', 'mode']) || typeof body.text !== 'string'
+            || (body.mode !== undefined && body.mode !== 'queue' && body.mode !== 'steer')) {
+            throw new Error('conversation message body is invalid')
+          }
+          sendJson(response, 202, correlationId, await harness.sendText(parts[2], body.text, body.mode ?? 'queue'))
+          return
+        }
+        if (request.method === 'POST' && parts.length === 4 && parts[3] === 'cancel' && typeof parts[2] === 'string') {
+          if ([...query.keys()].length !== 0) throw new Error('conversation cancellation query is invalid')
+          const body = await readJson(request, maxBodyBytes)
+          if (!record(body) || !exactFields(body, [])) throw new Error('conversation cancellation body must be empty')
+          sendJson(response, 200, correlationId, await harness.cancelConversation(parts[2]))
+          return
+        }
+        sendJson(response, 404, correlationId, { error: 'route not found', correlationId })
+        return
+      }
       if (request.method === 'POST' && parts.length === 2 && parts[0] === 'v1' && parts[1] === 'sessions') {
         if (deviceNodeId === undefined) {
           sendJson(response, 401, correlationId, { error: 'device authentication required', correlationId })
@@ -507,6 +613,10 @@ export function createJarvisGateway(options: JarvisGatewayOptions): JarvisGatewa
       }
       sendJson(response, 404, correlationId, { error: 'route not found', correlationId })
     } catch (error) {
+      if (error instanceof HarnessBridgeError) {
+        sendHarnessError(response, correlationId, error)
+        return
+      }
       const message = error instanceof Error ? error.message : 'request failed'
       const status = message.includes('too large') ? 413 : 400
       sendJson(response, status, correlationId, { error: message, correlationId })

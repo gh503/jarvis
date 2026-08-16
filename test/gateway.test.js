@@ -7,6 +7,7 @@ import { join } from 'node:path'
 import test from 'node:test'
 import WebSocket from 'ws'
 import { createJarvisGateway } from '../dist/gateway.js'
+import { HarnessBridgeError } from '../dist/harness-bridge.js'
 import { NodeAgent } from '../dist/node-agent.js'
 import { MAC_NODE_CAPABILITIES } from '../dist/node-capabilities.js'
 import { NodePolicy } from '../dist/node-command.js'
@@ -472,6 +473,130 @@ test('detects refresh reuse even after the session identity limit is exhausted',
     assert.equal((await request(gateway, '/v1/sessions/current', {
       headers: { authorization: `Session ${rotated.accessToken}` },
     })).status, 401)
+  } finally {
+    await service.stop()
+  }
+})
+
+test('bridges normalized conversation routes only for authenticated sessions', async () => {
+  const authority = new PairingAuthority()
+  const credential = issueCredential(authority)
+  const sessions = new SessionAuthority()
+  const access = sessions.issue('node-1')
+  const calls = []
+  const harness = {
+    async listConversations() {
+      calls.push(['list'])
+      return [{ id: 'session-one', title: 'Test', updatedAt: 1, running: false, blank: false }]
+    },
+    async createConversation() {
+      calls.push(['create'])
+      return { id: 'session-created' }
+    },
+    async getConversationHistory(id, beforeSequence, maxMessages) {
+      calls.push(['history', id, beforeSequence, maxMessages])
+      return { messages: [], hasMore: false, nextBeforeSequence: null }
+    },
+    async sendText(id, text, mode) {
+      calls.push(['message', id, text, mode])
+      return { accepted: true }
+    },
+    async cancelConversation(id) {
+      calls.push(['cancel', id])
+      return { accepted: true }
+    },
+  }
+  const service = createJarvisGateway({ ownerToken, authority, sessions, harness })
+  const gateway = await service.start()
+  const sessionHeaders = { authorization: `Session ${access.accessToken}` }
+  try {
+    assert.equal((await request(gateway, '/v1/conversations')).status, 401)
+    assert.equal((await request(gateway, '/v1/conversations', {
+      headers: { authorization: `Bearer ${ownerToken}` },
+    })).status, 401)
+    assert.equal((await request(gateway, '/v1/conversations', {
+      headers: { authorization: `Device ${credential}` },
+    })).status, 401)
+    assert.deepEqual(calls, [])
+
+    const listed = await request(gateway, '/v1/conversations', { headers: sessionHeaders })
+    assert.equal(listed.status, 200)
+    assert.deepEqual(await listed.json(), { conversations: [
+      { id: 'session-one', title: 'Test', updatedAt: 1, running: false, blank: false },
+    ] })
+    const created = await request(gateway, '/v1/conversations', { method: 'POST', headers: sessionHeaders })
+    assert.equal(created.status, 201)
+    assert.deepEqual(await created.json(), { conversation: { id: 'session-created' } })
+    const history = await request(gateway, '/v1/conversations/session-one?beforeSequence=20&maxMessages=25', {
+      headers: sessionHeaders,
+    })
+    assert.equal(history.status, 200)
+    assert.deepEqual(await history.json(), { messages: [], hasMore: false, nextBeforeSequence: null })
+    const sent = await request(gateway, '/v1/conversations/session-one/messages', {
+      method: 'POST',
+      headers: { ...sessionHeaders, 'content-type': 'application/json' },
+      body: JSON.stringify({ text: 'Continue', mode: 'steer' }),
+    })
+    assert.equal(sent.status, 202)
+    assert.deepEqual(await sent.json(), { accepted: true })
+    assert.equal((await request(gateway, '/v1/conversations/session-one/cancel', {
+      method: 'POST', headers: sessionHeaders,
+    })).status, 200)
+    assert.deepEqual(calls, [
+      ['list'],
+      ['create'],
+      ['history', 'session-one', 20, 25],
+      ['message', 'session-one', 'Continue', 'steer'],
+      ['cancel', 'session-one'],
+    ])
+
+    assert.equal((await request(gateway, '/v1/conversations?cursor=internal', { headers: sessionHeaders })).status, 400)
+    assert.equal((await request(gateway, '/v1/conversations/session-one?maxMessages=101', { headers: sessionHeaders })).status, 400)
+    assert.equal((await request(gateway, '/v1/conversations/session-one/messages', {
+      method: 'POST',
+      headers: { ...sessionHeaders, 'content-type': 'application/json' },
+      body: JSON.stringify({ text: 'Hello', internal: true }),
+    })).status, 400)
+    assert.equal(calls.length, 5)
+  } finally {
+    await service.stop()
+  }
+})
+
+test('maps Harness failures without exposing internal diagnostics', async () => {
+  const authority = new PairingAuthority()
+  issueCredential(authority)
+  const sessions = new SessionAuthority()
+  const access = sessions.issue('node-1')
+  let failure = new HarnessBridgeError('timeout', 'secret timeout detail')
+  const harness = {
+    async listConversations() { throw failure },
+    async createConversation() { throw failure },
+    async getConversationHistory() { throw failure },
+    async sendText() { throw failure },
+    async cancelConversation() { throw failure },
+  }
+  const service = createJarvisGateway({ ownerToken, authority, sessions, harness })
+  const gateway = await service.start()
+  const headers = { authorization: `Session ${access.accessToken}` }
+  const expectFailure = async (error, expectedStatus, expectedCode) => {
+    failure = error
+    const response = await request(gateway, '/v1/conversations', { headers })
+    assert.equal(response.status, expectedStatus)
+    const text = await response.text()
+    assert.equal(JSON.parse(text).code, expectedCode)
+    assert.doesNotMatch(text, /secret|upstream-private/)
+    assert.match(response.headers.get('x-correlation-id') ?? '', /^[0-9a-f-]{36}$/)
+  }
+  try {
+    await expectFailure(new HarnessBridgeError('timeout', 'secret'), 504, 'harness_timeout')
+    await expectFailure(new HarnessBridgeError('unavailable', 'secret'), 503, 'harness_unavailable')
+    await expectFailure(new HarnessBridgeError('protocol', 'secret'), 502, 'harness_protocol_error')
+    await expectFailure(new HarnessBridgeError('rejected', 'upstream-private', 'session-not-found'), 404, 'conversation_not_found')
+    await expectFailure(new HarnessBridgeError('rejected', 'upstream-private', 'agent-busy'), 409, 'conversation_busy')
+    await expectFailure(new HarnessBridgeError('rejected', 'upstream-private', 'session-conflict'), 409, 'conversation_conflict')
+    await expectFailure(new HarnessBridgeError('rejected', 'upstream-private', 'bad-request'), 400, 'harness_rejected')
+    await expectFailure(new HarnessBridgeError('rejected', 'upstream-private', 'internal'), 502, 'harness_rejected')
   } finally {
     await service.stop()
   }

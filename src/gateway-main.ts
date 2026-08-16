@@ -14,6 +14,13 @@ const dataPath = process.env.JARVIS_DATA_DIR ?? join(process.cwd(), 'data')
 const statePath = process.env.JARVIS_PAIRING_STATE ?? join(dataPath, 'pairing-state.json')
 const sessionStatePath = process.env.JARVIS_SESSION_STATE ?? join(dataPath, 'session-state.json')
 const bindHost = process.env.JARVIS_GATEWAY_HOST ?? '127.0.0.1'
+const harnessOrigin = process.env.JARVIS_HARNESS_URL ?? 'http://127.0.0.1:3080'
+const harnessRequestTimeoutMs = process.env.JARVIS_HARNESS_TIMEOUT_MS === undefined
+  ? 10_000
+  : Number(process.env.JARVIS_HARNESS_TIMEOUT_MS)
+if (!Number.isInteger(harnessRequestTimeoutMs) || harnessRequestTimeoutMs < 1) {
+  throw new Error('JARVIS_HARNESS_TIMEOUT_MS must be a positive integer')
+}
 const tlsKeyPath = process.env.JARVIS_GATEWAY_TLS_KEY
 const tlsCertPath = process.env.JARVIS_GATEWAY_TLS_CERT
 if ((tlsKeyPath === undefined) !== (tlsCertPath === undefined)) {
@@ -30,8 +37,8 @@ if (tlsKeyPath !== undefined && tlsCertPath !== undefined) {
 }
 
 const gateway = tls === undefined
-  ? createJarvisGateway({ ownerToken, pairingStatePath: statePath, sessionStatePath, bindHost })
-  : createJarvisGateway({ ownerToken, pairingStatePath: statePath, sessionStatePath, bindHost, tls })
+  ? createJarvisGateway({ ownerToken, pairingStatePath: statePath, sessionStatePath, bindHost, harnessOrigin, harnessRequestTimeoutMs })
+  : createJarvisGateway({ ownerToken, pairingStatePath: statePath, sessionStatePath, bindHost, harnessOrigin, harnessRequestTimeoutMs, tls })
 const running = await gateway.start(configuredPort)
 console.log(`Jarvis Gateway listening on ${running.origin}`)
 
