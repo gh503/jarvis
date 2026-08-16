@@ -39,6 +39,7 @@
 - Gateway 通过固定 allowlist bridge 访问 loopback Harness；远程会话 API 只返回归一化的标题和最终用户/助手文本，不透传本机路径、内部事件、tool 或 reasoning 数据。
 - Gateway 已提供认证的 `/v1/events` WebSocket：只推送归一化会话事件，支持有界持久化游标重放；重启、游标过期或 Harness 事件中断时明确要求客户端全量刷新。
 - Gateway 已从 `/app/` 提供响应式 PWA 外壳、安装清单和离线应用缓存；未配对时只显示真实连接状态，不缓存或伪装账户数据。真机安装仍待指定首台 iPhone 或 Android 后验收。
+- Gateway 已通过 Harness 的公开审批传输提供移动审批收件箱；只有带完整 `tool/call`、`approval/asked` 和 `approval/requested` 证据的 `jarvis_open_app` 可在 60 秒内远程允许一次，其他请求只能拒绝或取消本轮。
 - 已提供离线一致性备份和原子恢复命令；运行租约阻止在 Harness 或 Gateway 活跃时复制状态，恢复前校验结构、权限和 SHA-256。
 
 ## 环境要求
@@ -92,9 +93,9 @@ JARVIS_OWNER_TOKEN='the-same-local-owner-token' npm run pair:approve -- --code 1
 
 Owner Token 只提交给 loopback Gateway，不进入手机。Gateway 只持久化一次性领取密钥和设备凭据的 SHA-256 摘要；设备凭据通过领取密钥派生的 AES-256-GCM 密钥加密返回，重复领取返回同一密文。浏览器将不可导出的 P-256 私钥、设备凭据和短期 Session 保存在同源 IndexedDB；离线时只显示本地身份为非当前状态。清除站点数据会移除本地访问材料，但不会替代服务端设备撤销。
 
-短期 Session token 可访问 `GET/POST /v1/conversations`、`GET /v1/conversations/:id`、`POST /v1/conversations/:id/messages` 和 `POST /v1/conversations/:id/cancel`。配对后的 PWA 可列出、新建、选择和继续文字对话；消息只接受最多 16 KiB 的纯文本，发送期间会锁定重复提交，远程 slash command 被拒绝。`/v1/events` 不在 URL 携带令牌，第一条消息必须是 `events.authenticate`；同源浏览器或无 Origin 的受信客户端可连接。客户端保存每个事件的 `cursor`，重连时提交该游标；若缓冲已淘汰、Gateway 重启或上游连续性丢失，`events.ready`/`sync.required` 会先要求重新读取权威会话快照，刷新失败时不会推进游标。
+短期 Session token 可访问 `GET/POST /v1/conversations`、`GET /v1/conversations/:id`、`POST /v1/conversations/:id/messages`、`POST /v1/conversations/:id/cancel`、`GET /v1/approvals` 和 `POST /v1/approvals/:id/decision`。配对后的 PWA 可列出、新建、选择和继续文字对话，并处理当前审批；消息只接受最多 16 KiB 的纯文本，发送期间会锁定重复提交，远程 slash command 被拒绝。审批决定使用客户端幂等键，Gateway 将上游 `rpcId` 保留在 loopback 桥接层，手机只能提交 `allowed-once` 或 `rejected`；取消本轮沿用会话取消接口并由 Harness 产生 `cancelled`。`/v1/events` 不在 URL 携带令牌，第一条消息必须是 `events.authenticate`；同源浏览器或无 Origin 的受信客户端可连接。客户端保存每个事件的 `cursor`，重连时提交该游标；若缓冲已淘汰、Gateway 重启或上游连续性丢失，`events.ready`/`sync.required` 会先要求重新读取权威会话与审批快照，刷新失败时不会推进游标。
 
-PWA 只在同源 IndexedDB 保存最近一次规范化对话列表、当前最多 50 条文字消息和事件游标，不缓存 API 响应或 Owner Token。Gateway 不可达时，离线壳可只读显示该快照，并明确标记为“旧数据”；所有新建和发送操作保持禁用，恢复连接并重新验证 Session 后才切回实时状态。
+PWA 只在同源 IndexedDB 保存最近一次规范化对话列表、当前最多 50 条文字消息和事件游标，不缓存审批、API 响应或 Owner Token。Gateway 不可达时，离线壳可只读显示对话快照并明确标记为“旧数据”，审批详情会从页面内存清除；所有新建、发送和审批操作保持禁用，恢复连接并重新验证 Session 后才切回实时状态。
 
 Gateway 默认允许每个连接来源突发 60 次请求并每秒恢复 1 次额度；每个已认证 Owner、设备或 Session 可突发 120 次并每秒恢复 2 次额度。它只使用直接连接地址，不信任客户端提供的转发来源头；HTTP `429` 会返回 `Retry-After`、限额余量和 correlation ID。
 
@@ -158,7 +159,7 @@ npm run restore -- --archive backups/jarvis-backup.jarvis
 - API Key：存放在未纳入 Git 的 `.env` 或 Harness 本机凭据存储，均不进入备份归档
 - 网络：Harness 始终只限本机回环；Gateway 仅可绑定明确的回环、私网或 overlay IP，非回环强制 TLS，禁止直接暴露到互联网
 
-这是单用户文字版 MVP；手机端已有可安装的离线应用、Owner 批准的设备配对、短期 Session、文字对话和实时同步，尚未接入审批与通知，也不包含语音、智能家居、任意终端、文件操作和第三方消息发送。Gateway 已提供认证、设备身份、受控会话 API 和可恢复的实时事件；客户端不得直接暴露或调用 Harness Web 服务。
+这是单用户文字版 MVP；手机端已有可安装的离线应用、Owner 批准的设备配对、短期 Session、文字对话、实时同步和受限审批收件箱，尚未接入通知，也不包含语音、智能家居、任意终端、文件操作和第三方消息发送。Gateway 已提供认证、设备身份、受控会话与审批 API 和可恢复的实时事件；客户端不得直接暴露或调用 Harness Web 服务。Gateway 重启后，仍在 Harness 等待但缺少本次进程内完整审计证据的请求会显示为不可远程允许，避免以重新计时或猜测参数恢复授权。
 
 ## 上游边界
 

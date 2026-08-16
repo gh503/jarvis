@@ -2,6 +2,7 @@ import { randomBytes, randomUUID } from 'node:crypto'
 import { chmodSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs'
 import { dirname } from 'node:path'
 import type { ConversationMessage } from './harness-bridge.js'
+import type { MobileApproval, MobileApprovalOutcome } from './approval.js'
 
 const DEFAULT_MAX_EVENTS = 512
 const DEFAULT_MAX_BYTES = 8 * 1024 * 1024
@@ -16,6 +17,8 @@ export type JarvisEventPayload =
   | { type: 'conversation.status'; conversationId: string; running: boolean }
   | { type: 'conversation.message.committed'; conversationId: string; message: ConversationMessage }
   | { type: 'conversation.error'; conversationId: string; code: 'harness_agent_error' }
+  | { type: 'approval.pending'; approval: MobileApproval }
+  | { type: 'approval.resolved'; approvalId: string; conversationId: string; outcome: MobileApprovalOutcome | 'cancelled' | 'unavailable' }
   | { type: 'sync.required'; reason: SyncReason }
 
 export type JarvisEvent = JarvisEventPayload & {
@@ -78,6 +81,32 @@ function validMessage(value: unknown): value is ConversationMessage {
     && (value.role === 'user' || value.role === 'assistant') && typeof value.text === 'string' && value.text.length > 0
 }
 
+function validApproval(value: unknown): value is MobileApproval {
+  if (!record(value) || !exactFields(value, [
+    'id', 'conversationId', 'toolName', 'callId', 'action', 'target', 'arguments', 'digest',
+    'risk', 'requestedAt', 'expiresAt', 'canAllow', 'blockReason',
+  ])) return false
+  if (!validId(value.id) || !validId(value.conversationId) || typeof value.toolName !== 'string'
+    || value.toolName.length < 1 || value.toolName.length > 128
+    || (value.callId !== null && !validId(value.callId)) || value.risk !== 'high'
+    || typeof value.canAllow !== 'boolean') return false
+  if (value.action === 'open_app') {
+    return typeof value.target === 'string' && value.target.length > 0 && value.target.length <= 128
+      && record(value.arguments) && exactFields(value.arguments, ['application'])
+      && value.arguments.application === value.target
+      && typeof value.digest === 'string' && /^[0-9a-f]{64}$/.test(value.digest)
+      && typeof value.requestedAt === 'number' && Number.isFinite(value.requestedAt)
+      && typeof value.expiresAt === 'number' && Number.isFinite(value.expiresAt)
+      && value.expiresAt > value.requestedAt
+      && (value.blockReason === null || value.blockReason === 'expired')
+      && value.canAllow === (value.blockReason === null)
+  }
+  return value.action === 'unsupported' && value.target === null && value.arguments === null
+    && value.digest === null && value.requestedAt === null && value.expiresAt === null
+    && value.canAllow === false
+    && (value.blockReason === 'evidence_missing' || value.blockReason === 'unsupported_action')
+}
+
 function validPayload(value: Record<string, unknown>): boolean {
   if (value.type === 'conversation.created') {
     return exactFields(value, ['version', 'eventId', 'cursor', 'occurredAt', 'type', 'conversation'])
@@ -99,6 +128,16 @@ function validPayload(value: Record<string, unknown>): boolean {
   if (value.type === 'conversation.error') {
     return exactFields(value, ['version', 'eventId', 'cursor', 'occurredAt', 'type', 'conversationId', 'code'])
       && validId(value.conversationId) && value.code === 'harness_agent_error'
+  }
+  if (value.type === 'approval.pending') {
+    return exactFields(value, ['version', 'eventId', 'cursor', 'occurredAt', 'type', 'approval'])
+      && validApproval(value.approval)
+  }
+  if (value.type === 'approval.resolved') {
+    return exactFields(value, ['version', 'eventId', 'cursor', 'occurredAt', 'type', 'approvalId', 'conversationId', 'outcome'])
+      && validId(value.approvalId) && validId(value.conversationId)
+      && (value.outcome === 'allowed-once' || value.outcome === 'rejected'
+        || value.outcome === 'cancelled' || value.outcome === 'unavailable')
   }
   return value.type === 'sync.required' && exactFields(value, ['version', 'eventId', 'cursor', 'occurredAt', 'type', 'reason'])
     && (value.reason === 'gateway_restarted' || value.reason === 'harness_disconnected')

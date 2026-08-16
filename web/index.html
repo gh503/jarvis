@@ -12,7 +12,7 @@
     <link rel="icon" href="./icon.svg" type="image/svg+xml">
     <link rel="apple-touch-icon" sizes="180x180" href="./apple-touch-icon.png">
     <link rel="stylesheet" href="./app.css">
-    <script src="./app.js?v=7" type="module"></script>
+    <script src="./app.js?v=8" type="module"></script>
   </head>
   <body data-connection="checking">
     <a class="skip-link" href="#main-content">跳到主要内容</a>
@@ -37,7 +37,7 @@
             <span aria-hidden="true">◫</span><span>对话</span>
           </button>
           <button class="nav-button" type="button" data-view-target="activity">
-            <span aria-hidden="true">◷</span><span>动态</span>
+            <span aria-hidden="true">✓</span><span>审批</span><span class="approval-count" data-approval-count hidden>0</span>
           </button>
           <button class="nav-button" type="button" data-view-target="settings">
             <span aria-hidden="true">⚙</span><span>设置</span>
@@ -90,16 +90,22 @@
         <section class="view-panel" data-view-panel="activity" aria-labelledby="activity-title" hidden>
           <header class="view-header">
             <div>
-              <p class="eyebrow">事件流</p>
-              <h1 id="activity-title">动态</h1>
+              <p class="eyebrow">安全操作</p>
+              <h1 id="activity-title">审批</h1>
             </div>
             <span id="activity-freshness" class="freshness-label">未同步</span>
           </header>
-          <div id="activity-empty" class="plain-empty">
-            <h2>暂无动态</h2>
-            <p>连接恢复后，新事件会出现在这里。</p>
+          <p id="approval-notice" class="approval-notice" role="status" aria-live="polite" hidden></p>
+          <div id="approval-empty" class="plain-empty">
+            <h2>没有待审批操作</h2>
+            <p>当前没有等待处理的操作。</p>
           </div>
-          <ol id="activity-list" class="activity-list" hidden></ol>
+          <ol id="approval-list" class="approval-list" aria-live="polite" hidden></ol>
+          <section class="activity-history" aria-labelledby="activity-history-title">
+            <h2 id="activity-history-title">近期动态</h2>
+            <div id="activity-empty" class="activity-empty">暂无动态</div>
+            <ol id="activity-list" class="activity-list" hidden></ol>
+          </section>
         </section>
 
         <section class="view-panel" data-view-panel="settings" aria-labelledby="settings-title" hidden>
@@ -164,7 +170,7 @@
 
     <nav class="mobile-nav" aria-label="主导航">
       <button class="mobile-nav-button is-active" type="button" data-view-target="chat" aria-current="page"><span aria-hidden="true">◫</span><span>对话</span></button>
-      <button class="mobile-nav-button" type="button" data-view-target="activity"><span aria-hidden="true">◷</span><span>动态</span></button>
+      <button class="mobile-nav-button" type="button" data-view-target="activity"><span aria-hidden="true">✓</span><span>审批</span><span class="approval-count" data-approval-count hidden>0</span></button>
       <button class="mobile-nav-button" type="button" data-view-target="settings"><span aria-hidden="true">⚙</span><span>设置</span></button>
     </nav>
   </body>

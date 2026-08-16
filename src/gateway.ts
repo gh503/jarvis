@@ -3,6 +3,7 @@ import { createServer as createHttpServer, type IncomingMessage, type Server as 
 import { createServer as createHttpsServer, type Server as HttpsServer } from 'node:https'
 import { BlockList, isIP } from 'node:net'
 import { WebSocket, WebSocketServer, type RawData } from 'ws'
+import { MobileApprovalDecisionError } from './approval.js'
 import { FileEventLogStore, RetainedEventLog, type JarvisEvent } from './event-log.js'
 import { HarnessBridge, HarnessBridgeError, type HarnessClient } from './harness-bridge.js'
 import { HarnessEventBridge, type ConversationEventSource } from './harness-events.js'
@@ -327,11 +328,14 @@ export function createJarvisGateway(options: JarvisGatewayOptions): JarvisGatewa
   const harnessEvents = options.harnessEvents ?? (options.harness === undefined
     ? new HarnessEventBridge({
         ...(options.harnessOrigin === undefined ? {} : { origin: options.harnessOrigin }),
+        ...(options.harnessRequestTimeoutMs === undefined ? {} : { requestTimeoutMs: options.harnessRequestTimeoutMs }),
         listVisibleConversations: () => harness.listConversations(),
       })
     : {
         start() {},
         stop: () => Promise.resolve(),
+        listApprovals: () => [],
+        decideApproval: () => Promise.reject(new MobileApprovalDecisionError('unavailable')),
       })
   const sourceRateLimiter = new TokenBucketRateLimiter(options.sourceRateLimit ?? DEFAULT_SOURCE_RATE_LIMIT)
   const identityRateLimiter = new TokenBucketRateLimiter(options.identityRateLimit ?? DEFAULT_IDENTITY_RATE_LIMIT)
@@ -751,6 +755,34 @@ export function createJarvisGateway(options: JarvisGatewayOptions): JarvisGatewa
         sendJson(response, 404, correlationId, { error: 'route not found', correlationId })
         return
       }
+      if (parts[0] === 'v1' && parts[1] === 'approvals') {
+        if (sessionPrincipal === undefined) {
+          sendJson(response, 401, correlationId, { error: 'session authentication required', correlationId })
+          return
+        }
+        const query = requestQuery(request)
+        if ([...query.keys()].length !== 0) throw new Error('approval query is invalid')
+        if (request.method === 'GET' && parts.length === 2) {
+          sendJson(response, 200, correlationId, { approvals: harnessEvents.listApprovals() })
+          return
+        }
+        if (request.method === 'POST' && parts.length === 4 && parts[3] === 'decision' && typeof parts[2] === 'string') {
+          const body = await readJson(request, maxBodyBytes)
+          if (!/^[A-Za-z0-9_-]{1,128}$/.test(parts[2])
+            || !record(body) || !exactFields(body, ['digest', 'outcome', 'idempotencyKey'])
+            || (body.digest !== null && (typeof body.digest !== 'string' || !/^[0-9a-f]{64}$/.test(body.digest)))
+            || (body.outcome !== 'allowed-once' && body.outcome !== 'rejected')
+            || typeof body.idempotencyKey !== 'string' || !/^[0-9a-f-]{36}$/.test(body.idempotencyKey)) {
+            throw new Error('approval decision body is invalid')
+          }
+          sendJson(response, 202, correlationId, await harnessEvents.decideApproval(
+            parts[2], body.digest, body.outcome, body.idempotencyKey,
+          ))
+          return
+        }
+        sendJson(response, 404, correlationId, { error: 'route not found', correlationId })
+        return
+      }
       if (request.method === 'POST' && parts.length === 2 && parts[0] === 'v1' && parts[1] === 'sessions') {
         if (deviceNodeId === undefined) {
           sendJson(response, 401, correlationId, { error: 'device authentication required', correlationId })
@@ -871,6 +903,21 @@ export function createJarvisGateway(options: JarvisGatewayOptions): JarvisGatewa
     } catch (error) {
       if (error instanceof HarnessBridgeError) {
         sendHarnessError(response, correlationId, error)
+        return
+      }
+      if (error instanceof MobileApprovalDecisionError) {
+        const statuses = {
+          conflict: 409,
+          expired: 410,
+          mismatch: 409,
+          missing: 404,
+          protocol: 502,
+          unavailable: 503,
+          unsupported: 422,
+        } as const
+        sendJson(response, statuses[error.code], correlationId, {
+          error: 'approval decision rejected', code: `approval_${error.code}`, correlationId,
+        })
         return
       }
       const message = error instanceof Error ? error.message : 'request failed'

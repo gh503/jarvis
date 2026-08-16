@@ -134,6 +134,8 @@ function socketInbox(socket) {
 
 function fakeConversationEvents() {
   let handlers
+  let approvals = []
+  const decisions = []
   return {
     start(value) {
       handlers = value
@@ -142,6 +144,13 @@ function fakeConversationEvents() {
     async stop() { handlers = undefined },
     emit(event) { handlers?.onEvent(event) },
     available(value) { handlers?.onAvailability(value) },
+    listApprovals() { return approvals },
+    setApprovals(value) { approvals = value },
+    async decideApproval(approvalId, digest, outcome, idempotencyKey) {
+      decisions.push({ approvalId, digest, outcome, idempotencyKey })
+      return { approvalId, outcome, accepted: true }
+    },
+    decisions,
   }
 }
 
@@ -792,6 +801,52 @@ test('maps Harness failures without exposing internal diagnostics', async () => 
     await expectFailure(new HarnessBridgeError('rejected', 'upstream-private', 'session-conflict'), 409, 'conversation_conflict')
     await expectFailure(new HarnessBridgeError('rejected', 'upstream-private', 'bad-request'), 400, 'harness_rejected')
     await expectFailure(new HarnessBridgeError('rejected', 'upstream-private', 'internal'), 502, 'harness_rejected')
+  } finally {
+    await service.stop()
+  }
+})
+
+test('authenticates normalized approval snapshots and idempotent decisions', async () => {
+  const authority = new PairingAuthority()
+  issueCredential(authority)
+  const sessions = new SessionAuthority()
+  const access = sessions.issue('node-1')
+  const harnessEvents = fakeConversationEvents()
+  const digest = 'a'.repeat(64)
+  harnessEvents.setApprovals([{
+    id: 'approval-one', conversationId: 'session-one', toolName: 'jarvis_open_app', callId: 'call-one',
+    action: 'open_app', target: 'notes', arguments: { application: 'notes' }, digest, risk: 'high',
+    requestedAt: 1_000, expiresAt: 61_000, canAllow: true, blockReason: null,
+  }])
+  const service = createJarvisGateway({ ownerToken, authority, sessions, harnessEvents })
+  const gateway = await service.start()
+  const headers = { authorization: `Session ${access.accessToken}` }
+  try {
+    assert.equal((await request(gateway, '/v1/approvals')).status, 401)
+    const snapshot = await request(gateway, '/v1/approvals', { headers })
+    assert.equal(snapshot.status, 200)
+    const body = await snapshot.json()
+    assert.equal(body.approvals[0].digest, digest)
+    assert.doesNotMatch(JSON.stringify(body), /rpc-/)
+
+    const decision = await request(gateway, '/v1/approvals/approval-one/decision', {
+      method: 'POST',
+      headers: { ...headers, 'content-type': 'application/json' },
+      body: JSON.stringify({
+        digest, outcome: 'allowed-once', idempotencyKey: '00000000-0000-4000-8000-000000000001',
+      }),
+    })
+    assert.equal(decision.status, 202)
+    assert.deepEqual(await decision.json(), { approvalId: 'approval-one', outcome: 'allowed-once', accepted: true })
+    assert.deepEqual(harnessEvents.decisions, [{
+      approvalId: 'approval-one', digest, outcome: 'allowed-once',
+      idempotencyKey: '00000000-0000-4000-8000-000000000001',
+    }])
+    assert.equal((await request(gateway, '/v1/approvals/approval-one/decision', {
+      method: 'POST', headers: { ...headers, 'content-type': 'application/json' },
+      body: JSON.stringify({ digest, outcome: 'allowed-once', idempotencyKey: 'bad' }),
+    })).status, 400)
+    assert.equal((await request(gateway, '/v1/approvals?internal=true', { headers })).status, 400)
   } finally {
     await service.stop()
   }

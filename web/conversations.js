@@ -1,4 +1,4 @@
-import { deleteDeviceState, readDeviceState, writeDeviceState } from './device-store.js?v=7'
+import { deleteDeviceState, readDeviceState, writeDeviceState } from './device-store.js?v=8'
 
 const CACHE_KEY = 'conversation-cache'
 const CURSOR_KEY = 'event-cursor'
@@ -20,6 +20,26 @@ function validMessage(value) {
     && (value.role === 'user' || value.role === 'assistant') && typeof value.text === 'string' && value.text.length > 0
 }
 
+function validApproval(value) {
+  if (value === null || typeof value !== 'object' || !ID_PATTERN.test(value.id)
+    || !ID_PATTERN.test(value.conversationId) || typeof value.toolName !== 'string'
+    || (value.callId !== null && !ID_PATTERN.test(value.callId)) || value.risk !== 'high'
+    || typeof value.canAllow !== 'boolean') return false
+  if (value.action === 'open_app') {
+    return typeof value.target === 'string' && value.target.length > 0
+      && value.arguments !== null && typeof value.arguments === 'object'
+      && value.arguments.application === value.target
+      && typeof value.digest === 'string' && /^[0-9a-f]{64}$/.test(value.digest)
+      && Number.isFinite(value.requestedAt) && Number.isFinite(value.expiresAt)
+      && value.expiresAt > value.requestedAt
+      && (value.blockReason === null || value.blockReason === 'expired')
+  }
+  return value.action === 'unsupported' && value.target === null && value.arguments === null
+    && value.digest === null && value.requestedAt === null && value.expiresAt === null
+    && value.canAllow === false
+    && (value.blockReason === 'evidence_missing' || value.blockReason === 'unsupported_action')
+}
+
 function parseConversationList(value) {
   if (!Array.isArray(value?.conversations) || !value.conversations.every(validSummary)) {
     throw new Error('Gateway 返回了无效对话列表')
@@ -38,6 +58,14 @@ function parseHistory(value) {
     throw new Error('Gateway 返回了重复消息')
   }
   return { messages, hasMore: value.hasMore }
+}
+
+function parseApprovalList(value) {
+  if (!Array.isArray(value?.approvals) || !value.approvals.every(validApproval)
+    || new Set(value.approvals.map(approval => approval.id)).size !== value.approvals.length) {
+    throw new Error('Gateway 返回了无效审批列表')
+  }
+  return value.approvals.slice().sort((left, right) => (right.requestedAt ?? 0) - (left.requestedAt ?? 0))
 }
 
 function parseCache(value) {
@@ -67,6 +95,8 @@ function eventDescription(event) {
   if (event.type === 'conversation.status') return event.running ? 'Jarvis 正在回复' : 'Jarvis 已完成回复'
   if (event.type === 'conversation.message.committed') return event.message.role === 'assistant' ? '收到 Jarvis 回复' : '消息已提交'
   if (event.type === 'conversation.error') return '对话执行失败'
+  if (event.type === 'approval.pending') return '收到待审批操作'
+  if (event.type === 'approval.resolved') return event.outcome === 'allowed-once' ? '操作已允许一次' : '操作未获允许'
   return '正在重新同步对话'
 }
 
@@ -78,6 +108,7 @@ export class ConversationsClient {
     this.locationValue = options.location ?? window.location
     this.setTimeoutValue = options.setTimeout ?? ((callback, delay) => window.setTimeout(callback, delay))
     this.clearTimeoutValue = options.clearTimeout ?? (timer => window.clearTimeout(timer))
+    this.randomUUID = options.randomUUID ?? (() => crypto.randomUUID())
     this.store = options.store ?? {
       read: readDeviceState,
       write: writeDeviceState,
@@ -91,6 +122,10 @@ export class ConversationsClient {
     this.selectedId = null
     this.messages = []
     this.activity = []
+    this.approvals = []
+    this.approvalBusyId = null
+    this.approvalDecisionKeys = new Map()
+    this.approvalSubmittedIds = new Set()
     this.cachedAt = undefined
     this.socket = undefined
     this.reconnectTimer = undefined
@@ -126,6 +161,10 @@ export class ConversationsClient {
     this.active = false
     this.loading = false
     this.sending = false
+    this.approvals = []
+    this.approvalBusyId = null
+    this.approvalDecisionKeys.clear()
+    this.approvalSubmittedIds.clear()
     this.clearReconnect()
     if (this.socket !== undefined) {
       const socket = this.socket
@@ -138,6 +177,10 @@ export class ConversationsClient {
   setOnline(online) {
     this.online = online
     if (!online) {
+      this.approvals = []
+      this.approvalBusyId = null
+      this.approvalDecisionKeys.clear()
+      this.approvalSubmittedIds.clear()
       this.clearReconnect()
       if (this.socket !== undefined) {
         const socket = this.socket
@@ -157,9 +200,18 @@ export class ConversationsClient {
     this.loading = true
     this.emit(this.conversations.length > 0 ? 'refreshing' : 'loading')
     try {
-      const response = await this.pairing.authenticatedRequest('/v1/conversations')
+      const [response, approvalsResponse] = await Promise.all([
+        this.pairing.authenticatedRequest('/v1/conversations'),
+        this.pairing.authenticatedRequest('/v1/approvals'),
+      ])
       if (!response.ok) throw new Error(`无法读取对话 (${response.status})`)
+      if (!approvalsResponse.ok) throw new Error(`无法读取审批 (${approvalsResponse.status})`)
       this.conversations = parseConversationList(response.value)
+      this.approvals = parseApprovalList(approvalsResponse.value)
+      const currentApprovalIds = new Set(this.approvals.map(approval => approval.id))
+      for (const approvalId of this.approvalSubmittedIds) {
+        if (!currentApprovalIds.has(approvalId)) this.approvalSubmittedIds.delete(approvalId)
+      }
       if (this.selectedId === null || !this.conversations.some(item => item.id === this.selectedId)) {
         this.selectedId = this.conversations[0]?.id ?? null
       }
@@ -169,6 +221,7 @@ export class ConversationsClient {
       this.emit('ready')
       return true
     } catch (error) {
+      this.approvals = []
       this.addActivity('同步失败')
       this.emit(this.conversations.length > 0 ? 'stale' : 'error', messageForError(error, '无法同步对话'))
       return false
@@ -250,6 +303,61 @@ export class ConversationsClient {
       this.sending = false
     }
     this.emit(this.active && this.online ? 'ready' : this.conversations.length > 0 ? 'stale' : 'disabled', errorMessage)
+    return errorMessage === undefined
+  }
+
+  async decideApproval(approvalId, outcome) {
+    if (!this.active || !this.online || this.approvalBusyId !== null
+      || (outcome !== 'allowed-once' && outcome !== 'rejected')) return false
+    const approval = this.approvals.find(item => item.id === approvalId)
+    if (approval === undefined || (outcome === 'allowed-once'
+      && (!approval.canAllow || approval.digest === null || approval.expiresAt <= Date.now()))) return false
+    this.approvalBusyId = approval.id
+    this.emit('sending')
+    let errorMessage
+    try {
+      const decisionKey = `${approval.id}:${outcome}:${approval.digest ?? ''}`
+      const idempotencyKey = this.approvalDecisionKeys.get(decisionKey) ?? this.randomUUID()
+      this.approvalDecisionKeys.set(decisionKey, idempotencyKey)
+      const response = await this.pairing.authenticatedRequest(`/v1/approvals/${encodeURIComponent(approval.id)}/decision`, {
+        method: 'POST',
+        body: JSON.stringify({ digest: approval.digest, outcome, idempotencyKey }),
+      })
+      if (response.status !== 202 || response.value?.accepted !== true
+        || response.value.approvalId !== approval.id || response.value.outcome !== outcome) {
+        throw new Error(`审批未被接受 (${response.status})`)
+      }
+      this.approvalSubmittedIds.add(approval.id)
+      this.addActivity(outcome === 'allowed-once' ? '已允许一次' : '已拒绝操作')
+    } catch (error) {
+      errorMessage = messageForError(error, '审批提交失败')
+    } finally {
+      this.approvalBusyId = null
+    }
+    this.emit(this.active && this.online ? 'ready' : 'stale', errorMessage)
+    return errorMessage === undefined
+  }
+
+  async cancelApproval(approvalId) {
+    if (!this.active || !this.online || this.approvalBusyId !== null) return false
+    const approval = this.approvals.find(item => item.id === approvalId)
+    if (approval === undefined) return false
+    this.approvalBusyId = approval.id
+    this.emit('sending')
+    let errorMessage
+    try {
+      const response = await this.pairing.authenticatedRequest(
+        `/v1/conversations/${encodeURIComponent(approval.conversationId)}/cancel`,
+        { method: 'POST', body: '{}' },
+      )
+      if (!response.ok || response.value?.accepted !== true) throw new Error(`无法取消本轮 (${response.status})`)
+      this.addActivity('已取消请求本轮')
+    } catch (error) {
+      errorMessage = messageForError(error, '取消本轮失败')
+    } finally {
+      this.approvalBusyId = null
+    }
+    this.emit(this.active && this.online ? 'ready' : 'stale', errorMessage)
     return errorMessage === undefined
   }
 
@@ -366,6 +474,16 @@ export class ConversationsClient {
       }
     } else if (event.type === 'conversation.error' && ID_PATTERN.test(event.conversationId)) {
       eventNotice = 'Jarvis 未能完成本次回复'
+    } else if (event.type === 'approval.pending' && validApproval(event.approval)) {
+      this.approvals = [event.approval, ...this.approvals.filter(item => item.id !== event.approval.id)]
+    } else if (event.type === 'approval.resolved' && ID_PATTERN.test(event.approvalId)
+      && ID_PATTERN.test(event.conversationId)
+      && ['allowed-once', 'rejected', 'cancelled', 'unavailable'].includes(event.outcome)) {
+      this.approvals = this.approvals.filter(item => item.id !== event.approvalId)
+      this.approvalSubmittedIds.delete(event.approvalId)
+      for (const key of this.approvalDecisionKeys.keys()) {
+        if (key.startsWith(`${event.approvalId}:`)) this.approvalDecisionKeys.delete(key)
+      }
     } else {
       socket.close(1002, 'unsupported event')
       return
@@ -417,6 +535,9 @@ export class ConversationsClient {
       selectedId: this.selectedId,
       messages: this.messages.map(item => ({ ...item })),
       activity: this.activity.map(item => ({ ...item })),
+      approvals: this.approvals.map(item => ({ ...item, arguments: item.arguments === null ? null : { ...item.arguments } })),
+      approvalBusyId: this.approvalBusyId,
+      approvalSubmittedIds: [...this.approvalSubmittedIds],
       cachedAt: this.cachedAt,
       sending: this.sending,
       ...(message === undefined ? {} : { message }),
