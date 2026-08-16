@@ -85,7 +85,7 @@ function makeReadySocket(agentSocket) {
 test('connects outbound, authenticates before registration, and executes ready commands', async () => {
   const socket = new FakeSocket()
   const agent = new NodeAgent(config({ socketFactory: () => socket }))
-  agent.start()
+  await agent.start()
   assert.equal(agent.state, 'connecting')
   makeReadySocket(socket)
   assert.equal(agent.state, 'ready')
@@ -111,6 +111,50 @@ test('connects outbound, authenticates before registration, and executes ready c
   agent.stop()
 })
 
+test('loads a credential provider before connecting and reloads it after restart', async () => {
+  const sockets = []
+  let credential = 'credential-before-rotate'
+  let reads = 0
+  const agent = new NodeAgent(config({
+    credential: undefined,
+    credentialProvider: async () => {
+      reads += 1
+      return credential
+    },
+    socketFactory: () => {
+      const socket = new FakeSocket()
+      sockets.push(socket)
+      return socket
+    },
+  }))
+  await agent.start()
+  assert.equal(reads, 1)
+  sockets[0].open()
+  assert.equal(sockets[0].sent[0].credential, 'credential-before-rotate')
+  agent.stop()
+  credential = 'credential-after-rotate'
+  await agent.start()
+  assert.equal(reads, 2)
+  sockets[1].open()
+  assert.equal(sockets[1].sent[0].credential, 'credential-after-rotate')
+  agent.stop()
+})
+
+test('does not create a socket when the credential provider fails', async () => {
+  let socketCreated = false
+  const agent = new NodeAgent(config({
+    credential: undefined,
+    credentialProvider: async () => undefined,
+    socketFactory: () => {
+      socketCreated = true
+      return new FakeSocket()
+    },
+  }))
+  await assert.rejects(agent.start(), /credential load failed/)
+  assert.equal(agent.state, 'stopped')
+  assert.equal(socketCreated, false)
+})
+
 test('does not execute before ready and reconnects with the same node identity', async () => {
   const sockets = []
   const timers = new FakeTimers()
@@ -127,7 +171,7 @@ test('does not execute before ready and reconnects with the same node identity',
       return true
     },
   }))
-  agent.start()
+  await agent.start()
   sockets[0].open()
   sockets[0].receive({ type: 'command.requested', command: {} })
   assert.equal(executions, 0)
@@ -160,11 +204,11 @@ test('rejects non-TLS endpoints and does not create an inbound server', () => {
   assert.throws(() => new NodeAgent(config({ endpoint: 'ws://gateway.invalid/node' })), /wss/)
 })
 
-test('fails closed on authentication rejection and does not schedule reconnect', () => {
+test('fails closed on authentication rejection and does not schedule reconnect', async () => {
   const socket = new FakeSocket()
   const timers = new FakeTimers()
   const agent = new NodeAgent(config({ socketFactory: () => socket, timers }))
-  agent.start()
+  await agent.start()
   socket.open()
   socket.receive({ type: 'node.rejected' })
   assert.equal(agent.state, 'stopped')
