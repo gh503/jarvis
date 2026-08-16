@@ -29,6 +29,7 @@
 - 已实现版本化 Mac 能力注册协议；未知能力、版本变更和异常注册字段会被拒绝。
 - 已实现仅主动发起的 `wss://` 节点 Agent 原型；认证、注册、断线重连、命令去重和 Keychain 凭据读取已覆盖。
 - 已实现 macOS Keychain 凭据存储层；写入通过 `security` 标准输入完成，凭据不进入命令参数、普通文件或日志。
+- Ed25519 设备私钥同样只保存在 macOS Keychain；读取时会验证公私钥匹配和指纹，已有身份不会被静默覆盖。
 - Node Agent 支持异步凭据提供器；每次启动读取当前凭据，停止时清除内存副本。
 - 已实现配对协议核心及 Gateway API：Ed25519 设备身份、短期单次验证码、凭据轮换、撤销和原子状态持久化。
 - 已实现 loopback-only `v1` Gateway 控制面原型：Owner/Device 认证、配对确认、轮换、撤销、请求 correlation ID，以及 `/v1/node` WebSocket 的认证、能力注册和在线连接管理；未绑定公网。
@@ -73,6 +74,16 @@ JARVIS_OWNER_TOKEN='use-a-local-secret-of-at-least-16-characters' npm run start:
 ```
 
 它只监听 `127.0.0.1:3090`，配对状态默认原子写入未纳入 Git 的 `data/pairing-state.json`。节点 WebSocket 同样只接受 loopback 上的 `/v1/node`，并限制消息大小、握手时间和连接数。当前仍不是可直接暴露给手机的生产 Gateway；正式远程访问还需要 TLS/private overlay、外部用户认证与限流，以及可从游标恢复的会话事件。
+
+Gateway 运行后，可以在另一个终端为当前 Mac 创建身份并完成人工验证码确认：
+
+```bash
+JARVIS_OWNER_TOKEN='the-same-local-owner-token' npm run pair:node -- \
+  --node-id my-mac \
+  --display-name 'My Mac'
+```
+
+命令只连接 loopback Gateway。设备私钥和确认后签发的访问凭据分别写入 macOS Keychain，不会显示或写入项目文件；如果凭据保存失败，流程会立即撤销刚签发的服务端身份。
 
 确认前台运行正常后执行：
 
