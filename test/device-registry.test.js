@@ -58,6 +58,8 @@ test('fails closed on duplicate or malformed identities and unsupported capabili
   assert.throws(() => registry.sync([device({ externalEntityId: ' light.living_room' })]), /trimmed string/)
   assert.throws(() => registry.sync([device({ capabilities: ['lock.set', 'lock.set'] })]), /duplicate capability/)
   assert.throws(() => registry.sync([device({ capabilities: ['unknown.execute'] })]), /unsupported device capability/)
+  assert.throws(() => registry.sync([device({ capabilities: ['lock.set'], riskOverrides: { 'lock.set': 'low' } })]), /cannot lower mandatory risk/)
+  assert.throws(() => registry.sync([device({ riskOverrides: { 'unknown.execute': 'high' } })]), /unknown capability/)
 })
 
 test('serializes only normalized fields and excludes credentials or raw provider payloads', () => {
