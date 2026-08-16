@@ -231,18 +231,19 @@ test('creates redacted, deduplicated notifications from normalized events', asyn
 test('quiet hours and rate limits suppress system presentation but retain history', async () => {
   const store = memoryDeviceStore()
   const systemNotifications = []
+  const quietNow = new Date(2026, 0, 1, 23, 30, 0, 0)
   const center = new NotificationCenter({
     store,
     permission: 'granted',
     systemNotify: notification => systemNotifications.push(notification),
-    now: () => Date.parse('2026-01-01T23:30:00+08:00'),
+    now: () => quietNow.getTime(),
   })
   await center.initialize()
   await center.updatePreferences({
     quietHours: { enabled: true, start: '23:00', end: '07:00' },
     rateLimits: { conversation: 1 },
   })
-  const base = { version: 1, occurredAt: Date.parse('2026-01-01T23:30:00+08:00'), type: 'conversation.status', running: false }
+  const base = { version: 1, occurredAt: quietNow.getTime(), type: 'conversation.status', running: false }
   await center.ingestEvent({ ...base, cursor: 'B'.repeat(22) + '.1', conversationId: 'conversation-1' })
   assert.equal(systemNotifications.length, 0)
   assert.equal(store.values.get('notification-history').length, 1)
