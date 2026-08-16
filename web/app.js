@@ -1,5 +1,5 @@
-import { ConversationsClient } from './conversations.js?v=8'
-import { BrowserPairing } from './pairing.js?v=8'
+import { ConversationsClient } from './conversations.js?v=10'
+import { BrowserPairing } from './pairing.js?v=10'
 
 const connectionLabel = document.querySelector('#connection-label')
 const gatewayDetail = document.querySelector('#gateway-detail')
@@ -11,6 +11,15 @@ const installButton = document.querySelector('#install-button')
 const installDetail = document.querySelector('#install-detail')
 const deviceDetail = document.querySelector('#device-detail')
 const deviceValue = document.querySelector('#device-value')
+const deviceMetadata = document.querySelector('#device-metadata')
+const devicePlatform = document.querySelector('#device-platform')
+const deviceGeneration = document.querySelector('#device-generation')
+const deviceIssuedAt = document.querySelector('#device-issued-at')
+const deviceSessionExpiry = document.querySelector('#device-session-expiry')
+const disconnectDeviceButton = document.querySelector('#disconnect-device-button')
+const disconnectDeviceDialog = document.querySelector('#disconnect-device-dialog')
+const confirmDisconnectDeviceButton = document.querySelector('#confirm-disconnect-device-button')
+const disconnectDeviceError = document.querySelector('#disconnect-device-error')
 const pairingSetup = document.querySelector('#pairing-setup')
 const pairingForm = document.querySelector('#pairing-form')
 const pairingChallenge = document.querySelector('#pairing-challenge')
@@ -44,8 +53,10 @@ const approvalNotice = document.querySelector('#approval-notice')
 const syncValue = document.querySelector('#sync-value')
 let installPrompt
 let probeInProgress = false
+let gatewayReachable = false
 let pairingPhase = 'loading'
 let pairingExpiresAt
+let disconnectBusy = false
 let conversationsClient
 let stateForRendering = { conversations: [], approvals: [], approvalSubmittedIds: [] }
 
@@ -63,16 +74,26 @@ function updateDeviceSummary() {
 }
 
 function setConnection(state, label, detail) {
+  gatewayReachable = state === 'online'
   document.body.dataset.connection = state
   connectionLabel.textContent = label
   gatewayValue.textContent = label
   gatewayDetail.textContent = detail
   updateDeviceSummary()
+  updateDisconnectControl()
 }
 
 function setDeviceValue(label, className = 'is-muted') {
   deviceValue.textContent = label
   deviceValue.className = `value-label ${className}`
+}
+
+function updateDisconnectControl() {
+  const visible = pairingPhase === 'paired'
+  disconnectDeviceButton.hidden = !visible
+  disconnectDeviceButton.disabled = !visible || disconnectBusy || !navigator.onLine || !gatewayReachable
+    || stateForRendering.phase !== 'ready'
+  confirmDisconnectDeviceButton.disabled = disconnectBusy
 }
 
 function handlePairingState(state) {
@@ -82,6 +103,7 @@ function handlePairingState(state) {
   pairingSetup.hidden = state.phase === 'paired' || state.phase === 'paired-offline' || state.phase === 'paired-error'
   pairingForm.hidden = state.phase === 'pending'
   pairingChallenge.hidden = state.phase !== 'pending'
+  deviceMetadata.hidden = state.phase !== 'paired'
   if (state.phase === 'pending') {
     pairingCode.textContent = state.verificationCode
     pairingMessage.textContent = state.message ?? '等待 Mac 确认'
@@ -93,6 +115,10 @@ function handlePairingState(state) {
     chatStateTitle.textContent = '安全会话已建立'
     chatStateDetail.textContent = '此设备已通过 Jarvis Gateway 认证。'
     messageInput.placeholder = '等待对话同步'
+    devicePlatform.textContent = state.platform === 'pwa' ? 'PWA' : state.platform
+    deviceGeneration.textContent = `第 ${state.generation} 代`
+    deviceIssuedAt.textContent = formatDate(state.issuedAt, true)
+    deviceSessionExpiry.textContent = formatDate(state.accessExpiresAt, true)
   } else if (state.phase === 'paired-offline') {
     setDeviceValue('未连接', 'is-warning')
     deviceDetail.textContent = `${state.displayName} · 本地凭据非当前状态`
@@ -120,6 +146,7 @@ function handlePairingState(state) {
     messageInput.placeholder = '配对后即可发送消息'
   }
   updateDeviceSummary()
+  updateDisconnectControl()
   if (conversationsClient !== undefined) {
     if (state.phase === 'paired') {
       conversationsClient.setOnline(navigator.onLine)
@@ -127,6 +154,8 @@ function handlePairingState(state) {
     } else if (state.phase === 'paired-offline') {
       conversationsClient.setOnline(false)
       void conversationsClient.start()
+    } else if (state.phase === 'unpaired' || state.phase === 'revoked') {
+      conversationsClient.reset(state.phase)
     } else {
       conversationsClient.stop(state.phase)
     }
@@ -317,6 +346,7 @@ function handleConversationState(state) {
   messageInput.placeholder = current === undefined ? '先新建或选择对话' : state.sending ? '正在发送' : '输入消息'
 
   renderApprovals(state, mutable)
+  updateDisconnectControl()
 
   activityList.replaceChildren()
   for (const activity of state.activity) {
@@ -395,6 +425,27 @@ pairButton.addEventListener('click', async () => {
   }
 })
 cancelPairingButton.addEventListener('click', () => { void pairing.cancel() })
+disconnectDeviceButton.addEventListener('click', () => {
+  disconnectDeviceError.hidden = true
+  disconnectDeviceError.textContent = ''
+  disconnectDeviceDialog.showModal()
+})
+confirmDisconnectDeviceButton.addEventListener('click', async () => {
+  if (disconnectBusy) return
+  disconnectBusy = true
+  updateDisconnectControl()
+  disconnectDeviceError.hidden = true
+  try {
+    await pairing.revokeCurrentDevice()
+    disconnectDeviceDialog.close()
+  } catch (error) {
+    disconnectDeviceError.textContent = error instanceof Error ? error.message : '无法断开此设备'
+    disconnectDeviceError.hidden = false
+  } finally {
+    disconnectBusy = false
+    updateDisconnectControl()
+  }
+})
 conversationListItems.addEventListener('click', event => {
   const button = event.target instanceof Element ? event.target.closest('[data-conversation-id]') : null
   if (button !== null) void conversationsClient.select(button.dataset.conversationId)
@@ -436,10 +487,12 @@ refreshButton.addEventListener('click', () => {
 window.addEventListener('online', () => {
   conversationsClient.setOnline(true)
   void probeGateway()
+  updateDisconnectControl()
 })
 window.addEventListener('offline', () => {
   conversationsClient.setOnline(false)
   setConnection('offline', '离线', '设备当前没有网络连接')
+  updateDisconnectControl()
 })
 document.addEventListener('visibilitychange', () => {
   if (document.visibilityState === 'visible') {

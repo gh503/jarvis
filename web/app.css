@@ -287,7 +287,7 @@ body[data-connection="unavailable"] .status-dot { background: var(--danger); }
 .activity-item { display: flex; justify-content: space-between; gap: 18px; padding: 15px 0; border-bottom: 1px solid var(--border); }
 .activity-item time { flex: 0 0 auto; color: var(--text-muted); font-size: 12px; }
 
-.primary-button, .secondary-button {
+.primary-button, .secondary-button, .danger-button {
   min-height: 40px;
   padding: 0 15px;
   border-radius: 6px;
@@ -297,6 +297,9 @@ body[data-connection="unavailable"] .status-dot { background: var(--danger); }
 .primary-button:hover { background: var(--accent-strong); }
 .secondary-button { border: 1px solid var(--border); background: var(--surface); color: var(--text); }
 .secondary-button:hover { background: var(--surface-muted); }
+.danger-button { border: 1px solid #d92d20; background: #fff; color: var(--danger); }
+.danger-button:hover { background: #fff1f0; }
+.danger-button:disabled { border-color: var(--border); color: var(--text-muted); background: var(--surface-muted); }
 
 .composer {
   display: grid;
@@ -334,6 +337,19 @@ body[data-connection="unavailable"] .status-dot { background: var(--danger); }
 }
 .settings-row h2 { margin: 0 0 5px; font-size: 15px; }
 .settings-row p { margin: 0; color: var(--text-muted); line-height: 1.45; }
+.settings-actions { display: flex; flex-direction: column; align-items: flex-end; gap: 10px; }
+.device-metadata { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 7px 18px; margin: 14px 0 0; }
+.device-metadata[hidden] { display: none; }
+.device-metadata div { min-width: 0; }
+.device-metadata dt { color: var(--text-muted); font-size: 11px; }
+.device-metadata dd { margin: 2px 0 0; overflow-wrap: anywhere; font-size: 13px; }
+.confirmation-dialog { width: min(420px, calc(100% - 32px)); padding: 0; border: 1px solid var(--border); border-radius: 8px; color: var(--text); background: var(--surface); box-shadow: 0 20px 60px rgb(0 0 0 / 22%); }
+.confirmation-dialog::backdrop { background: rgb(22 27 26 / 48%); }
+.confirmation-dialog form { padding: 22px; }
+.confirmation-dialog h2 { margin: 0 0 10px; font-size: 20px; }
+.confirmation-dialog p { margin: 0; color: var(--text-muted); line-height: 1.55; }
+.dialog-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 22px; }
+.dialog-error { margin-top: 12px !important; color: var(--danger) !important; }
 
 .pairing-setup {
   display: grid;
@@ -444,7 +460,12 @@ body[data-connection="unavailable"] .status-dot { background: var(--danger); }
   .connection-state { max-width: 118px; padding: 0 8px; }
   .view-header { gap: 8px; }
   .view-header h1 { font-size: 19px; }
-  .settings-row { align-items: start; }
+  .settings-row { grid-template-columns: minmax(0, 1fr); align-items: start; }
+  .device-metadata { grid-template-columns: minmax(0, 1fr); }
+  .settings-actions { width: 100%; align-items: stretch; }
+  .settings-actions .value-label { align-self: flex-start; }
+  .dialog-actions { flex-direction: column-reverse; }
+  .dialog-actions button { width: 100%; }
   .pairing-form-controls { grid-template-columns: 1fr; }
   .pairing-form-controls button { width: 100%; }
   .approval-actions { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); }

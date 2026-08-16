@@ -805,6 +805,46 @@ export function createJarvisGateway(options: JarvisGatewayOptions): JarvisGatewa
         sendJson(response, 200, correlationId, sessions.get(sessionPrincipal.sessionId))
         return
       }
+      if (parts.length === 3 && parts[0] === 'v1' && parts[1] === 'devices' && parts[2] === 'current') {
+        if ([...requestQuery(request).keys()].length !== 0) throw new Error('current device query is invalid')
+        if (sessionPrincipal === undefined) {
+          sendJson(response, 401, correlationId, { error: 'session authentication required', correlationId })
+          return
+        }
+        if (request.method === 'GET') {
+          const device = authority.getDevice(sessionPrincipal.nodeId)
+          const session = sessions.get(sessionPrincipal.sessionId)
+          if (device === undefined || session === undefined || session.revokedAt !== null) {
+            sendJson(response, 401, correlationId, { error: 'current device is unavailable', correlationId })
+            return
+          }
+          sendJson(response, 200, correlationId, {
+            device,
+            session: {
+              sessionId: session.sessionId,
+              issuedAt: session.issuedAt,
+              refreshedAt: session.refreshedAt,
+              accessExpiresAt: session.accessExpiresAt,
+              refreshExpiresAt: session.refreshExpiresAt,
+            },
+          })
+          return
+        }
+        if (request.method === 'DELETE') {
+          const nodeId = sessionPrincipal.nodeId
+          if (!authority.revoke(nodeId)) {
+            sendJson(response, 401, correlationId, { error: 'current device is unavailable', correlationId })
+            return
+          }
+          sessions.revokeDevice(nodeId)
+          disconnectNode(nodeId, 'device access revoked')
+          disconnectEventDevice(nodeId, 'device access revoked')
+          sendJson(response, 204, correlationId, {})
+          return
+        }
+        sendJson(response, 405, correlationId, { error: 'method not allowed', correlationId })
+        return
+      }
       if (parts[0] !== 'v1' || (!ownerAuthenticated && deviceNodeId === undefined && sessionPrincipal === undefined)) {
         sendJson(response, 401, correlationId, { error: 'authentication required', correlationId })
         return

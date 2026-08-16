@@ -52,8 +52,10 @@ class FakeSocket {
     this.sent.push(JSON.parse(value))
   }
 
-  close() {
+  close(code, reason) {
     if (this.readyState === 3) return
+    this.closeCode = code
+    this.closeReason = reason
     this.readyState = 3
     this.dispatch('close')
   }
@@ -152,6 +154,21 @@ test('shows a cached snapshot as stale while offline without contacting the Gate
   assert.deepEqual(states.at(-1).messages, [message])
 })
 
+test('clears in-memory conversation and approval state after device revocation', async () => {
+  const states = []
+  const client = new ConversationsClient(gatewayPairing([], { approvals: [approval] }), state => states.push(state), {
+    store: memoryStore(), location: { origin: 'https://jarvis.internal' }, socketFactory: url => new FakeSocket(url),
+  })
+  await client.start()
+  assert.deepEqual(states.at(-1).messages, [message])
+  assert.deepEqual(states.at(-1).approvals, [approval])
+  client.reset('revoked')
+  assert.equal(states.at(-1).phase, 'revoked')
+  assert.deepEqual(states.at(-1).conversations, [])
+  assert.deepEqual(states.at(-1).messages, [])
+  assert.deepEqual(states.at(-1).approvals, [])
+})
+
 test('allows only one in-flight submission for the same draft', async () => {
   const calls = []
   const states = []
@@ -219,6 +236,7 @@ test('does not advance the event cursor when a required snapshot fails', async (
   await tick()
   assert.equal(store.values.has('event-cursor'), false)
   assert.equal(sockets[0].readyState, 3)
+  assert.equal(sockets[0].closeCode, 4002)
 })
 
 test('keeps approvals memory-only and reuses a decision key after a transport retry', async () => {
@@ -304,4 +322,25 @@ test('converges live approval requested and resolved events', async () => {
   })
   await tick()
   assert.deepEqual(states.at(-1).approvals, [])
+})
+
+test('converges a server-side device revocation across an active browser tab', async () => {
+  const sockets = []
+  let revocations = 0
+  const pairing = gatewayPairing([])
+  pairing.handleRemoteRevocation = async () => { revocations += 1 }
+  const client = new ConversationsClient(pairing, () => {}, {
+    store: memoryStore(), location: { origin: 'https://jarvis.internal' },
+    socketFactory: url => {
+      const socket = new FakeSocket(url)
+      sockets.push(socket)
+      return socket
+    },
+  })
+  await client.start()
+  await tick()
+  sockets[0].open()
+  sockets[0].message({ type: 'events.rejected', code: 'device_revoked' })
+  await tick()
+  assert.equal(revocations, 1)
 })

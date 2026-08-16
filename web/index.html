@@ -12,7 +12,7 @@
     <link rel="icon" href="./icon.svg" type="image/svg+xml">
     <link rel="apple-touch-icon" sizes="180x180" href="./apple-touch-icon.png">
     <link rel="stylesheet" href="./app.css">
-    <script src="./app.js?v=8" type="module"></script>
+    <script src="./app.js?v=10" type="module"></script>
   </head>
   <body data-connection="checking">
     <a class="skip-link" href="#main-content">跳到主要内容</a>
@@ -127,8 +127,17 @@
               <div>
                 <h2 id="device-heading">设备身份</h2>
                 <p id="device-detail">尚未向此浏览器签发凭据</p>
+                <dl id="device-metadata" class="device-metadata" hidden>
+                  <div><dt>类型</dt><dd id="device-platform">PWA</dd></div>
+                  <div><dt>凭据代次</dt><dd id="device-generation">-</dd></div>
+                  <div><dt>配对时间</dt><dd id="device-issued-at">-</dd></div>
+                  <div><dt>会话到期</dt><dd id="device-session-expiry">-</dd></div>
+                </dl>
               </div>
-              <span id="device-value" class="value-label is-muted">未配对</span>
+              <div class="settings-actions">
+                <span id="device-value" class="value-label is-muted">未配对</span>
+                <button id="disconnect-device-button" class="danger-button" type="button" hidden disabled>断开此设备</button>
+              </div>
             </section>
             <section id="pairing-setup" class="pairing-setup" aria-labelledby="pairing-setup-heading">
               <div>
@@ -173,5 +182,16 @@
       <button class="mobile-nav-button" type="button" data-view-target="activity"><span aria-hidden="true">✓</span><span>审批</span><span class="approval-count" data-approval-count hidden>0</span></button>
       <button class="mobile-nav-button" type="button" data-view-target="settings"><span aria-hidden="true">⚙</span><span>设置</span></button>
     </nav>
+    <dialog id="disconnect-device-dialog" class="confirmation-dialog" aria-labelledby="disconnect-device-title">
+      <form method="dialog">
+        <h2 id="disconnect-device-title">断开此设备？</h2>
+        <p>此设备的凭据和全部会话将立即撤销，本地对话快照也会清除。再次使用需要由 Mac 重新批准配对。</p>
+        <p id="disconnect-device-error" class="dialog-error" role="alert" hidden></p>
+        <div class="dialog-actions">
+          <button class="secondary-button" type="submit" value="cancel">取消</button>
+          <button id="confirm-disconnect-device-button" class="danger-button" type="button">断开设备</button>
+        </div>
+      </form>
+    </dialog>
   </body>
 </html>
