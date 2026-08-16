@@ -1,5 +1,6 @@
 import type { DeviceState, DeviceSource, DiscoveredDevice } from './device-registry.js'
 import { commandDigest } from './approval.js'
+import { deviceApprovalDigest, type DeviceApprovalAuthorization, type HighRiskDeviceCommand } from './device-approval.js'
 
 export type HomeAssistantAdapterState = 'stopped' | 'connecting' | 'syncing' | 'ready' | 'degraded'
 export type HomeAssistantCommandState = 'succeeded' | 'acknowledged-unconfirmed' | 'failed' | 'timed-out' | 'unavailable'
@@ -16,10 +17,17 @@ export interface HomeAssistantServiceCommand {
   timeoutMs: number
 }
 
+export interface HomeAssistantApprovedServiceCommand extends HighRiskDeviceCommand {
+  timeoutMs: number
+}
+
+export type HomeAssistantDispatchCommand = HomeAssistantServiceCommand | HomeAssistantApprovedServiceCommand
+export type HomeAssistantCapability = HomeAssistantDispatchCommand['capability']
+
 export interface HomeAssistantCommandResult {
   commandId: string
   idempotencyKey: string
-  capability: HomeAssistantServiceCommand['capability']
+  capability: HomeAssistantCapability
   state: HomeAssistantCommandState
   acknowledged: boolean
   observedState?: string
@@ -60,6 +68,7 @@ export interface HomeAssistantAdapterOptions {
   onUnavailable?: (source: DeviceSource, externalEntityId: string) => void
   onStatus?: (state: HomeAssistantAdapterState) => void
   onCommand?: (transition: HomeAssistantCommandTransition) => void
+  now?: () => number
   timers?: HomeAssistantTimers
   reconnectBaseMs?: number
   reconnectMaxMs?: number
@@ -84,6 +93,10 @@ const LOW_RISK_SERVICES: Readonly<Record<HomeAssistantServiceCommand['capability
   'light.set': ['turn_on', 'turn_off'],
   'media.play_pause': ['media_play', 'media_pause'],
 })
+const HIGH_RISK_SERVICES: Readonly<Record<HomeAssistantApprovedServiceCommand['capability'], readonly string[]>> = Object.freeze({
+  'lock.set': ['lock', 'unlock'],
+  'alarm.set': ['alarm_arm_home', 'alarm_arm_away', 'alarm_arm_night', 'alarm_arm_custom_bypass', 'alarm_disarm'],
+})
 
 type WireRecord = Record<string, unknown>
 
@@ -94,7 +107,7 @@ interface KnownEntity {
 }
 
 interface PendingCommand {
-  command: HomeAssistantServiceCommand
+  command: HomeAssistantDispatchCommand
   requestId: number
   resolve: (result: HomeAssistantCommandResult) => void
   acknowledged: boolean
@@ -204,6 +217,7 @@ export class HomeAssistantAdapter {
   private readonly timers: HomeAssistantTimers
   private readonly reconnectBaseMs: number
   private readonly reconnectMaxMs: number
+  private readonly now: () => number
   private readonly instance: string
   private socket: HomeAssistantSocket | undefined
   private reconnectHandle: unknown
@@ -215,6 +229,7 @@ export class HomeAssistantAdapter {
   private knownEntities = new Map<string, KnownEntity>()
   private readonly pendingCommands = new Map<number, PendingCommand>()
   private readonly commandOutcomes = new Map<string, { fingerprint: string; promise: Promise<HomeAssistantCommandResult> }>()
+  private readonly consumedApprovalIds = new Set<string>()
 
   constructor(options: HomeAssistantAdapterOptions) {
     this.url = validateUrl(options.url)
@@ -225,6 +240,7 @@ export class HomeAssistantAdapter {
     this.onUnavailable = options.onUnavailable
     this.onStatus = options.onStatus
     this.onCommand = options.onCommand
+    this.now = options.now ?? Date.now
     this.timers = options.timers ?? {
       setTimeout: (callback, delayMs) => setTimeout(callback, delayMs),
       clearTimeout: handle => clearTimeout(handle as ReturnType<typeof setTimeout>),
@@ -261,15 +277,44 @@ export class HomeAssistantAdapter {
 
   callService(command: HomeAssistantServiceCommand): Promise<HomeAssistantCommandResult> {
     const normalized = this.validateCommand(command)
-    const fingerprint = commandDigest({
+    return this.dispatchService(normalized)
+  }
+
+  callApprovedService(
+    command: HomeAssistantApprovedServiceCommand,
+    authorization: DeviceApprovalAuthorization,
+  ): Promise<HomeAssistantCommandResult> {
+    const normalized = this.validateApprovedCommand(command)
+    const fingerprint = this.commandFingerprint(normalized)
+    const existing = this.commandOutcomes.get(normalized.idempotencyKey)
+    if (existing !== undefined) {
+      if (existing.fingerprint === fingerprint) return existing.promise
+      return Promise.resolve(this.finalResult(normalized, 'failed', false, undefined, 'idempotency key was reused for a different command'))
+    }
+    if (!this.validAuthorization(authorization) || authorization.expiresAt <= this.now()) {
+      return Promise.resolve(this.finalResult(normalized, 'failed', false, undefined, 'device approval authorization is invalid or expired'))
+    }
+    const approvalCommand: HighRiskDeviceCommand = {
+      commandId: normalized.commandId,
       idempotencyKey: normalized.idempotencyKey,
       capability: normalized.capability,
       externalEntityId: normalized.externalEntityId,
       service: normalized.service,
-      serviceData: normalized.serviceData ?? {},
       expectedState: normalized.expectedState,
-      timeoutMs: normalized.timeoutMs,
-    })
+      ...(normalized.serviceData === undefined ? {} : { serviceData: normalized.serviceData }),
+    }
+    if (authorization.digest !== deviceApprovalDigest(approvalCommand)) {
+      return Promise.resolve(this.finalResult(normalized, 'failed', false, undefined, 'device approval authorization does not match the command'))
+    }
+    if (this.consumedApprovalIds.has(authorization.approvalId)) {
+      return Promise.resolve(this.finalResult(normalized, 'failed', false, undefined, 'device approval authorization has already been consumed'))
+    }
+    this.consumedApprovalIds.add(authorization.approvalId)
+    return this.dispatchService(normalized)
+  }
+
+  private dispatchService(normalized: HomeAssistantDispatchCommand): Promise<HomeAssistantCommandResult> {
+    const fingerprint = this.commandFingerprint(normalized)
     const existing = this.commandOutcomes.get(normalized.idempotencyKey)
     if (existing !== undefined) {
       if (existing.fingerprint === fingerprint) return existing.promise
@@ -526,7 +571,47 @@ export class HomeAssistantAdapter {
     return { commandId, idempotencyKey, capability, externalEntityId, service, expectedState, timeoutMs: command.timeoutMs, ...(command.serviceData === undefined ? {} : { serviceData: command.serviceData }) }
   }
 
-  private emitCommand(command: HomeAssistantServiceCommand, phase: HomeAssistantCommandPhase, observedState?: string, error?: string): void {
+  private validateApprovedCommand(command: HomeAssistantApprovedServiceCommand): HomeAssistantApprovedServiceCommand {
+    if (!isRecord(command)) throw new TypeError('approved Home Assistant command must be an object')
+    if (command.capability !== 'lock.set' && command.capability !== 'alarm.set') {
+      throw new Error('approved Home Assistant command capability must be high risk')
+    }
+    const commandId = requiredText(command.commandId, 'commandId', 128)
+    const idempotencyKey = requiredText(command.idempotencyKey, 'idempotencyKey', 128)
+    const externalEntityId = requiredText(command.externalEntityId, 'externalEntityId', 256)
+    const service = requiredText(command.service, 'service', 64)
+    if (!HIGH_RISK_SERVICES[command.capability].includes(service)) throw new Error(`service is not allowlisted for ${command.capability}`)
+    const expectedState = requiredText(command.expectedState, 'expectedState', 128)
+    if (!Number.isInteger(command.timeoutMs) || command.timeoutMs < 1 || command.timeoutMs > 120_000) throw new RangeError('timeoutMs must be an integer between 1 and 120000')
+    if (command.serviceData !== undefined && !isRecord(command.serviceData)) throw new TypeError('serviceData must be an object')
+    return {
+      commandId, idempotencyKey, capability: command.capability, externalEntityId, service, expectedState, timeoutMs: command.timeoutMs,
+      ...(command.serviceData === undefined ? {} : { serviceData: command.serviceData }),
+    }
+  }
+
+  private commandFingerprint(command: HomeAssistantDispatchCommand): string {
+    return commandDigest({
+      idempotencyKey: command.idempotencyKey,
+      capability: command.capability,
+      externalEntityId: command.externalEntityId,
+      service: command.service,
+      serviceData: command.serviceData ?? {},
+      expectedState: command.expectedState,
+      timeoutMs: command.timeoutMs,
+    })
+  }
+
+  private validAuthorization(value: unknown): value is DeviceApprovalAuthorization {
+    return isRecord(value) && typeof value.approvalId === 'string' && /^[A-Za-z0-9_-]{1,128}$/.test(value.approvalId)
+      && typeof value.digest === 'string' && /^[0-9a-f]{64}$/.test(value.digest)
+      && value.risk === 'high' && value.allowedOnce === true
+      && typeof value.approvedAt === 'number' && Number.isFinite(value.approvedAt)
+      && typeof value.expiresAt === 'number' && Number.isFinite(value.expiresAt)
+      && value.expiresAt > value.approvedAt
+  }
+
+  private emitCommand(command: HomeAssistantDispatchCommand, phase: HomeAssistantCommandPhase, observedState?: string, error?: string): void {
     this.onCommand?.({
       commandId: command.commandId,
       idempotencyKey: command.idempotencyKey,
@@ -544,7 +629,7 @@ export class HomeAssistantAdapter {
     pending.resolve(this.finalResult(pending.command, state, pending.acknowledged, observedState, error))
   }
 
-  private finalResult(command: HomeAssistantServiceCommand, state: HomeAssistantCommandState, acknowledged: boolean, observedState?: string, error?: string): HomeAssistantCommandResult {
+  private finalResult(command: HomeAssistantDispatchCommand, state: HomeAssistantCommandState, acknowledged: boolean, observedState?: string, error?: string): HomeAssistantCommandResult {
     return {
       commandId: command.commandId,
       idempotencyKey: command.idempotencyKey,
