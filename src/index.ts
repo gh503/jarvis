@@ -3,6 +3,7 @@ import { dirname, join, resolve } from 'node:path'
 import type { Context } from '@deepseek-ai/cordis'
 import { defineTool, type PreToolDecision } from '@deepseek-ai/dsh-tools'
 import type {} from '@deepseek-ai/dsh-host-webserver'
+import { ApprovalLedger } from './approval.js'
 import { AppRegistry } from './apps.js'
 import { AuditLog } from './audit.js'
 import { ReminderStore, type Reminder } from './reminders.js'
@@ -33,6 +34,7 @@ export async function apply(ctx: Context): Promise<void> {
   const apps = await AppRegistry.load(join(projectRoot, 'config', 'apps.json'))
   const audit = new AuditLog(dataDir)
   const reminders = new ReminderStore(dataDir)
+  const approvals = new ApprovalLedger()
   await Promise.all([audit.initialize(), reminders.initialize()])
 
   ctx.tools.guard(exec => JARVIS_TOOLS.has(exec.name) || exec.name === 'ask_user_question'
@@ -66,14 +68,26 @@ export async function apply(ctx: Context): Promise<void> {
         })
         return { kind: 'deny', reason: `Application is not allowlisted. Allowed values: ${apps.keys().join(', ')}` }
       }
+      const approval = approvals.propose(String(exec.callId), {
+        action: 'open_app',
+        application,
+      })
+      const approvalDetail = {
+        ...(detail ?? {}),
+        digest: approval.digest,
+        expiresAt: new Date(approval.expiresAt).toISOString(),
+      }
       await audit.append({
         tool: exec.name,
         callId: String(exec.callId),
         phase: 'policy',
         decision: 'awaiting-approval',
-        ...(detail === undefined ? {} : { detail }),
+        detail: approvalDetail,
       })
-      return { kind: 'ask', reason: `Open allowlisted application "${definition.displayName}" (${application})` }
+      return {
+        kind: 'ask',
+        reason: `Open allowlisted application "${definition.displayName}" (${application}). Approval digest ${approval.digest}; expires in 60 seconds.`,
+      }
     }
     await audit.append({
       tool: exec.name,
@@ -85,8 +99,29 @@ export async function apply(ctx: Context): Promise<void> {
     return next()
   })
 
+  ctx.on('tools/execute', async (exec, next) => {
+    if (exec.name === 'jarvis_open_app') {
+      const application = typeof exec.arguments === 'object' && exec.arguments !== null
+        ? Reflect.get(exec.arguments, 'application')
+        : undefined
+      const approval = approvals.consume(String(exec.callId), {
+        action: 'open_app',
+        application,
+      })
+      await audit.append({
+        tool: exec.name,
+        callId: String(exec.callId),
+        phase: 'dispatch',
+        decision: 'approved',
+        detail: { application: String(application), digest: approval.digest },
+      })
+    }
+    return next()
+  })
+
   ctx.on('tools/result', (exec, result) => {
     if (!JARVIS_TOOLS.has(exec.name)) return
+    if (exec.name === 'jarvis_open_app') approvals.clear(String(exec.callId))
     const detail = safeAuditDetail(exec.name, exec.arguments)
     void audit.append({
       tool: exec.name,
@@ -142,13 +177,6 @@ export async function apply(ctx: Context): Promise<void> {
       render: (_args, value) => [{ type: 'text', text: `Opened ${String(value.displayName)}.` }],
     },
     async execute(args, exec) {
-      await audit.append({
-        tool: 'jarvis_open_app',
-        callId: String(exec.callId),
-        phase: 'dispatch',
-        decision: 'approved',
-        detail: { application: args.application },
-      })
       const definition = await apps.open(args.application, exec.signal)
       return { application: args.application, displayName: definition.displayName, launched: true }
     },
