@@ -32,7 +32,8 @@
 - Ed25519 设备私钥同样只保存在 macOS Keychain；读取时会验证公私钥匹配和指纹，已有身份不会被静默覆盖。
 - Node Agent 支持异步凭据提供器；每次启动读取当前凭据，停止时清除内存副本。
 - 已实现配对协议核心及 Gateway API：Ed25519 设备身份、短期单次验证码、凭据轮换、撤销和原子状态持久化。
-- 已实现 loopback-only `v1` Gateway 控制面原型：Owner/Device 认证、配对确认、轮换、撤销、请求 correlation ID，以及 `/v1/node` WebSocket 的认证、能力注册和在线连接管理；未绑定公网。
+- 已实现私网受限的 `v1` Gateway 控制面原型：Owner/Device 认证、配对确认、轮换、撤销、请求 correlation ID，以及 `/v1/node` WebSocket 的认证、能力注册和在线连接管理；默认 loopback，可启用私网 TLS，但禁止公网绑定。
+- Gateway 可由设备凭据签发短期访问会话；refresh 每次轮换，旧 refresh 复用、Owner 登出或设备撤销都会使会话族失效。
 
 ## 环境要求
 
@@ -85,7 +86,7 @@ JARVIS_GATEWAY_TLS_CERT='/private/path/gateway-certificate-chain.pem' \
 npm run start:gateway
 ```
 
-证书必须由连接设备信任并覆盖客户端使用的 Gateway 名称。该配置不会安装或管理 Tailscale，也不能直接暴露到互联网；手机访问仍需短期用户会话、速率限制、Harness bridge 和可从游标恢复的事件同步。
+证书必须由连接设备信任并覆盖客户端使用的 Gateway 名称。该配置不会安装或管理 Tailscale，也不能直接暴露到互联网；手机访问仍需速率限制、Harness bridge 和可从游标恢复的事件同步。
 
 Gateway 运行后，可以在另一个终端为当前 Mac 创建身份并完成人工验证码确认：
 
@@ -114,6 +115,7 @@ JARVIS_OWNER_TOKEN='the-same-local-owner-token' npm run pair:node -- \
 - Harness 会话：`.dsh/sessions/`
 - Jarvis 提醒：`data/reminders.json`
 - Jarvis 审计：`data/audit.jsonl`
+- Gateway 配对与会话摘要：`data/pairing-state.json`、`data/session-state.json`
 - API Key：仅存放在未纳入 Git 的 `.env`
 - 网络：仅限本机回环地址，不要通过端口转发直接暴露到局域网或互联网
 

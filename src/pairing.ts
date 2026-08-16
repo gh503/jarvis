@@ -180,6 +180,11 @@ export class PairingAuthority {
     return sameDigest(record.credentialDigest, credentialDigest(credential))
   }
 
+  isActive(nodeId: string): boolean {
+    const record = this.devices.get(nodeId)
+    return record !== undefined && !record.revoked
+  }
+
   rotate(nodeId: string, currentCredential: string): IssuedCredential {
     const record = this.requireAuthenticated(nodeId, currentCredential)
     return this.issue(record.nodeId, record.publicKey, record.generation + 1)

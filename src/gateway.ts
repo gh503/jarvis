@@ -6,6 +6,7 @@ import { WebSocket, WebSocketServer, type RawData } from 'ws'
 import { NODE_PROTOCOL_VERSION, parseNodeRegistration, type NodeRegistration } from './node-capabilities.js'
 import type { NodeCommand } from './node-command.js'
 import { FilePairingStateStore, PairingAuthority } from './pairing.js'
+import { FileSessionStateStore, SessionAuthenticationError, SessionAuthority, type SessionPrincipal } from './sessions.js'
 
 const MAX_BODY_BYTES = 32 * 1024
 const NODE_PATH = '/v1/node'
@@ -37,6 +38,8 @@ export interface JarvisGatewayOptions {
   maxNodeConnections?: number
   bindHost?: string
   tls?: GatewayTlsOptions
+  sessions?: SessionAuthority
+  sessionStatePath?: string
 }
 
 export interface RunningGateway {
@@ -77,7 +80,7 @@ function requestCorrelationId(request: IncomingMessage): string {
 
 function sendJson(response: ServerResponse, status: number, correlationId: string, value: unknown): void {
   if (status === 204) {
-    response.writeHead(status, { 'x-correlation-id': correlationId })
+    response.writeHead(status, { 'cache-control': 'no-store', 'x-correlation-id': correlationId })
     response.end()
     return
   }
@@ -85,12 +88,13 @@ function sendJson(response: ServerResponse, status: number, correlationId: strin
   response.writeHead(status, {
     'content-type': 'application/json; charset=utf-8',
     'content-length': Buffer.byteLength(body),
+    'cache-control': 'no-store',
     'x-correlation-id': correlationId,
   })
   response.end(body)
 }
 
-function bearerToken(request: IncomingMessage, scheme: 'Bearer' | 'Device'): string | undefined {
+function bearerToken(request: IncomingMessage, scheme: 'Bearer' | 'Device' | 'Session'): string | undefined {
   const value = request.headers.authorization
   const prefix = `${scheme} `
   return typeof value === 'string' && value.startsWith(prefix) ? value.slice(prefix.length) : undefined
@@ -167,6 +171,12 @@ export function createJarvisGateway(options: JarvisGatewayOptions): JarvisGatewa
     undefined,
     options.pairingStatePath === undefined ? undefined : new FilePairingStateStore(options.pairingStatePath),
   )
+  const sessions = options.sessions ?? new SessionAuthority(
+    options.sessionStatePath === undefined ? {} : { store: new FileSessionStateStore(options.sessionStatePath) },
+  )
+  for (const nodeId of new Set(sessions.list().map(session => session.nodeId))) {
+    if (!authority.isActive(nodeId)) sessions.revokeDevice(nodeId)
+  }
   const maxBodyBytes = options.maxBodyBytes ?? MAX_BODY_BYTES
   if (!Number.isInteger(maxBodyBytes) || maxBodyBytes < 1) throw new RangeError('maxBodyBytes must be positive')
   const nodeHandshakeTimeoutMs = options.nodeHandshakeTimeoutMs ?? NODE_HANDSHAKE_TIMEOUT_MS
@@ -290,8 +300,76 @@ export function createJarvisGateway(options: JarvisGatewayOptions): JarvisGatewa
       }
       const ownerAuthenticated = sameSecret(options.ownerToken, bearerToken(request, 'Bearer'))
       const deviceCredential = bearerToken(request, 'Device')
-      if (parts[0] !== 'v1' || (!ownerAuthenticated && deviceCredential === undefined)) {
+      const sessionToken = bearerToken(request, 'Session')
+      let sessionPrincipal: SessionPrincipal | undefined = sessionToken === undefined
+        ? undefined
+        : sessions.authenticate(sessionToken)
+      if (sessionPrincipal !== undefined && !authority.isActive(sessionPrincipal.nodeId)) {
+        sessions.revokeDevice(sessionPrincipal.nodeId)
+        sessionPrincipal = undefined
+      }
+      if (request.method === 'POST' && parts.length === 3 && parts[0] === 'v1' && parts[1] === 'sessions' && parts[2] === 'refresh') {
+        const body = await readJson(request, maxBodyBytes)
+        if (!record(body) || typeof body.refreshToken !== 'string') throw new Error('session refresh body is invalid')
+        try {
+          const refreshed = sessions.refresh(body.refreshToken)
+          if (!authority.isActive(refreshed.nodeId)) {
+            sessions.revokeDevice(refreshed.nodeId)
+            sendJson(response, 401, correlationId, { error: 'session device is revoked', code: 'device_revoked', correlationId })
+            return
+          }
+          sendJson(response, 200, correlationId, refreshed)
+        } catch (error) {
+          if (!(error instanceof SessionAuthenticationError)) throw error
+          const code = error.code === 'reuse' ? 'refresh_reuse_detected' : `refresh_${error.code}`
+          sendJson(response, 401, correlationId, { error: 'session refresh rejected', code, correlationId })
+        }
+        return
+      }
+      if (request.method === 'POST' && parts.length === 2 && parts[0] === 'v1' && parts[1] === 'sessions') {
+        if (deviceCredential === undefined) {
+          sendJson(response, 401, correlationId, { error: 'device authentication required', correlationId })
+          return
+        }
+        const body = await readJson(request, maxBodyBytes)
+        if (!record(body) || typeof body.nodeId !== 'string') throw new Error('session request body is invalid')
+        if (!authority.authenticate(body.nodeId, deviceCredential)) {
+          sendJson(response, 401, correlationId, { error: 'device credential is invalid or revoked', correlationId })
+          return
+        }
+        sendJson(response, 201, correlationId, sessions.issue(body.nodeId))
+        return
+      }
+      if (request.method === 'GET' && parts.length === 3 && parts[0] === 'v1' && parts[1] === 'sessions' && parts[2] === 'current') {
+        if (sessionPrincipal === undefined) {
+          sendJson(response, 401, correlationId, { error: 'session authentication required', correlationId })
+          return
+        }
+        sendJson(response, 200, correlationId, sessions.get(sessionPrincipal.sessionId))
+        return
+      }
+      if (parts[0] !== 'v1' || (!ownerAuthenticated && deviceCredential === undefined && sessionPrincipal === undefined)) {
         sendJson(response, 401, correlationId, { error: 'authentication required', correlationId })
+        return
+      }
+      if (request.method === 'GET' && parts.length === 2 && parts[1] === 'sessions') {
+        if (!ownerAuthenticated) {
+          sendJson(response, 403, correlationId, { error: 'owner authentication required', correlationId })
+          return
+        }
+        sendJson(response, 200, correlationId, { sessions: sessions.list() })
+        return
+      }
+      if (request.method === 'DELETE' && parts.length === 3 && parts[1] === 'sessions') {
+        if (!ownerAuthenticated) {
+          sendJson(response, 403, correlationId, { error: 'owner authentication required', correlationId })
+          return
+        }
+        if (!sessions.revokeSession(parts[2] as string)) {
+          sendJson(response, 404, correlationId, { error: 'session not found or already revoked', correlationId })
+          return
+        }
+        sendJson(response, 204, correlationId, {})
         return
       }
       if (request.method === 'POST' && parts.length === 3 && parts[1] === 'pairing' && parts[2] === 'requests') {
@@ -339,10 +417,12 @@ export function createJarvisGateway(options: JarvisGatewayOptions): JarvisGatewa
             sendJson(response, 403, correlationId, { error: 'owner authentication required', correlationId })
             return
           }
-          if (!authority.revoke(nodeId)) {
+          if (!authority.isActive(nodeId)) {
             sendJson(response, 404, correlationId, { error: 'device not found or already revoked', correlationId })
             return
           }
+          sessions.revokeDevice(nodeId)
+          if (!authority.revoke(nodeId)) throw new Error('device revocation failed')
           sendJson(response, 204, correlationId, {})
           disconnectNode(nodeId, 'device access revoked')
           return
