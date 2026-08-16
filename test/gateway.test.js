@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict'
 import { execFileSync, spawnSync } from 'node:child_process'
+import { createDecipheriv, createHash } from 'node:crypto'
 import { chmod, mkdtemp, readFile, rm } from 'node:fs/promises'
 import { request as httpsRequest } from 'node:https'
 import { tmpdir } from 'node:os'
@@ -83,6 +84,14 @@ function issueCredential(authority, nodeId = 'node-1') {
     platform: 'macos',
   })
   return authority.confirm(pairing.requestId, pairing.verificationCode).credential
+}
+
+function decryptBrowserClaim(claim, claimToken) {
+  const key = createHash('sha256').update('jarvis-pairing-claim-v1\0').update(claimToken, 'utf8').digest()
+  const encrypted = Buffer.from(claim.encryptedCredential.ciphertext, 'base64url')
+  const decipher = createDecipheriv('aes-256-gcm', key, Buffer.from(claim.encryptedCredential.iv, 'base64url'))
+  decipher.setAuthTag(encrypted.subarray(-16))
+  return Buffer.concat([decipher.update(encrypted.subarray(0, -16)), decipher.final()]).toString('utf8')
 }
 
 function nodeAgentConfig(endpoint, credential, socketFactory, execute) {
@@ -294,6 +303,99 @@ test('runs authenticated pairing, device rotation, and owner revocation over ver
       method: 'POST', headers: { authorization: `Device ${second.credential}` },
     })
     assert.equal(rejectedRotation.status, 401)
+  } finally {
+    await service.stop()
+  }
+})
+
+test('pairs a browser through owner approval and an encrypted idempotent claim', async () => {
+  const authority = new PairingAuthority(() => 1_000, 60_000)
+  const identity = createDeviceIdentity()
+  const service = createJarvisGateway({ ownerToken, authority })
+  const gateway = await service.start()
+  try {
+    const created = await request(gateway, '/v1/pairing/requests/browser', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        nodeId: 'pwa-phone', publicKey: identity.publicKey, displayName: 'Owner Phone', platform: 'pwa',
+      }),
+    })
+    assert.equal(created.status, 201)
+    const challenge = await created.json()
+    assert.match(challenge.verificationCode, /^\d{6}$/)
+    assert.match(challenge.claimToken, /^[A-Za-z0-9_-]{43}$/)
+
+    const pending = await request(gateway, '/v1/pairing/requests/claim', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ requestId: challenge.requestId, claimToken: challenge.claimToken }),
+    })
+    assert.equal(pending.status, 202)
+    assert.deepEqual(await pending.json(), { status: 'pending' })
+
+    const badClaim = await request(gateway, '/v1/pairing/requests/claim', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ requestId: challenge.requestId, claimToken: 'A'.repeat(43) }),
+    })
+    assert.equal(badClaim.status, 401)
+    assert.equal((await badClaim.json()).code, 'pairing_claim_rejected')
+
+    const unauthorizedApproval = await request(gateway, '/v1/pairing/requests/approve', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ verificationCode: challenge.verificationCode }),
+    })
+    assert.equal(unauthorizedApproval.status, 401)
+    const approved = await request(gateway, '/v1/pairing/requests/approve', {
+      method: 'POST',
+      headers: { authorization: `Bearer ${ownerToken}`, 'content-type': 'application/json' },
+      body: JSON.stringify({ verificationCode: challenge.verificationCode }),
+    })
+    assert.equal(approved.status, 200)
+    assert.equal((await approved.json()).nodeId, 'pwa-phone')
+
+    const claimRequest = () => request(gateway, '/v1/pairing/requests/claim', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ requestId: challenge.requestId, claimToken: challenge.claimToken }),
+    })
+    const claimed = await claimRequest()
+    assert.equal(claimed.status, 200)
+    const claim = await claimed.json()
+    const retry = await claimRequest()
+    assert.equal(retry.status, 200)
+    assert.deepEqual(await retry.json(), claim)
+
+    const credential = decryptBrowserClaim(claim, challenge.claimToken)
+    const session = await request(gateway, '/v1/sessions', {
+      method: 'POST',
+      headers: { authorization: `Device ${credential}`, 'content-type': 'application/json' },
+      body: JSON.stringify({ nodeId: challenge.nodeId }),
+    })
+    assert.equal(session.status, 201)
+    assert.match((await session.json()).accessToken, /^[A-Za-z0-9_-]{43}$/)
+  } finally {
+    await service.stop()
+  }
+})
+
+test('reports browser pairing capacity as temporarily unavailable', async () => {
+  const authority = new PairingAuthority(() => 1_000, 60_000, undefined, 1)
+  const identity = createDeviceIdentity()
+  const service = createJarvisGateway({ ownerToken, authority })
+  const gateway = await service.start()
+  try {
+    const createRequest = nodeId => request(gateway, '/v1/pairing/requests/browser', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ nodeId, publicKey: identity.publicKey, displayName: 'Owner Phone', platform: 'pwa' }),
+    })
+    assert.equal((await createRequest('pwa-first')).status, 201)
+    const capacity = await createRequest('pwa-second')
+    assert.equal(capacity.status, 503)
+    assert.equal((await capacity.json()).code, 'pairing_capacity')
   } finally {
     await service.stop()
   }

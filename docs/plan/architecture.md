@@ -268,11 +268,11 @@ Required invariants:
 
 ### Device pairing
 
-1. Authenticated owner creates a short-lived pairing request.
-2. New device generates a local key pair.
-3. Owner verifies a displayed code on an existing trusted client.
-4. Gateway issues a revocable device credential bound to the public key.
-5. Device opens an outbound authenticated connection.
+1. New device generates a local key pair and creates a bounded short-lived claimable request.
+2. Gateway returns a six-digit verification code and a high-entropy claim secret only to that device.
+3. Owner approves the displayed code through an authenticated trusted loopback client.
+4. Gateway issues a revocable credential bound to the public key, persists only credential and claim-secret digests, and stores an AES-GCM claim envelope for safe retry.
+5. Device decrypts the envelope with a key derived from its claim secret and exchanges the credential for a rotating short-lived session.
 
 ## 7. Delivery Stages
 
