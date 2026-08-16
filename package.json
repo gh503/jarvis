@@ -21,7 +21,7 @@
     "@deepseek-ai/dsh-tools": "0.1.0-rc.6"
   },
   "devDependencies": {
-    "@types/node": "24.3.0",
+    "@types/node": "24.13.3",
     "typescript": "6.0.3"
   }
 }
