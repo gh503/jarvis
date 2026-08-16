@@ -1,4 +1,5 @@
-import { BrowserPairing } from './pairing.js?v=4'
+import { ConversationsClient } from './conversations.js?v=7'
+import { BrowserPairing } from './pairing.js?v=7'
 
 const connectionLabel = document.querySelector('#connection-label')
 const gatewayDetail = document.querySelector('#gateway-detail')
@@ -22,11 +23,27 @@ const deviceName = document.querySelector('#device-name')
 const sidebarDeviceState = document.querySelector('#sidebar-device-state')
 const chatStateTitle = document.querySelector('#chat-state-title')
 const chatStateDetail = document.querySelector('#chat-state-detail')
+const conversationEmpty = document.querySelector('#conversation-empty')
+const conversationListItems = document.querySelector('#conversation-list-items')
+const messageList = document.querySelector('#message-list')
+const messageForm = document.querySelector('#message-form')
 const messageInput = document.querySelector('#message-input')
+const sendButton = document.querySelector('#send-button')
+const newConversationButton = document.querySelector('#new-conversation-button')
+const emptyNewConversationButton = document.querySelector('#empty-new-conversation-button')
+const mobileConversationSelect = document.querySelector('#mobile-conversation-select')
+const chatTitle = document.querySelector('#chat-title')
+const chatFreshness = document.querySelector('#chat-freshness')
+const conversationNotice = document.querySelector('#conversation-notice')
+const activityFreshness = document.querySelector('#activity-freshness')
+const activityEmpty = document.querySelector('#activity-empty')
+const activityList = document.querySelector('#activity-list')
+const syncValue = document.querySelector('#sync-value')
 let installPrompt
 let probeInProgress = false
 let pairingPhase = 'loading'
 let pairingExpiresAt
+let conversationsClient
 
 function updateDeviceSummary() {
   const connected = pairingPhase === 'paired'
@@ -99,10 +116,136 @@ function handlePairingState(state) {
     messageInput.placeholder = '配对后即可发送消息'
   }
   updateDeviceSummary()
+  if (conversationsClient !== undefined) {
+    if (state.phase === 'paired') {
+      conversationsClient.setOnline(navigator.onLine)
+      void conversationsClient.start()
+    } else if (state.phase === 'paired-offline') {
+      conversationsClient.setOnline(false)
+      void conversationsClient.start()
+    } else {
+      conversationsClient.stop(state.phase)
+    }
+  }
 }
 
 const pairing = new BrowserPairing(handlePairingState)
+conversationsClient = new ConversationsClient(pairing, handleConversationState)
 handlePairingState({ phase: 'loading' })
+
+function formatDate(value, includeDate = false) {
+  return new Intl.DateTimeFormat('zh-CN', includeDate
+    ? { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' }
+    : { hour: '2-digit', minute: '2-digit' }).format(new Date(value))
+}
+
+function conversationLabel(conversation) {
+  return conversation.title?.trim() || (conversation.blank ? '新对话' : '未命名对话')
+}
+
+function handleConversationState(state) {
+  const current = state.conversations.find(item => item.id === state.selectedId)
+  const mutable = state.phase === 'ready' && pairingPhase === 'paired' && navigator.onLine
+  const freshness = state.phase === 'ready'
+    ? '实时'
+    : state.phase === 'sending' || state.phase === 'refreshing' || state.phase === 'loading'
+      ? '同步中'
+      : state.phase === 'stale'
+        ? '旧数据'
+        : '不可用'
+  chatFreshness.textContent = freshness
+  activityFreshness.textContent = freshness
+  syncValue.textContent = freshness
+  syncValue.className = `value-label ${state.phase === 'ready' ? '' : 'is-warning'}`
+  if (state.cachedAt !== undefined) lastCheck.textContent = `最近同步：${formatDate(state.cachedAt, true)}`
+
+  conversationListItems.replaceChildren()
+  for (const conversation of state.conversations) {
+    const button = document.createElement('button')
+    button.type = 'button'
+    button.className = `conversation-item ${conversation.id === state.selectedId ? 'is-active' : ''}`
+    button.dataset.conversationId = conversation.id
+    const title = document.createElement('strong')
+    title.textContent = conversationLabel(conversation)
+    const running = document.createElement('span')
+    running.className = 'conversation-running'
+    running.textContent = conversation.running ? '回复中' : ''
+    const timestamp = document.createElement('small')
+    timestamp.textContent = formatDate(conversation.updatedAt, true)
+    button.append(title, running, timestamp)
+    conversationListItems.append(button)
+  }
+  if (state.conversations.length === 0) {
+    const empty = document.createElement('p')
+    empty.className = 'empty-list'
+    empty.textContent = pairingPhase === 'paired' ? '暂无对话' : '配对后显示对话'
+    conversationListItems.append(empty)
+  }
+
+  mobileConversationSelect.replaceChildren()
+  if (state.conversations.length === 0) {
+    const option = document.createElement('option')
+    option.textContent = '无对话'
+    mobileConversationSelect.append(option)
+  } else {
+    for (const conversation of state.conversations) {
+      const option = document.createElement('option')
+      option.value = conversation.id
+      option.textContent = conversationLabel(conversation)
+      option.selected = conversation.id === state.selectedId
+      mobileConversationSelect.append(option)
+    }
+  }
+  mobileConversationSelect.disabled = !mutable || state.conversations.length === 0
+  newConversationButton.disabled = !mutable || state.sending
+  emptyNewConversationButton.disabled = !mutable || state.sending
+
+  chatTitle.textContent = current === undefined ? '对话' : conversationLabel(current)
+  messageList.replaceChildren()
+  for (const message of state.messages) {
+    const item = document.createElement('li')
+    item.className = `message is-${message.role}`
+    const body = document.createElement('p')
+    body.className = 'message-body'
+    body.textContent = message.text
+    const meta = document.createElement('span')
+    meta.className = 'message-meta'
+    meta.textContent = `${message.role === 'assistant' ? 'Jarvis' : '你'} · ${formatDate(message.createdAt)}`
+    item.append(body, meta)
+    messageList.append(item)
+  }
+  messageList.hidden = state.messages.length === 0
+  conversationEmpty.hidden = state.messages.length > 0
+  document.querySelector('#open-settings-button').hidden = pairingPhase === 'paired'
+  emptyNewConversationButton.hidden = pairingPhase !== 'paired' || current !== undefined
+  if (pairingPhase === 'paired') {
+    chatStateTitle.textContent = current === undefined ? '开始一段对话' : '暂无消息'
+    chatStateDetail.textContent = current === undefined
+      ? '新建对话后即可向 Jarvis 发送文字。'
+      : '输入第一条消息，Jarvis 的回复会实时显示。'
+  }
+  conversationNotice.hidden = state.message === undefined && state.phase !== 'stale'
+  conversationNotice.textContent = state.message ?? (state.phase === 'stale' ? '当前显示上次同步的数据，发送功能已停用。' : '')
+  messageInput.disabled = !mutable || current === undefined || state.sending
+  sendButton.disabled = messageInput.disabled || messageInput.value.trim().length === 0
+  messageInput.placeholder = current === undefined ? '先新建或选择对话' : state.sending ? '正在发送' : '输入消息'
+
+  activityList.replaceChildren()
+  for (const activity of state.activity) {
+    const item = document.createElement('li')
+    item.className = 'activity-item'
+    const label = document.createElement('span')
+    label.textContent = activity.label
+    const time = document.createElement('time')
+    time.dateTime = new Date(activity.occurredAt).toISOString()
+    time.textContent = formatDate(activity.occurredAt)
+    item.append(label, time)
+    activityList.append(item)
+  }
+  activityEmpty.hidden = state.activity.length > 0
+  activityList.hidden = state.activity.length === 0
+  if (state.messages.length > 0) queueMicrotask(() => { messageList.scrollTop = messageList.scrollHeight })
+}
 
 async function probeGateway() {
   if (probeInProgress) return
@@ -124,7 +267,10 @@ async function probeGateway() {
     const health = await response.json()
     if (!response.ok || health.service !== 'jarvis-gateway' || health.status !== 'ok') throw new Error('invalid gateway response')
     setConnection('online', '网关可用', `安全范围：${health.scope === 'loopback-only' ? '仅本机' : '私有网络'}`)
-    lastCheck.textContent = `网关检查于 ${new Intl.DateTimeFormat('zh-CN', { hour: '2-digit', minute: '2-digit', second: '2-digit' }).format(new Date())} 完成；账户数据仍不可用`
+    if (pairingPhase === 'paired-offline') void pairing.accessSession(true).catch(() => {})
+    if (pairingPhase !== 'paired') {
+      lastCheck.textContent = `网关检查于 ${new Intl.DateTimeFormat('zh-CN', { hour: '2-digit', minute: '2-digit', second: '2-digit' }).format(new Date())} 完成；配对后同步数据`
+    }
   } catch {
     setConnection('unavailable', '无法连接', 'Jarvis Gateway 暂时不可用')
   } finally {
@@ -161,11 +307,50 @@ pairButton.addEventListener('click', async () => {
   }
 })
 cancelPairingButton.addEventListener('click', () => { void pairing.cancel() })
-refreshButton.addEventListener('click', () => { void probeGateway() })
-window.addEventListener('online', () => { void probeGateway() })
-window.addEventListener('offline', () => setConnection('offline', '离线', '设备当前没有网络连接'))
+conversationListItems.addEventListener('click', event => {
+  const button = event.target instanceof Element ? event.target.closest('[data-conversation-id]') : null
+  if (button !== null) void conversationsClient.select(button.dataset.conversationId)
+})
+mobileConversationSelect.addEventListener('change', () => { void conversationsClient.select(mobileConversationSelect.value) })
+newConversationButton.addEventListener('click', () => { void conversationsClient.create() })
+emptyNewConversationButton.addEventListener('click', () => { void conversationsClient.create() })
+messageInput.addEventListener('input', () => {
+  sendButton.disabled = messageInput.disabled || messageInput.value.trim().length === 0
+  messageInput.style.height = 'auto'
+  messageInput.style.height = `${Math.min(messageInput.scrollHeight, 120)}px`
+})
+messageInput.addEventListener('keydown', event => {
+  if (event.key === 'Enter' && !event.shiftKey && !event.isComposing) {
+    event.preventDefault()
+    messageForm.requestSubmit()
+  }
+})
+messageForm.addEventListener('submit', async event => {
+  event.preventDefault()
+  const text = messageInput.value
+  if (await conversationsClient.send(text)) {
+    messageInput.value = ''
+    messageInput.style.height = 'auto'
+    sendButton.disabled = true
+  }
+})
+refreshButton.addEventListener('click', () => {
+  void probeGateway()
+  void conversationsClient.refresh()
+})
+window.addEventListener('online', () => {
+  conversationsClient.setOnline(true)
+  void probeGateway()
+})
+window.addEventListener('offline', () => {
+  conversationsClient.setOnline(false)
+  setConnection('offline', '离线', '设备当前没有网络连接')
+})
 document.addEventListener('visibilitychange', () => {
-  if (document.visibilityState === 'visible') void probeGateway()
+  if (document.visibilityState === 'visible') {
+    void probeGateway()
+    void conversationsClient.refresh()
+  }
 })
 
 window.addEventListener('beforeinstallprompt', event => {

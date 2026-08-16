@@ -1,59 +1,8 @@
-const DATABASE_NAME = 'jarvis-device-v1'
-const STORE_NAME = 'private-state'
-const MAX_RESPONSE_CHARS = 32 * 1024
+import { deleteDeviceState, readDeviceState, writeDeviceState } from './device-store.js?v=7'
+
+const MAX_RESPONSE_CHARS = 2 * 1024 * 1024
 
 class GatewayUnavailableError extends Error {}
-
-function openDatabase() {
-  return new Promise((resolve, reject) => {
-    const request = indexedDB.open(DATABASE_NAME, 1)
-    request.onupgradeneeded = () => request.result.createObjectStore(STORE_NAME)
-    request.onerror = () => reject(new Error('device storage is unavailable'))
-    request.onsuccess = () => resolve(request.result)
-  })
-}
-
-async function readState(key) {
-  const database = await openDatabase()
-  try {
-    return await new Promise((resolve, reject) => {
-      const transaction = database.transaction(STORE_NAME, 'readonly')
-      const request = transaction.objectStore(STORE_NAME).get(key)
-      request.onsuccess = () => resolve(request.result)
-      request.onerror = () => reject(new Error('device storage could not be read'))
-    })
-  } finally {
-    database.close()
-  }
-}
-
-async function writeState(key, value) {
-  const database = await openDatabase()
-  try {
-    await new Promise((resolve, reject) => {
-      const transaction = database.transaction(STORE_NAME, 'readwrite')
-      transaction.objectStore(STORE_NAME).put(value, key)
-      transaction.oncomplete = () => resolve()
-      transaction.onerror = () => reject(new Error('device storage could not be written'))
-    })
-  } finally {
-    database.close()
-  }
-}
-
-async function deleteState(key) {
-  const database = await openDatabase()
-  try {
-    await new Promise((resolve, reject) => {
-      const transaction = database.transaction(STORE_NAME, 'readwrite')
-      transaction.objectStore(STORE_NAME).delete(key)
-      transaction.oncomplete = () => resolve()
-      transaction.onerror = () => reject(new Error('device storage could not be updated'))
-    })
-  } finally {
-    database.close()
-  }
-}
 
 export function encodeBase64Url(value) {
   const bytes = value instanceof Uint8Array ? value : new Uint8Array(value)
@@ -137,9 +86,9 @@ export class BrowserPairing {
 
   async initializeState() {
     try {
-      const identity = await readState('identity')
-      const credential = await readState('credential')
-      const pending = await readState('pending')
+      const identity = await readDeviceState('identity')
+      const credential = await readDeviceState('credential')
+      const pending = await readDeviceState('pending')
       if (identity !== undefined && credential !== undefined) {
         await this.ensureSession(identity, credential)
         return
@@ -149,7 +98,7 @@ export class BrowserPairing {
         void this.poll(identity, pending)
         return
       }
-      if (pending !== undefined) await deleteState('pending')
+      if (pending !== undefined) await deleteDeviceState('pending')
       this.onState({ phase: 'unpaired' })
     } catch (error) {
       this.onState({ phase: 'error', message: error instanceof Error ? error.message : 'pairing initialization failed' })
@@ -164,13 +113,13 @@ export class BrowserPairing {
     }
     this.clearPoll()
     this.onState({ phase: 'starting' })
-    let identity = await readState('identity')
+    let identity = await readDeviceState('identity')
     if (identity === undefined) {
       identity = await createIdentity(normalizedName)
-      await writeState('identity', identity)
+      await writeDeviceState('identity', identity)
     } else if (identity.displayName !== normalizedName) {
       identity = { ...identity, displayName: normalizedName }
-      await writeState('identity', identity)
+      await writeDeviceState('identity', identity)
     }
     const response = await this.request('/v1/pairing/requests/browser', {
       method: 'POST',
@@ -195,14 +144,14 @@ export class BrowserPairing {
       expiresAt: challenge.expiresAt,
       displayName: normalizedName,
     }
-    await writeState('pending', pending)
+    await writeDeviceState('pending', pending)
     this.emitPending(pending)
     void this.poll(identity, pending)
   }
 
   async cancel() {
     this.clearPoll()
-    await deleteState('pending')
+    await deleteDeviceState('pending')
     this.onState({ phase: 'unpaired' })
   }
 
@@ -228,7 +177,7 @@ export class BrowserPairing {
 
   async poll(identity, pending) {
     if (pending.expiresAt <= Date.now()) {
-      await deleteState('pending')
+      await deleteDeviceState('pending')
       this.onState({ phase: 'expired' })
       return
     }
@@ -243,12 +192,12 @@ export class BrowserPairing {
         return
       }
       if (response.status === 410) {
-        await deleteState('pending')
+        await deleteDeviceState('pending')
         this.onState({ phase: 'expired' })
         return
       }
       if (!response.ok) {
-        await deleteState('pending')
+        await deleteDeviceState('pending')
         this.onState({ phase: 'error', message: `配对领取失败 (${response.status})` })
         return
       }
@@ -265,8 +214,8 @@ export class BrowserPairing {
         generation: claim.generation,
         issuedAt: claim.issuedAt,
       }
-      await writeState('credential', credential)
-      await deleteState('pending')
+      await writeDeviceState('credential', credential)
+      await deleteDeviceState('pending')
       await this.ensureSession(identity, credential)
     } catch (error) {
       if (error instanceof GatewayUnavailableError) {
@@ -274,21 +223,21 @@ export class BrowserPairing {
         this.schedulePoll(identity, pending, 5_000)
         return
       }
-      await deleteState('pending')
+      await deleteDeviceState('pending')
       this.onState({ phase: 'error', message: error instanceof Error ? error.message : '配对响应无效' })
     }
   }
 
   async ensureSession(identity, credential) {
     try {
-      const storedSession = await readState('session')
+      const storedSession = await readDeviceState('session')
       if (storedSession !== undefined && storedSession.accessExpiresAt > Date.now()) {
         const current = await this.request('/v1/sessions/current', {
           headers: { authorization: `Session ${storedSession.accessToken}` },
         })
         if (current.ok) {
           this.onState({ phase: 'paired', displayName: identity.displayName, nodeId: identity.nodeId })
-          return
+          return parseSession(storedSession, identity.nodeId)
         }
       }
       if (storedSession !== undefined && storedSession.refreshExpiresAt > Date.now()) {
@@ -297,9 +246,10 @@ export class BrowserPairing {
           body: JSON.stringify({ refreshToken: storedSession.refreshToken }),
         })
         if (refreshed.ok) {
-          await writeState('session', parseSession(refreshed.value, identity.nodeId))
+          const session = parseSession(refreshed.value, identity.nodeId)
+          await writeDeviceState('session', session)
           this.onState({ phase: 'paired', displayName: identity.displayName, nodeId: identity.nodeId })
-          return
+          return session
         }
       }
       const issued = await this.request('/v1/sessions', {
@@ -308,14 +258,16 @@ export class BrowserPairing {
         body: JSON.stringify({ nodeId: identity.nodeId }),
       })
       if (issued.status === 401) {
-        await deleteState('credential')
-        await deleteState('session')
+        await deleteDeviceState('credential')
+        await deleteDeviceState('session')
         this.onState({ phase: 'revoked' })
         return
       }
       if (!issued.ok) throw new Error(`Gateway 会话创建失败 (${issued.status})`)
-      await writeState('session', parseSession(issued.value, identity.nodeId))
+      const session = parseSession(issued.value, identity.nodeId)
+      await writeDeviceState('session', session)
       this.onState({ phase: 'paired', displayName: identity.displayName, nodeId: identity.nodeId })
+      return session
     } catch (error) {
       if (error instanceof GatewayUnavailableError) {
         this.onState({ phase: 'paired-offline', displayName: identity.displayName, nodeId: identity.nodeId })
@@ -328,6 +280,37 @@ export class BrowserPairing {
         message: error instanceof Error ? error.message : 'Gateway 会话响应无效',
       })
     }
+    return undefined
+  }
+
+  async accessSession(forceRenew = false) {
+    await this.initialize()
+    const identity = await readDeviceState('identity')
+    const credential = await readDeviceState('credential')
+    if (identity === undefined || credential === undefined) throw new Error('此设备尚未配对')
+    const storedSession = await readDeviceState('session')
+    if (!forceRenew && storedSession !== undefined && storedSession.accessExpiresAt > Date.now()) {
+      return parseSession(storedSession, identity.nodeId)
+    }
+    const session = await this.ensureSession(identity, credential)
+    if (session === undefined || session.accessExpiresAt <= Date.now()) throw new Error('Gateway 会话不可用')
+    return session
+  }
+
+  async authenticatedRequest(path, init = {}) {
+    let session = await this.accessSession()
+    let response = await this.request(path, {
+      ...init,
+      headers: { ...init.headers, authorization: `Session ${session.accessToken}` },
+    })
+    if (response.status !== 401) return response
+    await deleteDeviceState('session')
+    session = await this.accessSession(true)
+    response = await this.request(path, {
+      ...init,
+      headers: { ...init.headers, authorization: `Session ${session.accessToken}` },
+    })
+    return response
   }
 
   async request(path, init = {}) {
