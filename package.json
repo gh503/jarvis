@@ -17,7 +17,9 @@
     "restore": "npm run build --silent && node dist/backup-main.js restore",
     "pair:node": "npm run build --silent && node dist/node-pairing-main.js",
     "verify": "npm run typecheck && npm test",
-    "verify:runtime": "./scripts/verify-local-runtime.sh"
+    "verify:runtime": "./scripts/verify-local-runtime.sh",
+    "verify:release": "./scripts/verify-release-macos.sh",
+    "release:archive": "./scripts/build-release-archive.sh"
   },
   "dependencies": {
     "@deepseek-ai/cordis": "4.0.1",

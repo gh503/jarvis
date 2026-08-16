@@ -7,12 +7,13 @@
 
 ## 项目状态
 
-当前版本是 `v0.1.0` 前的 Mac MVP。项目通过 [Jarvis Roadmap](https://github.com/users/gh503/projects/6) 跟踪执行，通过 [Milestones](https://github.com/gh503/jarvis/milestones) 管理阶段出口，通过 [Issues](https://github.com/gh503/jarvis/issues) 定义可验收工作。
+当前版本是 `v0.1.0` Mac MVP。项目通过 [Jarvis Roadmap](https://github.com/users/gh503/projects/6) 跟踪执行，通过 [Milestones](https://github.com/gh503/jarvis/milestones) 管理阶段出口，通过 [Issues](https://github.com/gh503/jarvis/issues) 定义可验收工作。
 
 - [总体架构](docs/plan/architecture.md)
 - [开发旅程与里程碑](docs/plan/00-development-journey.md)
 - [完整阶段计划](docs/plan/README.md)
 - [备份与恢复](docs/operations/backup-restore.md)
+- [v0.1.0 发布说明](docs/releases/v0.1.0.md)
 - [贡献指南](CONTRIBUTING.md)
 - [安全策略](SECURITY.md)
 
@@ -51,7 +52,7 @@
 ```bash
 cp .env.example .env
 # 编辑 .env，填入 DEEPSEEK_API_KEY
-npm install
+npm ci
 npm run verify
 npm run verify:runtime
 npm start
@@ -110,6 +111,12 @@ JARVIS_OWNER_TOKEN='the-same-local-owner-token' npm run pair:node -- \
 
 ```bash
 ./scripts/install-launch-agent.sh
+```
+
+默认后台端口是 `3080`。安装时设置 `JARVIS_PORT` 可以固定其他端口，并会写入 LaunchAgent：
+
+```bash
+JARVIS_PORT=3182 ./scripts/install-launch-agent.sh
 ```
 
 卸载后台服务但保留数据：
