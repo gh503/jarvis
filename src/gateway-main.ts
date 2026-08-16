@@ -1,4 +1,5 @@
 import { createJarvisGateway } from './gateway.js'
+import { join } from 'node:path'
 
 const ownerToken = process.env.JARVIS_OWNER_TOKEN
 if (ownerToken === undefined) throw new Error('JARVIS_OWNER_TOKEN is required')
@@ -8,7 +9,9 @@ if (!Number.isInteger(configuredPort) || configuredPort < 0 || configuredPort > 
   throw new Error('JARVIS_GATEWAY_PORT must be an integer from 0 to 65535')
 }
 
-const gateway = createJarvisGateway({ ownerToken })
+const statePath = process.env.JARVIS_PAIRING_STATE
+  ?? join(process.env.JARVIS_DATA_DIR ?? join(process.cwd(), 'data'), 'pairing-state.json')
+const gateway = createJarvisGateway({ ownerToken, pairingStatePath: statePath })
 const running = await gateway.start(configuredPort)
 console.log(`Jarvis Gateway listening on 127.0.0.1:${running.port}`)
 
