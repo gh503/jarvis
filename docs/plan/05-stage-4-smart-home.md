@@ -162,8 +162,7 @@ Implemented in the current increment:
 
 Deferred to later increments:
 
-- Real Home Assistant adapter wiring behind the Gateway-owned device bridge.
-- Real Home Assistant credentials, deployment, and physical-device evidence.
+- A named Home Assistant instance, owner-provided credentials, deployment, and physical-device evidence.
 
 ### Cross-process device command producer
 
@@ -180,6 +179,22 @@ Deferred to later increments:
 
 - Real Home Assistant adapter assembly and provider credential configuration.
 - Real device execution and physical acceptance evidence.
+
+### Configured Home Assistant execution wiring
+
+Current increment: Gateway runtime wiring tracked by [#76](https://github.com/gh503/jarvis/issues/76).
+
+Implemented in the current increment:
+
+- Gateway can create the existing Home Assistant WebSocket adapter from `JARVIS_HOME_ASSISTANT_URL` and `JARVIS_HOME_ASSISTANT_TOKEN`.
+- Approved high-risk decisions use the existing exact digest and one-time authorization gate before calling `callApprovedService()`.
+- Provider credentials remain process-local; incomplete configuration fails at startup, while absent configuration preserves approval-only operation.
+- The adapter is stopped with Gateway shutdown, and a not-ready or disconnected adapter returns unavailable rather than success.
+
+Deferred to later increments:
+
+- A named owner-provided Home Assistant instance and physical lock/alarm acceptance.
+- Public command-result delivery for provider execution outcomes beyond the existing approval and adapter contracts.
 
 Acceptance:
 
