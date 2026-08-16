@@ -19,6 +19,8 @@ The platform-independent increments tracked in [#42](https://github.com/gh503/ja
 
 ## Modules
 
+Private-ingress recovery is tracked in [#54](https://github.com/gh503/jarvis/issues/54). Its health diagnostic and runbook cover loopback, local Wi-Fi, and private-overlay recovery without allowing a plaintext or public-internet fallback. Physical network, certificate, and phone observations remain part of the Stage 3 exit gate.
+
 ### Private ingress
 
 Deliver:
