@@ -142,6 +142,21 @@ test('rotation invalidates the old credential while preserving device identity',
   assert.throws(() => authority.rotate('node-1', first.credential), /invalid or revoked/)
 })
 
+test('returns only normalized active device metadata', () => {
+  const authority = new PairingAuthority(() => 1_000, 60_000)
+  const identity = createDeviceIdentity()
+  const request = authority.createRequest({
+    nodeId: 'node-view', publicKey: identity.publicKey, displayName: 'Visible Mac', platform: 'macos',
+  })
+  const issued = authority.confirm(request.requestId, request.verificationCode)
+  assert.deepEqual(authority.getDevice('node-view'), {
+    nodeId: 'node-view', displayName: 'Visible Mac', platform: 'macos', generation: 1, issuedAt: 1_000,
+  })
+  assert.doesNotMatch(JSON.stringify(authority.getDevice('node-view')), new RegExp(issued.credential))
+  authority.revoke('node-view')
+  assert.equal(authority.getDevice('node-view'), undefined)
+})
+
 test('revocation blocks current and future authentication', () => {
   const identity = createDeviceIdentity()
   const authority = new PairingAuthority(() => 1_000, 60_000)

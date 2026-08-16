@@ -51,3 +51,17 @@ export async function deleteDeviceState(key) {
     database.close()
   }
 }
+
+export async function clearDeviceState() {
+  const database = await openDatabase()
+  try {
+    await new Promise((resolve, reject) => {
+      const transaction = database.transaction(STORE_NAME, 'readwrite')
+      transaction.objectStore(STORE_NAME).clear()
+      transaction.oncomplete = () => resolve()
+      transaction.onerror = () => reject(new Error('device storage could not be cleared'))
+    })
+  } finally {
+    database.close()
+  }
+}

@@ -32,6 +32,14 @@ export interface IssuedCredential {
   issuedAt: number
 }
 
+export interface DeviceView {
+  nodeId: string
+  displayName: string
+  platform: 'macos' | 'pwa'
+  generation: number
+  issuedAt: number
+}
+
 export interface BrowserPairingChallenge extends PairingRequest {
   claimToken: string
 }
@@ -363,6 +371,18 @@ export class PairingAuthority {
   isActive(nodeId: string): boolean {
     const record = this.devices.get(nodeId)
     return record !== undefined && !record.revoked
+  }
+
+  getDevice(nodeId: string): DeviceView | undefined {
+    const record = this.devices.get(nodeId)
+    if (record === undefined || record.revoked) return undefined
+    return {
+      nodeId: record.nodeId,
+      displayName: record.displayName,
+      platform: record.platform,
+      generation: record.generation,
+      issuedAt: record.issuedAt,
+    }
   }
 
   rotate(nodeId: string, currentCredential: string): IssuedCredential {

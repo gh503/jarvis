@@ -1,4 +1,4 @@
-import { deleteDeviceState, readDeviceState, writeDeviceState } from './device-store.js?v=8'
+import { deleteDeviceState, readDeviceState, writeDeviceState } from './device-store.js?v=10'
 
 const CACHE_KEY = 'conversation-cache'
 const CURSOR_KEY = 'event-cursor'
@@ -7,6 +7,9 @@ const CURSOR_PATTERN = /^[A-Za-z0-9_-]{22}\.[0-9]+$/
 const MAX_MESSAGES = 50
 const MAX_ACTIVITY = 30
 const MAX_EVENT_CHARS = 64 * 1024
+const CLOSE_PROTOCOL = 4000
+const CLOSE_AUTHENTICATION = 4001
+const CLOSE_PROCESSING = 4002
 
 function validSummary(value) {
   return value !== null && typeof value === 'object' && ID_PATTERN.test(value.id)
@@ -157,7 +160,7 @@ export class ConversationsClient {
     if (this.active) void this.connectEvents()
   }
 
-  stop(reason = 'disabled') {
+  stop(reason = 'disabled', clear = false) {
     this.active = false
     this.loading = false
     this.sending = false
@@ -171,7 +174,19 @@ export class ConversationsClient {
       this.socket = undefined
       socket.close(1000, 'client suspended')
     }
-    this.emit(this.conversations.length > 0 ? 'stale' : reason)
+    if (clear) {
+      this.conversations = []
+      this.selectedId = null
+      this.messages = []
+      this.activity = []
+      this.cachedAt = undefined
+      this.forceRenewSession = false
+    }
+    this.emit(!clear && this.conversations.length > 0 ? 'stale' : reason)
+  }
+
+  reset(reason = 'unpaired') {
+    this.stop(reason, true)
   }
 
   setOnline(online) {
@@ -403,11 +418,11 @@ export class ConversationsClient {
           ...(typeof cursor === 'string' && CURSOR_PATTERN.test(cursor) ? { cursor } : {}),
         }))
       } catch {
-        socket.close(1011, 'event cursor unavailable')
+        socket.close(CLOSE_PROCESSING, 'event cursor unavailable')
       }
     })
     socket.addEventListener('message', event => {
-      void this.handleEvent(socket, event.data).catch(() => socket.close(1011, 'event processing failed'))
+      void this.handleEvent(socket, event.data).catch(() => socket.close(CLOSE_PROCESSING, 'event processing failed'))
     })
     socket.addEventListener('close', () => {
       if (this.socket !== socket) return
@@ -419,30 +434,34 @@ export class ConversationsClient {
 
   async handleEvent(socket, data) {
     if (this.socket !== socket || typeof data !== 'string' || data.length > MAX_EVENT_CHARS) {
-      socket.close(1002, 'invalid event')
+      socket.close(CLOSE_PROTOCOL, 'invalid event')
       return
     }
     let event
     try {
       event = JSON.parse(data)
     } catch {
-      socket.close(1002, 'invalid event')
+      socket.close(CLOSE_PROTOCOL, 'invalid event')
       return
     }
     if (event?.type === 'events.rejected') {
+      if (event.code === 'device_revoked') {
+        await this.pairing.handleRemoteRevocation()
+        return
+      }
       this.forceRenewSession = event.code === 'authentication_rejected' || event.code === 'session_invalid'
-        || event.code === 'session_expired' || event.code === 'device_revoked'
+        || event.code === 'session_expired'
       this.emit('stale', '实时连接认证已失效')
-      socket.close(1008, 'event authentication ended')
+      socket.close(CLOSE_AUTHENTICATION, 'event authentication ended')
       return
     }
     if (event?.type === 'events.ready') {
       if (typeof event.cursor !== 'string' || !CURSOR_PATTERN.test(event.cursor) || typeof event.requiresSnapshot !== 'boolean') {
-        socket.close(1002, 'invalid ready event')
+        socket.close(CLOSE_PROTOCOL, 'invalid ready event')
         return
       }
       if (event.requiresSnapshot && !await this.refresh()) {
-        socket.close(1011, 'snapshot unavailable')
+        socket.close(CLOSE_PROCESSING, 'snapshot unavailable')
         return
       }
       await this.store.write(CURSOR_KEY, event.cursor)
@@ -450,7 +469,7 @@ export class ConversationsClient {
     }
     if (event?.version !== 1 || typeof event.cursor !== 'string' || !CURSOR_PATTERN.test(event.cursor)
       || typeof event.type !== 'string' || !Number.isFinite(event.occurredAt)) {
-      socket.close(1002, 'invalid event')
+      socket.close(CLOSE_PROTOCOL, 'invalid event')
       return
     }
     let eventNotice
@@ -485,7 +504,7 @@ export class ConversationsClient {
         if (key.startsWith(`${event.approvalId}:`)) this.approvalDecisionKeys.delete(key)
       }
     } else {
-      socket.close(1002, 'unsupported event')
+      socket.close(CLOSE_PROTOCOL, 'unsupported event')
       return
     }
     this.addActivity(eventDescription(event))

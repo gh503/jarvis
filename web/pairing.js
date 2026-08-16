@@ -1,4 +1,4 @@
-import { deleteDeviceState, readDeviceState, writeDeviceState } from './device-store.js?v=8'
+import { clearDeviceState, deleteDeviceState, readDeviceState, writeDeviceState } from './device-store.js?v=10'
 
 const MAX_RESPONSE_CHARS = 2 * 1024 * 1024
 
@@ -53,6 +53,33 @@ function parseSession(value, nodeId) {
   return value
 }
 
+function exactFields(value, fields) {
+  return value !== null && typeof value === 'object'
+    && Object.keys(value).every(key => fields.includes(key))
+    && fields.every(key => Object.hasOwn(value, key))
+}
+
+function parseCurrentDevice(value, identity, session) {
+  const deviceFields = ['nodeId', 'displayName', 'platform', 'generation', 'issuedAt']
+  const sessionFields = ['sessionId', 'issuedAt', 'refreshedAt', 'accessExpiresAt', 'refreshExpiresAt']
+  if (!exactFields(value, ['device', 'session']) || !exactFields(value.device, deviceFields)
+    || !exactFields(value.session, sessionFields) || value.device.nodeId !== identity.nodeId
+    || value.device.platform !== 'pwa' || typeof value.device.displayName !== 'string'
+    || value.device.displayName.length < 1 || value.device.displayName.length > 128
+    || /[\u0000-\u001f\u007f]/.test(value.device.displayName)
+    || !Number.isInteger(value.device.generation) || value.device.generation < 1
+    || !Number.isFinite(value.device.issuedAt) || value.session.sessionId !== session.sessionId
+    || !Number.isFinite(value.session.issuedAt) || !Number.isFinite(value.session.refreshedAt)
+    || value.device.issuedAt > value.session.issuedAt || value.session.refreshedAt < value.session.issuedAt
+    || value.session.accessExpiresAt <= value.session.refreshedAt
+    || value.session.refreshExpiresAt <= value.session.issuedAt
+    || value.session.accessExpiresAt !== session.accessExpiresAt
+    || value.session.refreshExpiresAt !== session.refreshExpiresAt) {
+    throw new Error('Gateway returned an invalid current device')
+  }
+  return value
+}
+
 async function createIdentity(displayName) {
   const generated = await crypto.subtle.generateKey(
     { name: 'ECDSA', namedCurve: 'P-256' }, true, ['sign', 'verify'],
@@ -72,9 +99,15 @@ async function createIdentity(displayName) {
 }
 
 export class BrowserPairing {
-  constructor(onState, fetchValue = (...requestArguments) => fetch(...requestArguments)) {
+  constructor(onState, fetchValue = (...requestArguments) => fetch(...requestArguments), store = {}) {
     this.onState = onState
     this.fetchValue = fetchValue
+    this.store = {
+      read: store.read ?? readDeviceState,
+      write: store.write ?? writeDeviceState,
+      delete: store.delete ?? deleteDeviceState,
+      clear: store.clear ?? clearDeviceState,
+    }
     this.pollTimer = undefined
     this.initializationPromise = undefined
   }
@@ -86,9 +119,9 @@ export class BrowserPairing {
 
   async initializeState() {
     try {
-      const identity = await readDeviceState('identity')
-      const credential = await readDeviceState('credential')
-      const pending = await readDeviceState('pending')
+      const identity = await this.store.read('identity')
+      const credential = await this.store.read('credential')
+      const pending = await this.store.read('pending')
       if (identity !== undefined && credential !== undefined) {
         await this.ensureSession(identity, credential)
         return
@@ -98,7 +131,7 @@ export class BrowserPairing {
         void this.poll(identity, pending)
         return
       }
-      if (pending !== undefined) await deleteDeviceState('pending')
+      if (pending !== undefined) await this.store.delete('pending')
       this.onState({ phase: 'unpaired' })
     } catch (error) {
       this.onState({ phase: 'error', message: error instanceof Error ? error.message : 'pairing initialization failed' })
@@ -113,13 +146,13 @@ export class BrowserPairing {
     }
     this.clearPoll()
     this.onState({ phase: 'starting' })
-    let identity = await readDeviceState('identity')
+    let identity = await this.store.read('identity')
     if (identity === undefined) {
       identity = await createIdentity(normalizedName)
-      await writeDeviceState('identity', identity)
+      await this.store.write('identity', identity)
     } else if (identity.displayName !== normalizedName) {
       identity = { ...identity, displayName: normalizedName }
-      await writeDeviceState('identity', identity)
+      await this.store.write('identity', identity)
     }
     const response = await this.request('/v1/pairing/requests/browser', {
       method: 'POST',
@@ -144,14 +177,14 @@ export class BrowserPairing {
       expiresAt: challenge.expiresAt,
       displayName: normalizedName,
     }
-    await writeDeviceState('pending', pending)
+    await this.store.write('pending', pending)
     this.emitPending(pending)
     void this.poll(identity, pending)
   }
 
   async cancel() {
     this.clearPoll()
-    await deleteDeviceState('pending')
+    await this.store.delete('pending')
     this.onState({ phase: 'unpaired' })
   }
 
@@ -177,7 +210,7 @@ export class BrowserPairing {
 
   async poll(identity, pending) {
     if (pending.expiresAt <= Date.now()) {
-      await deleteDeviceState('pending')
+      await this.store.delete('pending')
       this.onState({ phase: 'expired' })
       return
     }
@@ -192,12 +225,12 @@ export class BrowserPairing {
         return
       }
       if (response.status === 410) {
-        await deleteDeviceState('pending')
+        await this.store.delete('pending')
         this.onState({ phase: 'expired' })
         return
       }
       if (!response.ok) {
-        await deleteDeviceState('pending')
+        await this.store.delete('pending')
         this.onState({ phase: 'error', message: `配对领取失败 (${response.status})` })
         return
       }
@@ -214,8 +247,8 @@ export class BrowserPairing {
         generation: claim.generation,
         issuedAt: claim.issuedAt,
       }
-      await writeDeviceState('credential', credential)
-      await deleteDeviceState('pending')
+      await this.store.write('credential', credential)
+      await this.store.delete('pending')
       await this.ensureSession(identity, credential)
     } catch (error) {
       if (error instanceof GatewayUnavailableError) {
@@ -223,20 +256,20 @@ export class BrowserPairing {
         this.schedulePoll(identity, pending, 5_000)
         return
       }
-      await deleteDeviceState('pending')
+      await this.store.delete('pending')
       this.onState({ phase: 'error', message: error instanceof Error ? error.message : '配对响应无效' })
     }
   }
 
   async ensureSession(identity, credential) {
     try {
-      const storedSession = await readDeviceState('session')
+      const storedSession = await this.store.read('session')
       if (storedSession !== undefined && storedSession.accessExpiresAt > Date.now()) {
-        const current = await this.request('/v1/sessions/current', {
+        const current = await this.request('/v1/devices/current', {
           headers: { authorization: `Session ${storedSession.accessToken}` },
         })
         if (current.ok) {
-          this.onState({ phase: 'paired', displayName: identity.displayName, nodeId: identity.nodeId })
+          this.emitPaired(parseCurrentDevice(current.value, identity, storedSession))
           return parseSession(storedSession, identity.nodeId)
         }
       }
@@ -247,8 +280,8 @@ export class BrowserPairing {
         })
         if (refreshed.ok) {
           const session = parseSession(refreshed.value, identity.nodeId)
-          await writeDeviceState('session', session)
-          this.onState({ phase: 'paired', displayName: identity.displayName, nodeId: identity.nodeId })
+          await this.store.write('session', session)
+          await this.loadCurrentDevice(identity, session)
           return session
         }
       }
@@ -258,15 +291,13 @@ export class BrowserPairing {
         body: JSON.stringify({ nodeId: identity.nodeId }),
       })
       if (issued.status === 401) {
-        await deleteDeviceState('credential')
-        await deleteDeviceState('session')
-        this.onState({ phase: 'revoked' })
+        await this.handleRemoteRevocation()
         return
       }
       if (!issued.ok) throw new Error(`Gateway 会话创建失败 (${issued.status})`)
       const session = parseSession(issued.value, identity.nodeId)
-      await writeDeviceState('session', session)
-      this.onState({ phase: 'paired', displayName: identity.displayName, nodeId: identity.nodeId })
+      await this.store.write('session', session)
+      await this.loadCurrentDevice(identity, session)
       return session
     } catch (error) {
       if (error instanceof GatewayUnavailableError) {
@@ -283,12 +314,54 @@ export class BrowserPairing {
     return undefined
   }
 
+  async loadCurrentDevice(identity, session) {
+    const response = await this.request('/v1/devices/current', {
+      headers: { authorization: `Session ${session.accessToken}` },
+    })
+    if (!response.ok) throw new Error(`Gateway device status failed (${response.status})`)
+    this.emitPaired(parseCurrentDevice(response.value, identity, session))
+  }
+
+  emitPaired(current) {
+    this.onState({
+      phase: 'paired',
+      displayName: current.device.displayName,
+      nodeId: current.device.nodeId,
+      platform: current.device.platform,
+      generation: current.device.generation,
+      issuedAt: current.device.issuedAt,
+      accessExpiresAt: current.session.accessExpiresAt,
+      refreshExpiresAt: current.session.refreshExpiresAt,
+    })
+  }
+
+  async revokeCurrentDevice() {
+    await this.initialize()
+    const session = await this.accessSession()
+    const response = await this.request('/v1/devices/current', {
+      method: 'DELETE',
+      headers: { authorization: `Session ${session.accessToken}` },
+    })
+    if (response.status !== 204) throw new Error(`无法断开此设备 (${response.status})`)
+    this.clearPoll()
+    await this.store.clear()
+    this.initializationPromise = undefined
+    this.onState({ phase: 'unpaired' })
+  }
+
+  async handleRemoteRevocation() {
+    this.clearPoll()
+    await this.store.clear()
+    this.initializationPromise = undefined
+    this.onState({ phase: 'revoked' })
+  }
+
   async accessSession(forceRenew = false) {
     await this.initialize()
-    const identity = await readDeviceState('identity')
-    const credential = await readDeviceState('credential')
+    const identity = await this.store.read('identity')
+    const credential = await this.store.read('credential')
     if (identity === undefined || credential === undefined) throw new Error('此设备尚未配对')
-    const storedSession = await readDeviceState('session')
+    const storedSession = await this.store.read('session')
     if (!forceRenew && storedSession !== undefined && storedSession.accessExpiresAt > Date.now()) {
       return parseSession(storedSession, identity.nodeId)
     }
@@ -304,7 +377,7 @@ export class BrowserPairing {
       headers: { ...init.headers, authorization: `Session ${session.accessToken}` },
     })
     if (response.status !== 401) return response
-    await deleteDeviceState('session')
+    await this.store.delete('session')
     session = await this.accessSession(true)
     response = await this.request(path, {
       ...init,

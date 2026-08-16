@@ -504,6 +504,86 @@ test('issues, refreshes, inventories, and revokes device-bound access sessions',
   }
 })
 
+test('reports and self-revokes only the authenticated current device', async () => {
+  const now = Date.now()
+  const authority = new PairingAuthority(() => now, 60_000)
+  const firstCredential = issueCredential(authority, 'device-one')
+  const secondCredential = issueCredential(authority, 'device-two')
+  const sessions = new SessionAuthority({ now: () => now })
+  const first = sessions.issue('device-one')
+  const sibling = sessions.issue('device-one')
+  const other = sessions.issue('device-two')
+  const service = createJarvisGateway({ ownerToken, authority, sessions })
+  const gateway = await service.start()
+  const socket = new WebSocket(`${gateway.origin.replace(/^http/, 'ws')}/v1/events`, { origin: gateway.origin })
+  const inbox = socketInbox(socket)
+  try {
+    await new Promise((resolve, reject) => {
+      socket.once('open', resolve)
+      socket.once('error', reject)
+    })
+    socket.send(JSON.stringify({ type: 'events.authenticate', accessToken: first.accessToken }))
+    assert.equal((await inbox.next()).type, 'events.ready')
+
+    assert.equal((await request(gateway, '/v1/devices/current')).status, 401)
+    assert.equal((await request(gateway, '/v1/devices/current', {
+      headers: { authorization: `Device ${firstCredential}` },
+    })).status, 401)
+    assert.equal((await request(gateway, '/v1/devices/current?extra=true', {
+      headers: { authorization: `Session ${first.accessToken}` },
+    })).status, 400)
+    assert.equal((await request(gateway, '/v1/devices/current', {
+      method: 'POST', headers: { authorization: `Session ${first.accessToken}` },
+    })).status, 405)
+    const current = await request(gateway, '/v1/devices/current', {
+      headers: { authorization: `Session ${first.accessToken}` },
+    })
+    assert.equal(current.status, 200)
+    const currentText = await current.text()
+    assert.deepEqual(JSON.parse(currentText), {
+      device: {
+        nodeId: 'device-one', displayName: 'Test Mac', platform: 'macos', generation: 1, issuedAt: now,
+      },
+      session: {
+        sessionId: first.sessionId, issuedAt: now, refreshedAt: now,
+        accessExpiresAt: first.accessExpiresAt, refreshExpiresAt: first.refreshExpiresAt,
+      },
+    })
+    for (const secret of [firstCredential, secondCredential, first.accessToken, first.refreshToken]) {
+      assert.doesNotMatch(currentText, new RegExp(secret))
+    }
+    assert.doesNotMatch(currentText, /publicKey|credentialDigest|familyId/)
+
+    const revoked = await request(gateway, '/v1/devices/current', {
+      method: 'DELETE', headers: { authorization: `Session ${first.accessToken}` },
+    })
+    assert.equal(revoked.status, 204)
+    let rejection = await inbox.next()
+    if (rejection.type === 'sync.required') rejection = await inbox.next()
+    assert.equal(rejection.version, 1)
+    assert.equal(rejection.type, 'events.rejected')
+    assert.equal(rejection.code, 'device_revoked')
+    assert.match(rejection.correlationId, /^[0-9a-f-]{36}$/)
+    assert.equal(authority.isActive('device-one'), false)
+    assert.equal(authority.isActive('device-two'), true)
+    assert.equal(sessions.get(first.sessionId).revokeReason, 'device')
+    assert.equal(sessions.get(sibling.sessionId).revokeReason, 'device')
+    assert.equal(sessions.get(other.sessionId).revokeReason, null)
+    assert.equal((await request(gateway, '/v1/sessions/current', {
+      headers: { authorization: `Session ${sibling.accessToken}` },
+    })).status, 401)
+    assert.equal((await request(gateway, '/v1/devices/current', {
+      method: 'DELETE', headers: { authorization: `Session ${first.accessToken}` },
+    })).status, 401)
+    assert.equal((await request(gateway, '/v1/devices/current', {
+      headers: { authorization: `Session ${other.accessToken}` },
+    })).status, 200)
+  } finally {
+    socket.close()
+    await service.stop()
+  }
+})
+
 test('fails closed when persisted device revocation precedes session revocation', async () => {
   const authority = new PairingAuthority()
   const credential = issueCredential(authority)
