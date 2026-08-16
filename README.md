@@ -31,6 +31,7 @@
 - 已实现 macOS Keychain 凭据存储层；写入通过 `security` 标准输入完成，凭据不进入命令参数、普通文件或日志。
 - Node Agent 支持异步凭据提供器；每次启动读取当前凭据，停止时清除内存副本。
 - 已实现配对协议核心：Ed25519 设备身份、短期单次验证码、凭据轮换和撤销；Gateway/API 接入仍未开放。
+- 已实现 loopback-only `v1` Gateway 控制面原型：Owner/Device 认证、配对确认、轮换、撤销和请求 correlation ID；未绑定公网。
 
 ## 环境要求
 
@@ -64,6 +65,14 @@ npm start
 应用启动会停在 Harness 的审批界面，只有点击允许后才执行。白名单位于 `config/apps.json`，修改后需要重启。
 
 ## 后台启动
+
+Gateway 原型单独启动，必须通过环境变量提供 Owner Token：
+
+```bash
+JARVIS_OWNER_TOKEN='use-a-local-secret-of-at-least-16-characters' npm run start:gateway
+```
+
+它只监听 `127.0.0.1:3090`，当前设备状态保存在内存中，不是可直接暴露给手机的生产 Gateway；正式远程访问还需要持久化、TLS/private overlay、WebSocket 事件和限流。
 
 确认前台运行正常后执行：
 
