@@ -7,7 +7,7 @@
 
 ## 项目状态
 
-当前版本是 `v0.1.0` 前的 Mac MVP。项目通过 [GitHub Project](https://github.com/users/gh503/projects) 跟踪执行，通过 [Milestones](https://github.com/gh503/jarvis/milestones) 管理阶段出口，通过 [Issues](https://github.com/gh503/jarvis/issues) 定义可验收工作。
+当前版本是 `v0.1.0` 前的 Mac MVP。项目通过 [Jarvis Roadmap](https://github.com/users/gh503/projects/6) 跟踪执行，通过 [Milestones](https://github.com/gh503/jarvis/milestones) 管理阶段出口，通过 [Issues](https://github.com/gh503/jarvis/issues) 定义可验收工作。
 
 - [总体架构](docs/plan/architecture.md)
 - [开发旅程与里程碑](docs/plan/00-development-journey.md)
