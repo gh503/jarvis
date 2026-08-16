@@ -60,7 +60,8 @@ test('digest is stable across object key order but changes target or arguments',
 })
 
 test('stores normalized pending approvals and makes decisions idempotently without exposing commands', () => {
-  const store = new InMemoryDeviceApprovalStore(new DeviceApprovalGate(() => 1_000))
+  const executions = []
+  const store = new InMemoryDeviceApprovalStore(new DeviceApprovalGate(() => 1_000), execution => executions.push(execution))
   const events = []
   store.subscribe(event => events.push(event))
   const request = store.request('approval-lock-1', command())
@@ -71,6 +72,7 @@ test('stores normalized pending approvals and makes decisions idempotently witho
   assert.deepEqual(store.decideApproval('approval-lock-1', request.digest, 'allowed-once', 'decision-1'), receipt)
   assert.throws(() => store.decideApproval('approval-lock-1', request.digest, 'allowed-once', 'decision-2'), /missing or already resolved/)
   assert.doesNotMatch(JSON.stringify(store.listApprovals()), /provider-secret/)
+  assert.equal(executions.length, 1)
   assert.deepEqual(events, [
     { type: 'device.approval.pending', approval: request },
     { type: 'device.approval.resolved', approvalId: request.approvalId, outcome: 'allowed-once' },
@@ -78,9 +80,11 @@ test('stores normalized pending approvals and makes decisions idempotently witho
 })
 
 test('rejects conflicting decision retries and mismatched digests', () => {
-  const store = new InMemoryDeviceApprovalStore(new DeviceApprovalGate(() => 1_000))
+  const executions = []
+  const store = new InMemoryDeviceApprovalStore(new DeviceApprovalGate(() => 1_000), execution => executions.push(execution))
   const request = store.request('approval-lock-1', command())
   assert.throws(() => store.decideApproval('approval-lock-1', 'b'.repeat(64), 'allowed-once', 'decision-0'), /does not match/)
   store.decideApproval('approval-lock-1', request.digest, 'allowed-once', 'decision-1')
   assert.throws(() => store.decideApproval('approval-lock-1', request.digest, 'rejected', 'decision-1'), /idempotency key conflict/)
+  assert.equal(executions.length, 1)
 })

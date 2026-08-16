@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { DeviceApprovalGate } from '../dist/device-approval.js'
+import { DeviceApprovalGate, InMemoryDeviceApprovalStore } from '../dist/device-approval.js'
 import { HomeAssistantAdapter } from '../dist/home-assistant.js'
 
 class FakeSocket {
@@ -247,6 +247,45 @@ test('requires an exact single-use approval before dispatching lock or alarm ser
   })
   assert.equal(expired.state, 'failed')
   assert.match(expired.error, /invalid or expired/)
+})
+
+test('executes an approved device decision through the trusted adapter handler', async () => {
+  const context = createAdapter({ now: () => 1_000 })
+  context.adapter.start()
+  completeHandshake(context.sockets[0], [entity({
+    entity_id: 'lock.front_door', state: 'locked',
+    attributes: { friendly_name: 'Front door', area_name: 'Entry' },
+  })])
+  const executions = []
+  let executionPromise
+  const store = new InMemoryDeviceApprovalStore(new DeviceApprovalGate(() => 1_000, 60_000), execution => {
+    executions.push(execution)
+    executionPromise = context.adapter.callApprovedService({ ...execution.command, timeoutMs: 1_000 }, execution.authorization)
+  })
+  const command = {
+    commandId: 'command-lock-handler', idempotencyKey: 'once-lock-handler', capability: 'lock.set',
+    externalEntityId: 'lock.front_door', service: 'unlock', expectedState: 'unlocked',
+  }
+  const pending = store.request('device-approval-handler', command)
+  store.decideApproval(pending.approvalId, pending.digest, 'allowed-once', 'decision-handler')
+  assert.equal(executions.length, 1)
+  assert.equal(executions[0].command.serviceData, undefined)
+  assert.deepEqual(context.sockets[0].sent[3], {
+    id: 3, type: 'call_service', domain: 'lock', service: 'unlock', service_data: {}, target: { entity_id: 'lock.front_door' },
+  })
+  context.sockets[0].frame({ type: 'result', id: 3, success: true, result: {} })
+  context.sockets[0].frame({
+    type: 'event', id: 2, event: {
+      event_type: 'state_changed', data: {
+        entity_id: 'lock.front_door', new_state: entity({
+          entity_id: 'lock.front_door', state: 'unlocked', last_updated: '2026-08-17T01:01:00.000Z',
+          attributes: { friendly_name: 'Front door', area_name: 'Entry' },
+        }),
+      },
+    },
+  })
+  assert.equal((await executionPromise).state, 'succeeded')
+  assert.equal(context.sockets[0].sent.length, 4)
 })
 
 test('returns acknowledged-unconfirmed when the service is accepted but state never reaches target', async () => {
