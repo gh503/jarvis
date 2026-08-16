@@ -111,10 +111,11 @@ Implemented in the current increment:
 - `lock.set` and `alarm.set` remain mandatory `high` risk; registry overrides cannot lower that floor.
 - Approval views expose normalized target/action metadata, digest, expiry, and risk only.
 - Authorization consumes the unchanged command once; mutation, expiry, replay, and cancellation fail closed.
+- The authenticated Gateway exposes pending records at `GET /v1/device-approvals` and decisions at `POST /v1/device-approvals/:id/decision`, without service payloads or credentials.
 
 Deferred to later increments:
 
-- Gateway/PWA approval transport for smart-device approval records.
+- PWA rendering, event-stream notifications, and real adapter dispatch.
 - Real lock/alarm service calls and physical-device acceptance.
 
 Acceptance:

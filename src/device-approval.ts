@@ -32,6 +32,24 @@ export interface DeviceApprovalAuthorization {
   expiresAt: number
 }
 
+export type DeviceApprovalOutcome = 'allowed-once' | 'rejected'
+
+export interface DeviceApprovalDecisionReceipt {
+  approvalId: string
+  outcome: DeviceApprovalOutcome
+  accepted: true
+}
+
+export interface DeviceApprovalSource {
+  listApprovals(): readonly DeviceApprovalRequest[]
+  decideApproval(
+    approvalId: string,
+    digest: string,
+    outcome: DeviceApprovalOutcome,
+    idempotencyKey: string,
+  ): DeviceApprovalDecisionReceipt | Promise<DeviceApprovalDecisionReceipt>
+}
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value)
 }
@@ -117,5 +135,62 @@ export class DeviceApprovalGate {
 
   digest(command: HighRiskDeviceCommand): string {
     return commandFingerprint(normalizedCommand(command))
+  }
+}
+
+interface PendingDeviceApproval {
+  command: HighRiskDeviceCommand
+  request: DeviceApprovalRequest
+}
+
+interface StoredDeviceDecision {
+  fingerprint: string
+  receipt: DeviceApprovalDecisionReceipt
+}
+
+export class InMemoryDeviceApprovalStore implements DeviceApprovalSource {
+  private readonly pending = new Map<string, PendingDeviceApproval>()
+  private readonly decisions = new Map<string, StoredDeviceDecision>()
+
+  constructor(private readonly gate = new DeviceApprovalGate()) {}
+
+  request(approvalId: string, command: HighRiskDeviceCommand): DeviceApprovalRequest {
+    const request = this.gate.request(approvalId, command)
+    this.pending.set(request.approvalId, { command, request })
+    return request
+  }
+
+  listApprovals(): readonly DeviceApprovalRequest[] {
+    return [...this.pending.values()]
+      .map(item => ({ ...item.request }))
+      .sort((left, right) => left.approvalId.localeCompare(right.approvalId))
+  }
+
+  decideApproval(
+    approvalId: string,
+    digest: string,
+    outcome: DeviceApprovalOutcome,
+    idempotencyKey: string,
+  ): DeviceApprovalDecisionReceipt {
+    const normalizedApprovalId = requiredText(approvalId, 'approvalId', 128)
+    const normalizedDigest = requiredText(digest, 'digest', 64)
+    const normalizedIdempotencyKey = requiredText(idempotencyKey, 'idempotencyKey', 128)
+    if (!/^[0-9a-f]{64}$/.test(normalizedDigest)) throw new Error('device approval digest is invalid')
+    if (outcome !== 'allowed-once' && outcome !== 'rejected') throw new Error('device approval outcome is invalid')
+    const fingerprint = commandDigest({ approvalId: normalizedApprovalId, digest: normalizedDigest, outcome })
+    const existing = this.decisions.get(normalizedIdempotencyKey)
+    if (existing !== undefined) {
+      if (existing.fingerprint !== fingerprint) throw new Error('device approval idempotency key conflict')
+      return existing.receipt
+    }
+    const pending = this.pending.get(normalizedApprovalId)
+    if (pending === undefined) throw new Error('device approval is missing or already resolved')
+    if (pending.request.digest !== normalizedDigest) throw new Error('device approval digest does not match')
+    this.pending.delete(normalizedApprovalId)
+    if (outcome === 'allowed-once') this.gate.authorize(normalizedApprovalId, pending.command)
+    else this.gate.cancel(normalizedApprovalId)
+    const receipt = { approvalId: normalizedApprovalId, outcome, accepted: true as const }
+    this.decisions.set(normalizedIdempotencyKey, { fingerprint, receipt })
+    return receipt
   }
 }

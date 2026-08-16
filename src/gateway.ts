@@ -4,6 +4,7 @@ import { createServer as createHttpsServer, type Server as HttpsServer } from 'n
 import { BlockList, isIP } from 'node:net'
 import { WebSocket, WebSocketServer, type RawData } from 'ws'
 import { MobileApprovalDecisionError } from './approval.js'
+import type { DeviceApprovalOutcome, DeviceApprovalSource } from './device-approval.js'
 import { FileEventLogStore, RetainedEventLog, type JarvisEvent } from './event-log.js'
 import { HarnessBridge, HarnessBridgeError, type HarnessClient } from './harness-bridge.js'
 import { HarnessEventBridge, type ConversationEventSource } from './harness-events.js'
@@ -57,6 +58,7 @@ export interface JarvisGatewayOptions {
   harnessOrigin?: string
   harnessRequestTimeoutMs?: number
   harnessEvents?: ConversationEventSource
+  deviceApprovals?: DeviceApprovalSource
   eventLog?: RetainedEventLog
   eventStatePath?: string
   eventHandshakeTimeoutMs?: number
@@ -777,6 +779,38 @@ export function createJarvisGateway(options: JarvisGatewayOptions): JarvisGatewa
           }
           sendJson(response, 202, correlationId, await harnessEvents.decideApproval(
             parts[2], body.digest, body.outcome, body.idempotencyKey,
+          ))
+          return
+        }
+        sendJson(response, 404, correlationId, { error: 'route not found', correlationId })
+        return
+      }
+      if (parts[0] === 'v1' && parts[1] === 'device-approvals') {
+        if (sessionPrincipal === undefined) {
+          sendJson(response, 401, correlationId, { error: 'session authentication required', correlationId })
+          return
+        }
+        if (options.deviceApprovals === undefined) {
+          sendJson(response, 503, correlationId, { error: 'device approval service is unavailable', code: 'device_approval_unavailable', correlationId })
+          return
+        }
+        const query = requestQuery(request)
+        if ([...query.keys()].length !== 0) throw new Error('device approval query is invalid')
+        if (request.method === 'GET' && parts.length === 2) {
+          sendJson(response, 200, correlationId, { approvals: options.deviceApprovals.listApprovals() })
+          return
+        }
+        if (request.method === 'POST' && parts.length === 4 && parts[3] === 'decision' && typeof parts[2] === 'string') {
+          const body = await readJson(request, maxBodyBytes)
+          if (!/^[A-Za-z0-9_-]{1,128}$/.test(parts[2])
+            || !record(body) || !exactFields(body, ['digest', 'outcome', 'idempotencyKey'])
+            || typeof body.digest !== 'string' || !/^[0-9a-f]{64}$/.test(body.digest)
+            || (body.outcome !== 'allowed-once' && body.outcome !== 'rejected')
+            || typeof body.idempotencyKey !== 'string' || !/^[A-Za-z0-9_-]{1,128}$/.test(body.idempotencyKey)) {
+            throw new Error('device approval decision body is invalid')
+          }
+          sendJson(response, 202, correlationId, await options.deviceApprovals.decideApproval(
+            parts[2], body.digest, body.outcome as DeviceApprovalOutcome, body.idempotencyKey,
           ))
           return
         }
