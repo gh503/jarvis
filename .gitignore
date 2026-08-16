@@ -4,6 +4,7 @@ data/
 .dsh/
 .jarvis-runtime/
 backups/
+release/
 .env
 *.log
 .DS_Store
