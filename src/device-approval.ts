@@ -92,6 +92,10 @@ function commandFingerprint(command: HighRiskDeviceCommand): string {
   })
 }
 
+export function deviceApprovalDigest(command: HighRiskDeviceCommand): string {
+  return commandDigest(normalizedCommand(command))
+}
+
 export class DeviceApprovalGate {
   private readonly ledger: ApprovalLedger
 

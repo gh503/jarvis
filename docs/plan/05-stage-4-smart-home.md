@@ -115,8 +115,24 @@ Implemented in the current increment:
 
 Deferred to later increments:
 
-- Real adapter dispatch.
+- Real Home Assistant deployment and owner-provided credential reference.
 - Physical lock/alarm service calls and hardware acceptance.
+
+### Approved Home Assistant high-risk dispatch
+
+Current increment: approved high-risk Home Assistant service dispatch tracked by [#70](https://github.com/gh503/jarvis/issues/70).
+
+Implemented in the current increment:
+
+- `HomeAssistantAdapter.callService()` continues to reject `lock.set` and `alarm.set`.
+- `callApprovedService()` requires a valid, unexpired `DeviceApprovalAuthorization` whose digest matches the complete normalized command.
+- Only explicit lock and alarm service names are accepted; the existing service acknowledgement, observed-state reconciliation, timeout, unavailable, and idempotency outcomes are reused.
+- Approval and provider credentials remain outside public command results and adapter serialization.
+
+Deferred to later increments:
+
+- Wiring a real Jarvis device command producer to this adapter.
+- Named Home Assistant instance, real lock/alarm behavior, and physical acceptance evidence.
 
 ### Real-time approval events
 

@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
+import { DeviceApprovalGate } from '../dist/device-approval.js'
 import { HomeAssistantAdapter } from '../dist/home-assistant.js'
 
 class FakeSocket {
@@ -194,6 +195,58 @@ test('separates service acknowledgement from observed resulting state', async ()
     observedState: 'on',
   })
   assert.equal(JSON.stringify(context.commandTransitions).includes('provider-payload'), false)
+})
+
+test('requires an exact single-use approval before dispatching lock or alarm services', async () => {
+  const context = createAdapter({ now: () => 1_000 })
+  context.adapter.start()
+  completeHandshake(context.sockets[0], [entity({
+    entity_id: 'lock.front_door', state: 'locked',
+    attributes: { friendly_name: 'Front door', area_name: 'Entry' },
+  })])
+  assert.throws(() => context.adapter.callService({
+    commandId: 'command-lock', idempotencyKey: 'once-lock', capability: 'lock.set',
+    externalEntityId: 'lock.front_door', service: 'unlock', expectedState: 'unlocked', timeoutMs: 1_000,
+  }), /not low risk/)
+
+  const command = {
+    commandId: 'command-lock', idempotencyKey: 'once-lock', capability: 'lock.set',
+    externalEntityId: 'lock.front_door', service: 'unlock', expectedState: 'unlocked', timeoutMs: 1_000,
+  }
+  const gate = new DeviceApprovalGate(() => 1_000, 60_000)
+  const request = gate.request('device-approval-lock', command)
+  const authorization = gate.authorize('device-approval-lock', command)
+  const promise = context.adapter.callApprovedService(command, authorization)
+  assert.deepEqual(context.sockets[0].sent[3], {
+    id: 3, type: 'call_service', domain: 'lock', service: 'unlock', service_data: {}, target: { entity_id: 'lock.front_door' },
+  })
+  context.sockets[0].frame({ type: 'result', id: 3, success: true, result: {} })
+  context.sockets[0].frame({
+    type: 'event', id: 2, event: {
+      event_type: 'state_changed', data: {
+        entity_id: 'lock.front_door', new_state: entity({
+          entity_id: 'lock.front_door', state: 'unlocked', last_updated: '2026-08-17T01:01:00.000Z',
+          attributes: { friendly_name: 'Front door', area_name: 'Entry' },
+        }),
+      },
+    },
+  })
+  assert.deepEqual(await promise, {
+    commandId: command.commandId, idempotencyKey: command.idempotencyKey, capability: command.capability,
+    state: 'succeeded', acknowledged: true, observedState: 'unlocked',
+  })
+  assert.equal(request.digest, authorization.digest)
+  assert.strictEqual(context.adapter.callApprovedService(command, authorization), promise)
+  const replay = await context.adapter.callApprovedService({ ...command, idempotencyKey: 'second-delivery' }, authorization)
+  assert.equal(replay.state, 'failed')
+  assert.match(replay.error, /does not match/)
+  assert.equal(context.sockets[0].sent.length, 4)
+
+  const expired = await context.adapter.callApprovedService({ ...command, idempotencyKey: 'expired-delivery' }, {
+    ...authorization, approvalId: 'device-approval-expired', expiresAt: 999,
+  })
+  assert.equal(expired.state, 'failed')
+  assert.match(expired.error, /invalid or expired/)
 })
 
 test('returns acknowledged-unconfirmed when the service is accepted but state never reaches target', async () => {
