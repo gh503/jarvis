@@ -14,7 +14,7 @@ Allow the owner to converse with Jarvis, observe status, and approve actions fro
 - Native mobile development remains deferred until a required capability fails the PWA gate.
 - Background always-listening voice is explicitly outside this stage.
 
-The first platform-independent increment is tracked in [#42](https://github.com/gh503/jarvis/issues/42). It serves a scoped, responsive PWA shell from the Gateway, caches only public application assets for offline startup, and clearly marks all account data unavailable until pairing. Physical installation remains unqualified until the owner names the first iPhone or Android device.
+The platform-independent increments tracked in [#42](https://github.com/gh503/jarvis/issues/42) and [#44](https://github.com/gh503/jarvis/issues/44) serve a scoped responsive PWA shell and an owner-approved browser pairing flow. The browser keeps an origin-bound private key, claims an encrypted device credential without receiving the Owner Token, and obtains a short-lived Gateway session. Offline startup clearly marks the saved identity as non-current. Physical installation remains unqualified until the owner names the first iPhone or Android device.
 
 ## Modules
 

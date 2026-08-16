@@ -12,7 +12,7 @@
     <link rel="icon" href="./icon.svg" type="image/svg+xml">
     <link rel="apple-touch-icon" sizes="180x180" href="./apple-touch-icon.png">
     <link rel="stylesheet" href="./app.css">
-    <script src="./app.js" defer></script>
+    <script src="./app.js?v=4" type="module"></script>
   </head>
   <body data-connection="checking">
     <a class="skip-link" href="#main-content">跳到主要内容</a>
@@ -51,7 +51,7 @@
           <p class="empty-list">配对后显示对话</p>
         </div>
         <div class="sidebar-footer">
-          <span class="freshness-label">未配对</span>
+          <span id="sidebar-device-state" class="freshness-label">未配对</span>
           <small id="sidebar-status">无同步数据</small>
         </div>
       </aside>
@@ -63,16 +63,16 @@
               <p class="eyebrow">移动工作区</p>
               <h1 id="chat-title">新对话</h1>
             </div>
-            <span class="freshness-label">未同步</span>
+            <span id="chat-freshness" class="freshness-label">未同步</span>
           </header>
           <div class="conversation-empty">
             <div class="empty-symbol" aria-hidden="true">J</div>
-            <h2>连接到 Jarvis</h2>
-            <p>此设备完成配对后，对话会安全地显示在这里。</p>
+            <h2 id="chat-state-title">连接到 Jarvis</h2>
+            <p id="chat-state-detail">此设备完成配对后，对话会安全地显示在这里。</p>
             <button id="open-settings-button" class="primary-button" type="button">查看连接状态</button>
           </div>
           <form class="composer" aria-label="消息输入">
-            <textarea rows="1" placeholder="配对后即可发送消息" aria-label="消息" disabled></textarea>
+            <textarea id="message-input" rows="1" placeholder="配对后即可发送消息" aria-label="消息" disabled></textarea>
             <button class="send-button" type="submit" aria-label="发送消息" title="发送消息" disabled>↑</button>
           </form>
         </section>
@@ -109,9 +109,28 @@
             <section class="settings-row" aria-labelledby="device-heading">
               <div>
                 <h2 id="device-heading">设备身份</h2>
-                <p>尚未向此浏览器签发凭据</p>
+                <p id="device-detail">尚未向此浏览器签发凭据</p>
               </div>
-              <span class="value-label is-muted">未配对</span>
+              <span id="device-value" class="value-label is-muted">未配对</span>
+            </section>
+            <section id="pairing-setup" class="pairing-setup" aria-labelledby="pairing-setup-heading">
+              <div>
+                <h2 id="pairing-setup-heading">配对此设备</h2>
+                <p id="pairing-message" role="status" aria-live="polite">创建此浏览器的私有设备身份</p>
+              </div>
+              <div id="pairing-form" class="pairing-form">
+                <label for="device-name">设备名称</label>
+                <div class="pairing-form-controls">
+                  <input id="device-name" name="device-name" maxlength="64" value="我的手机" autocomplete="off">
+                  <button id="pair-button" class="primary-button" type="button" disabled>开始配对</button>
+                </div>
+              </div>
+              <div id="pairing-challenge" class="pairing-challenge" hidden>
+                <span>Mac 确认码</span>
+                <output id="pairing-code" aria-live="polite">------</output>
+                <small id="pairing-expiry">等待确认</small>
+                <button id="cancel-pairing-button" class="secondary-button" type="button">取消</button>
+              </div>
             </section>
             <section class="settings-row" aria-labelledby="sync-heading">
               <div>

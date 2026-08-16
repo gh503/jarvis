@@ -616,6 +616,33 @@ export function createJarvisGateway(options: JarvisGatewayOptions): JarvisGatewa
         return
       }
       if (pwa?.serve(request, response, correlationId) === true) return
+      if (request.method === 'POST' && parts.length === 4 && parts[0] === 'v1'
+        && parts[1] === 'pairing' && parts[2] === 'requests' && parts[3] === 'browser') {
+        const body = await readJson(request, maxBodyBytes)
+        if (!record(body) || !exactFields(body, ['nodeId', 'publicKey', 'displayName', 'platform'])
+          || typeof body.nodeId !== 'string' || typeof body.publicKey !== 'string'
+          || typeof body.displayName !== 'string' || body.platform !== 'pwa') {
+          throw new Error('browser pairing request body is invalid')
+        }
+        sendJson(response, 201, correlationId, authority.createClaimableRequest({
+          nodeId: body.nodeId,
+          publicKey: body.publicKey,
+          displayName: body.displayName,
+          platform: 'pwa',
+        }))
+        return
+      }
+      if (request.method === 'POST' && parts.length === 4 && parts[0] === 'v1'
+        && parts[1] === 'pairing' && parts[2] === 'requests' && parts[3] === 'claim') {
+        const body = await readJson(request, maxBodyBytes)
+        if (!record(body) || !exactFields(body, ['requestId', 'claimToken'])
+          || typeof body.requestId !== 'string' || typeof body.claimToken !== 'string') {
+          throw new Error('browser pairing claim body is invalid')
+        }
+        const claim = authority.claim(body.requestId, body.claimToken)
+        sendJson(response, claim === undefined ? 202 : 200, correlationId, claim ?? { status: 'pending' })
+        return
+      }
       const ownerAuthenticated = sameSecret(options.ownerToken, bearerToken(request, 'Bearer'))
       const deviceCredential = bearerToken(request, 'Device')
       const deviceNodeId = deviceCredential === undefined ? undefined : authority.identify(deviceCredential)
@@ -799,6 +826,18 @@ export function createJarvisGateway(options: JarvisGatewayOptions): JarvisGatewa
         sendJson(response, 200, correlationId, authority.confirm(body.requestId, body.verificationCode))
         return
       }
+      if (request.method === 'POST' && parts.length === 4 && parts[1] === 'pairing' && parts[2] === 'requests' && parts[3] === 'approve') {
+        if (!ownerAuthenticated) {
+          sendJson(response, 403, correlationId, { error: 'owner authentication required', correlationId })
+          return
+        }
+        const body = await readJson(request, maxBodyBytes)
+        if (!record(body) || !exactFields(body, ['verificationCode']) || typeof body.verificationCode !== 'string') {
+          throw new Error('pairing approval body is invalid')
+        }
+        sendJson(response, 200, correlationId, authority.approveClaimable(body.verificationCode))
+        return
+      }
       if (parts.length === 3 && parts[1] === 'devices' && typeof parts[2] === 'string') {
         const nodeId = parts[2]
         if (request.method === 'POST' && parts.length === 3 && parts[2] === nodeId) {
@@ -835,6 +874,24 @@ export function createJarvisGateway(options: JarvisGatewayOptions): JarvisGatewa
         return
       }
       const message = error instanceof Error ? error.message : 'request failed'
+      if (message === 'pairing claim rejected' || message === 'paired device is revoked') {
+        sendJson(response, 401, correlationId, {
+          error: 'pairing claim rejected', code: 'pairing_claim_rejected', correlationId,
+        })
+        return
+      }
+      if (message === 'pairing request has expired') {
+        sendJson(response, 410, correlationId, {
+          error: 'pairing request expired', code: 'pairing_expired', correlationId,
+        })
+        return
+      }
+      if (message === 'pairing request capacity has been reached') {
+        sendJson(response, 503, correlationId, {
+          error: 'pairing service is at capacity', code: 'pairing_capacity', correlationId,
+        })
+        return
+      }
       const status = message.includes('too large') ? 413 : 400
       sendJson(response, status, correlationId, { error: message, correlationId })
     }

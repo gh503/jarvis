@@ -1,8 +1,9 @@
-const CACHE_NAME = 'jarvis-pwa-shell-v1'
+const CACHE_NAME = 'jarvis-pwa-shell-v4'
 const SHELL_PATHS = [
   '/app/',
   '/app/app.css',
-  '/app/app.js',
+  '/app/app.js?v=4',
+  '/app/pairing.js?v=4',
   '/app/apple-touch-icon.png',
   '/app/icon.svg',
   '/app/icon-192.png',
@@ -32,8 +33,8 @@ self.addEventListener('fetch', event => {
       .catch(() => caches.match('/app/')))
     return
   }
-  event.respondWith(caches.match(event.request).then(cached => cached ?? fetch(event.request).then(response => {
+  event.respondWith(fetch(event.request).then(response => {
     if (response.ok) void caches.open(CACHE_NAME).then(cache => cache.put(event.request, response.clone()))
     return response
-  })))
+  }).catch(() => caches.match(event.request)))
 })
