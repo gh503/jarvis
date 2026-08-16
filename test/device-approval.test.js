@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { DeviceApprovalGate } from '../dist/device-approval.js'
+import { DeviceApprovalGate, InMemoryDeviceApprovalStore } from '../dist/device-approval.js'
 
 const command = (overrides = {}) => ({
   commandId: 'command-lock',
@@ -57,4 +57,24 @@ test('digest is stable across object key order but changes target or arguments',
   const reordered = { ...first, serviceData: { token: 'provider-secret', user: 'owner' } }
   assert.equal(gate.digest(first), gate.digest(reordered))
   assert.notEqual(gate.digest(first), gate.digest(command({ serviceData: { user: 'other', token: 'provider-secret' } })))
+})
+
+test('stores normalized pending approvals and makes decisions idempotently without exposing commands', () => {
+  const store = new InMemoryDeviceApprovalStore(new DeviceApprovalGate(() => 1_000))
+  const request = store.request('approval-lock-1', command())
+  assert.deepEqual(store.listApprovals(), [request])
+  const receipt = store.decideApproval('approval-lock-1', request.digest, 'allowed-once', 'decision-1')
+  assert.deepEqual(receipt, { approvalId: 'approval-lock-1', outcome: 'allowed-once', accepted: true })
+  assert.deepEqual(store.listApprovals(), [])
+  assert.deepEqual(store.decideApproval('approval-lock-1', request.digest, 'allowed-once', 'decision-1'), receipt)
+  assert.throws(() => store.decideApproval('approval-lock-1', request.digest, 'allowed-once', 'decision-2'), /missing or already resolved/)
+  assert.doesNotMatch(JSON.stringify(store.listApprovals()), /provider-secret/)
+})
+
+test('rejects conflicting decision retries and mismatched digests', () => {
+  const store = new InMemoryDeviceApprovalStore(new DeviceApprovalGate(() => 1_000))
+  const request = store.request('approval-lock-1', command())
+  assert.throws(() => store.decideApproval('approval-lock-1', 'b'.repeat(64), 'allowed-once', 'decision-0'), /does not match/)
+  store.decideApproval('approval-lock-1', request.digest, 'allowed-once', 'decision-1')
+  assert.throws(() => store.decideApproval('approval-lock-1', request.digest, 'rejected', 'decision-1'), /idempotency key conflict/)
 })

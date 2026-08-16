@@ -8,6 +8,7 @@ import { join } from 'node:path'
 import test from 'node:test'
 import WebSocket from 'ws'
 import { RetainedEventLog } from '../dist/event-log.js'
+import { DeviceApprovalGate, InMemoryDeviceApprovalStore } from '../dist/device-approval.js'
 import { createJarvisGateway } from '../dist/gateway.js'
 import { HarnessBridgeError } from '../dist/harness-bridge.js'
 import { NodeAgent } from '../dist/node-agent.js'
@@ -932,6 +933,56 @@ test('authenticates normalized approval snapshots and idempotent decisions', asy
       body: JSON.stringify({ digest, outcome: 'allowed-once', idempotencyKey: 'bad' }),
     })).status, 400)
     assert.equal((await request(gateway, '/v1/approvals?internal=true', { headers })).status, 400)
+  } finally {
+    await service.stop()
+  }
+})
+
+test('authenticates normalized smart-device approvals without exposing command payloads', async () => {
+  const authority = new PairingAuthority()
+  issueCredential(authority)
+  const sessions = new SessionAuthority()
+  const access = sessions.issue('node-1')
+  const deviceApprovals = new InMemoryDeviceApprovalStore(new DeviceApprovalGate(() => 1_000))
+  const pending = deviceApprovals.request('device-approval-one', {
+    commandId: 'lock-command-one',
+    idempotencyKey: 'lock-once-one',
+    capability: 'lock.set',
+    externalEntityId: 'lock.front_door',
+    service: 'lock_unlock',
+    serviceData: { token: 'private-provider-token' },
+    expectedState: 'unlocked',
+  })
+  const service = createJarvisGateway({ ownerToken, authority, sessions, deviceApprovals })
+  const gateway = await service.start()
+  const headers = { authorization: `Session ${access.accessToken}` }
+  try {
+    assert.equal((await request(gateway, '/v1/device-approvals')).status, 401)
+    const snapshot = await request(gateway, '/v1/device-approvals', { headers })
+    assert.equal(snapshot.status, 200)
+    const body = await snapshot.json()
+    assert.deepEqual(body.approvals, [pending])
+    assert.doesNotMatch(JSON.stringify(body), /private-provider-token/)
+
+    const decisionBody = {
+      digest: pending.digest, outcome: 'allowed-once', idempotencyKey: 'device-decision-one',
+    }
+    const decision = await request(gateway, '/v1/device-approvals/device-approval-one/decision', {
+      method: 'POST',
+      headers: { ...headers, 'content-type': 'application/json' },
+      body: JSON.stringify(decisionBody),
+    })
+    assert.equal(decision.status, 202)
+    assert.deepEqual(await decision.json(), { approvalId: 'device-approval-one', outcome: 'allowed-once', accepted: true })
+    const retry = await request(gateway, '/v1/device-approvals/device-approval-one/decision', {
+      method: 'POST',
+      headers: { ...headers, 'content-type': 'application/json' },
+      body: JSON.stringify(decisionBody),
+    })
+    assert.equal(retry.status, 202)
+    assert.deepEqual(await retry.json(), { approvalId: 'device-approval-one', outcome: 'allowed-once', accepted: true })
+    const after = await request(gateway, '/v1/device-approvals', { headers })
+    assert.deepEqual(await after.json(), { approvals: [] })
   } finally {
     await service.stop()
   }
