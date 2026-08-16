@@ -1,5 +1,7 @@
-import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http'
 import { randomUUID, timingSafeEqual } from 'node:crypto'
+import { createServer as createHttpServer, type IncomingMessage, type Server as HttpServer, type ServerResponse } from 'node:http'
+import { createServer as createHttpsServer, type Server as HttpsServer } from 'node:https'
+import { BlockList, isIP } from 'node:net'
 import { WebSocket, WebSocketServer, type RawData } from 'ws'
 import { NODE_PROTOCOL_VERSION, parseNodeRegistration, type NodeRegistration } from './node-capabilities.js'
 import type { NodeCommand } from './node-command.js'
@@ -9,6 +11,22 @@ const MAX_BODY_BYTES = 32 * 1024
 const NODE_PATH = '/v1/node'
 const NODE_HANDSHAKE_TIMEOUT_MS = 10_000
 const MAX_NODE_CONNECTIONS = 128
+const ALLOWED_BIND_ADDRESSES = new BlockList()
+ALLOWED_BIND_ADDRESSES.addAddress('127.0.0.1', 'ipv4')
+ALLOWED_BIND_ADDRESSES.addAddress('::1', 'ipv6')
+ALLOWED_BIND_ADDRESSES.addSubnet('10.0.0.0', 8, 'ipv4')
+ALLOWED_BIND_ADDRESSES.addSubnet('172.16.0.0', 12, 'ipv4')
+ALLOWED_BIND_ADDRESSES.addSubnet('192.168.0.0', 16, 'ipv4')
+ALLOWED_BIND_ADDRESSES.addSubnet('100.64.0.0', 10, 'ipv4')
+ALLOWED_BIND_ADDRESSES.addSubnet('fc00::', 7, 'ipv6')
+
+type GatewayServer = HttpServer | HttpsServer
+
+export interface GatewayTlsOptions {
+  key: string | Buffer
+  cert: string | Buffer
+  ca?: string | Buffer
+}
 
 export interface JarvisGatewayOptions {
   ownerToken: string
@@ -17,11 +35,16 @@ export interface JarvisGatewayOptions {
   maxBodyBytes?: number
   nodeHandshakeTimeoutMs?: number
   maxNodeConnections?: number
+  bindHost?: string
+  tls?: GatewayTlsOptions
 }
 
 export interface RunningGateway {
-  server: Server
+  server: GatewayServer
+  host: string
   port: number
+  secure: boolean
+  origin: string
 }
 
 export interface JarvisGateway {
@@ -120,6 +143,23 @@ function routeParts(request: IncomingMessage): string[] {
   return parsed.pathname.split('/').filter(Boolean)
 }
 
+function validateBindHost(value: string): { host: string, loopback: boolean } {
+  const family = isIP(value)
+  const type = family === 4 ? 'ipv4' : family === 6 ? 'ipv6' : undefined
+  if (type === undefined || !ALLOWED_BIND_ADDRESSES.check(value, type)) {
+    throw new Error('bindHost must be a specific loopback, private, or overlay IP address')
+  }
+  return { host: value, loopback: value === '127.0.0.1' || value === '::1' }
+}
+
+function validateTls(options: GatewayTlsOptions | undefined): GatewayTlsOptions | undefined {
+  if (options === undefined) return undefined
+  const present = (value: string | Buffer): boolean => typeof value === 'string' ? value.length > 0 : value.byteLength > 0
+  if (!present(options.key) || !present(options.cert)) throw new Error('TLS key and certificate must not be empty')
+  if (options.ca !== undefined && !present(options.ca)) throw new Error('TLS CA must not be empty')
+  return options
+}
+
 export function createJarvisGateway(options: JarvisGatewayOptions): JarvisGateway {
   if (options.ownerToken.length < 16) throw new Error('ownerToken must contain at least 16 characters')
   const authority = options.authority ?? new PairingAuthority(
@@ -137,7 +177,12 @@ export function createJarvisGateway(options: JarvisGatewayOptions): JarvisGatewa
   if (!Number.isInteger(maxNodeConnections) || maxNodeConnections < 1) {
     throw new RangeError('maxNodeConnections must be a positive integer')
   }
-  let server: Server | undefined
+  const binding = validateBindHost(options.bindHost ?? '127.0.0.1')
+  const tls = validateTls(options.tls)
+  if (!binding.loopback && tls === undefined) throw new Error('TLS is required for non-loopback Gateway binding')
+  const secure = tls !== undefined
+  const scope = binding.loopback ? 'loopback-only' : 'private-network-only'
+  let server: GatewayServer | undefined
   let socketServer: WebSocketServer | undefined
   const nodeConnections = new Map<string, WebSocket>()
   const connectionStates = new Map<WebSocket, NodeConnectionState>()
@@ -235,7 +280,12 @@ export function createJarvisGateway(options: JarvisGatewayOptions): JarvisGatewa
     const parts = routeParts(request)
     try {
       if (request.method === 'GET' && parts.length === 2 && parts[0] === 'v1' && parts[1] === 'health') {
-        sendJson(response, 200, correlationId, { service: 'jarvis-gateway', status: 'ok', scope: 'loopback-only' })
+        sendJson(response, 200, correlationId, {
+          service: 'jarvis-gateway',
+          status: 'ok',
+          scope,
+          transport: secure ? 'https' : 'http',
+        })
         return
       }
       const ownerAuthenticated = sameSecret(options.ownerToken, bearerToken(request, 'Bearer'))
@@ -309,7 +359,9 @@ export function createJarvisGateway(options: JarvisGatewayOptions): JarvisGatewa
   return {
     start(port = 0) {
       if (server !== undefined) return Promise.reject(new Error('gateway is already running'))
-      server = createServer((request, response) => { void handle(request, response) })
+      server = tls === undefined
+        ? createHttpServer((request, response) => { void handle(request, response) })
+        : createHttpsServer({ ...tls, minVersion: 'TLSv1.2' }, (request, response) => { void handle(request, response) })
       socketServer = new WebSocketServer({ noServer: true, maxPayload: maxBodyBytes })
       socketServer.on('connection', handleNodeConnection)
       server.on('upgrade', (request, socket, head) => {
@@ -330,13 +382,21 @@ export function createJarvisGateway(options: JarvisGatewayOptions): JarvisGatewa
       })
       return new Promise<RunningGateway>((resolve, reject) => {
         server?.once('error', reject)
-        server?.listen(port, '127.0.0.1', () => {
+        server?.listen(port, binding.host, () => {
           const address = server?.address()
           if (address === null || typeof address === 'string' || address === undefined) {
             reject(new Error('gateway did not expose a TCP address'))
             return
           }
-          resolve({ server: server as Server, port: address.port })
+          const host = binding.host.includes(':') ? `[${binding.host}]` : binding.host
+          const protocol = secure ? 'https' : 'http'
+          resolve({
+            server: server as GatewayServer,
+            host: binding.host,
+            port: address.port,
+            secure,
+            origin: `${protocol}://${host}:${address.port}`,
+          })
         })
       })
     },
