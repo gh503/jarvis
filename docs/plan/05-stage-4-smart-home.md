@@ -61,7 +61,9 @@ Deferred to later increments:
 - MQTT transport and duplicate-delivery handling.
 - Simulator protocol behavior and real-device acceptance.
 
-### `packages/device-home-assistant`
+### `src/home-assistant`
+
+Current increment: read-only Home Assistant WebSocket protocol core tracked by [#58](https://github.com/gh503/jarvis/issues/58). It accepts an injected socket and does not require or persist a real deployment credential.
 
 Deliver:
 
@@ -69,6 +71,19 @@ Deliver:
 - Initial snapshot and state-change subscription.
 - Service-call adapter with request correlation.
 - Reconnect, resubscribe, and full-resync behavior.
+
+Implemented in the current increment:
+
+- Authenticated `auth_required`/`auth_ok` handshake with credentials kept in memory only.
+- Deterministic `get_states` normalization for the supported capability domains.
+- `state_changed` filtering, monotonic source timestamps, and removed-entity unavailable callbacks.
+- Degraded status plus bounded reconnect with a fresh authentication, snapshot, and subscription sequence.
+
+Deferred to later increments:
+
+- Owner-provided Home Assistant endpoint and credential reference.
+- Real network and named-instance acceptance.
+- Service calls, command acknowledgement, and physical resulting-state reconciliation.
 
 Acceptance:
 

@@ -217,7 +217,7 @@ packages/
   memory/               Curated long-term memory
   automation/           Schedules and deterministic triggers
   device-registry/      Devices and capabilities
-  device-home-assistant/Home Assistant adapter
+  device-home-assistant/Home Assistant adapter (`src/home-assistant`)
   device-mqtt/          MQTT adapter
   voice-protocol/       Audio session state and messages
   asr/                  ASR provider interface
