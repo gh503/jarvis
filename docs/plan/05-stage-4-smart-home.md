@@ -150,6 +150,21 @@ Deferred to later increments:
 - Dispatching an approved lock or alarm command through a real adapter.
 - Real Home Assistant or MQTT deployment evidence and physical-device acceptance.
 
+### Trusted approval execution handler
+
+Current increment: trusted in-process approval-to-adapter execution tracked by [#72](https://github.com/gh503/jarvis/issues/72).
+
+Implemented in the current increment:
+
+- `InMemoryDeviceApprovalStore` can invoke a trusted execution handler only after an allowed decision has passed exact digest, expiry, and idempotency checks.
+- The handler receives the original command and private authorization; public receipts and retained events remain normalized.
+- The Home Assistant fake-socket test covers the complete decision-to-service-call-to-observed-state path.
+
+Deferred to later increments:
+
+- Cross-process runtime configuration between the Harness tool producer and Gateway-owned device bridge.
+- Real Home Assistant credentials, deployment, and physical-device evidence.
+
 Acceptance:
 
 - Reconnect does not duplicate state events or service calls.

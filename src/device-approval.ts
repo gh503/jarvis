@@ -41,6 +41,13 @@ export interface DeviceApprovalDecisionReceipt {
   accepted: true
 }
 
+export interface DeviceApprovalExecution {
+  command: HighRiskDeviceCommand
+  authorization: DeviceApprovalAuthorization
+}
+
+export type DeviceApprovalExecutionHandler = (execution: DeviceApprovalExecution) => void
+
 export interface DeviceApprovalSource {
   listApprovals(): readonly DeviceApprovalRequest[]
   decideApproval(
@@ -159,7 +166,10 @@ export class InMemoryDeviceApprovalStore implements DeviceApprovalSource {
   private readonly decisions = new Map<string, StoredDeviceDecision>()
   private readonly listeners = new Set<(event: Extract<JarvisEventPayload, { type: `device.approval.${string}` }>) => void>()
 
-  constructor(private readonly gate = new DeviceApprovalGate()) {}
+  constructor(
+    private readonly gate = new DeviceApprovalGate(),
+    private readonly onAllowed?: DeviceApprovalExecutionHandler,
+  ) {}
 
   request(approvalId: string, command: HighRiskDeviceCommand): DeviceApprovalRequest {
     const request = this.gate.request(approvalId, command)
@@ -195,11 +205,14 @@ export class InMemoryDeviceApprovalStore implements DeviceApprovalSource {
     if (pending === undefined) throw new Error('device approval is missing or already resolved')
     if (pending.request.digest !== normalizedDigest) throw new Error('device approval digest does not match')
     this.pending.delete(normalizedApprovalId)
-    if (outcome === 'allowed-once') this.gate.authorize(normalizedApprovalId, pending.command)
-    else this.gate.cancel(normalizedApprovalId)
+    const authorization = outcome === 'allowed-once'
+      ? this.gate.authorize(normalizedApprovalId, pending.command)
+      : undefined
+    if (outcome === 'rejected') this.gate.cancel(normalizedApprovalId)
     const receipt = { approvalId: normalizedApprovalId, outcome, accepted: true as const }
     this.decisions.set(normalizedIdempotencyKey, { fingerprint, receipt })
     this.emit({ type: 'device.approval.resolved', approvalId: normalizedApprovalId, outcome })
+    if (authorization !== undefined) this.onAllowed?.({ command: pending.command, authorization })
     return receipt
   }
 
