@@ -1,0 +1,26 @@
+{
+  "finder": {
+    "displayName": "Finder",
+    "macOSName": "Finder"
+  },
+  "safari": {
+    "displayName": "Safari",
+    "macOSName": "Safari"
+  },
+  "calendar": {
+    "displayName": "Calendar",
+    "macOSName": "Calendar"
+  },
+  "notes": {
+    "displayName": "Notes",
+    "macOSName": "Notes"
+  },
+  "music": {
+    "displayName": "Music",
+    "macOSName": "Music"
+  },
+  "settings": {
+    "displayName": "System Settings",
+    "macOSName": "System Settings"
+  }
+}

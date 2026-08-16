@@ -1,0 +1,47 @@
+name: Feature proposal
+description: Propose one roadmap-aligned capability
+title: "[Feature]: "
+labels: ["type: feature", "status: triage"]
+body:
+  - type: textarea
+    id: outcome
+    attributes:
+      label: User outcome
+      description: What should the owner be able to accomplish?
+    validations:
+      required: true
+  - type: textarea
+    id: scope
+    attributes:
+      label: Proposed scope
+      description: State included and excluded behavior.
+    validations:
+      required: true
+  - type: textarea
+    id: acceptance
+    attributes:
+      label: Acceptance criteria
+      description: List directly observable pass conditions.
+    validations:
+      required: true
+  - type: dropdown
+    id: stage
+    attributes:
+      label: Roadmap stage
+      options:
+        - Stage 1 - Mac MVP
+        - Stage 2 - Safe computer node
+        - Stage 3 - Mobile remote
+        - Stage 4 - Smart home
+        - Stage 5 - Voice
+        - Stage 6 - Memory and proactivity
+        - Stage 7 - Hardening and release
+    validations:
+      required: true
+  - type: textarea
+    id: risk
+    attributes:
+      label: Safety and privacy impact
+      description: Describe permissions, side effects, data, and network exposure.
+    validations:
+      required: true
