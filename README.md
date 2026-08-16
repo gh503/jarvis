@@ -109,6 +109,17 @@ export JARVIS_HOME_ASSISTANT_COMMAND_TIMEOUT_MS='10000'
 
 URL 必须是 `ws://` 或 `wss://`，不能在 URL 中嵌入用户名或密码；地址与令牌必须同时配置。令牌只保存在 Gateway 进程内存中，不会写入审批、事件、审计或响应。未配置 Home Assistant 时仍可创建审批，但批准后不会执行供应商调用；配置后，适配器只有在完成认证、快照和状态订阅后才发送命令，网络确认仍不等于实体状态已改变。
 
+MQTT 设备适配器使用同样的本地环境配置，但不会默认连接任何 Broker：
+
+```bash
+export JARVIS_MQTT_URL='mqtts://broker.example:8883'
+export JARVIS_MQTT_USERNAME='device-scoped-user'
+export JARVIS_MQTT_PASSWORD='keep-this-local-and-uncommitted'
+export JARVIS_MQTT_CLIENT_ID='jarvis-mac-mqtt'
+```
+
+适配器固定在 `jarvis/v1/devices/{deviceId}/` topic 范围内，命令带有 MQTT message expiry 和 Jarvis 侧过期时间；相同幂等键不会重复发布，设备确认与最终结果分开处理。当前增量提供协议和运行时传输层，尚未声称连接了真实 Broker、定制硬件或完成物理设备验收。
+
 默认模式只监听 `127.0.0.1:3090`，并只连接 `http://127.0.0.1:3080` 的 Harness。可用 `JARVIS_HARNESS_URL` 指向其他 `127.0.0.1` 端口，`JARVIS_HARNESS_TIMEOUT_MS` 默认 10000；非 loopback Harness 地址会在启动前被拒绝。配对状态原子写入未纳入 Git 的 `data/pairing-state.json`。节点和客户端 WebSocket 分别只接受 `/v1/node` 与 `/v1/events`，并各自限制消息大小、握手时间和连接数。
 
 Gateway 启动后可从 `http://127.0.0.1:3090/app/` 打开移动端应用外壳。默认资源目录为项目内 `web/`，部署时可通过 `JARVIS_PWA_ROOT` 指向同一组受审计资源；Gateway 只服务固定清单中的文件，未知 `/app/*` 路径不会访问文件系统。

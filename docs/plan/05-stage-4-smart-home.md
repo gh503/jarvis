@@ -239,12 +239,20 @@ Acceptance:
 
 ### `packages/device-mqtt`
 
-Deliver:
+Current increment: scoped MQTT adapter and runtime transport tracked by [#78](https://github.com/gh503/jarvis/issues/78).
 
-- MQTT 5 client with TLS and per-device credentials where supported.
-- Versioned topics for presence, capabilities, reported state, commands, acknowledgements, and results.
-- Retained presence/state policy and message expiry.
-- Duplicate delivery handling.
+Implemented in the current increment:
+
+- Versioned `jarvis/v1/devices/{deviceId}/` topics for presence, capabilities, reported state, commands, acknowledgements, and results.
+- The adapter binds commands and subscriptions to one validated device ID; foreign topics, malformed frames, and mismatched command results fail closed.
+- Commands carry a bounded expiry and MQTT message expiry, while idempotency prevents duplicate or conflicting command delivery from creating a second publish.
+- The runtime transport uses the pinned MQTT client, supports `mqtt`/`mqtts`, keeps credentials in memory, and rejects embedded URL credentials.
+- Acknowledgement, observed state, terminal results, unavailable connection state, and retained-message expiry remain distinct.
+
+Deferred to later increments:
+
+- Gateway command-source integration and provider-specific capability mapping.
+- Named owner-provided Broker, constrained-device credentials, and physical hardware evidence.
 
 Proposed topic family:
 
