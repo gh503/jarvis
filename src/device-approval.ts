@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto'
 import { APPROVAL_TTL_MS, ApprovalLedger, commandDigest } from './approval.js'
 import type { JarvisEventPayload } from './event-log.js'
 
@@ -49,6 +50,7 @@ export interface DeviceApprovalExecution {
 export type DeviceApprovalExecutionHandler = (execution: DeviceApprovalExecution) => void
 
 export interface DeviceApprovalSource {
+  requestApproval?(command: HighRiskDeviceCommand): DeviceApprovalRequest | Promise<DeviceApprovalRequest>
   listApprovals(): readonly DeviceApprovalRequest[]
   decideApproval(
     approvalId: string,
@@ -70,7 +72,7 @@ function requiredText(value: unknown, field: string, maxLength = 256): string {
   return value
 }
 
-function normalizedCommand(command: HighRiskDeviceCommand): HighRiskDeviceCommand {
+export function normalizeHighRiskDeviceCommand(command: HighRiskDeviceCommand): HighRiskDeviceCommand {
   if (!isRecord(command)) throw new TypeError('high-risk device command must be an object')
   const capability = command.capability
   if (capability !== 'lock.set' && capability !== 'alarm.set') throw new Error('device approval is only for mandatory high-risk capabilities')
@@ -100,7 +102,7 @@ function commandFingerprint(command: HighRiskDeviceCommand): string {
 }
 
 export function deviceApprovalDigest(command: HighRiskDeviceCommand): string {
-  return commandDigest(normalizedCommand(command))
+  return commandDigest(normalizeHighRiskDeviceCommand(command))
 }
 
 export class DeviceApprovalGate {
@@ -115,7 +117,7 @@ export class DeviceApprovalGate {
 
   request(approvalId: string, command: HighRiskDeviceCommand): DeviceApprovalRequest {
     const normalizedApprovalId = requiredText(approvalId, 'approvalId', 128)
-    const normalized = normalizedCommand(command)
+    const normalized = normalizeHighRiskDeviceCommand(command)
     const record = this.ledger.propose(normalizedApprovalId, normalized)
     return {
       approvalId: normalizedApprovalId,
@@ -130,7 +132,7 @@ export class DeviceApprovalGate {
   }
 
   authorize(approvalId: string, command: HighRiskDeviceCommand): DeviceApprovalAuthorization {
-    const normalized = normalizedCommand(command)
+    const normalized = normalizeHighRiskDeviceCommand(command)
     const record = this.ledger.consume(requiredText(approvalId, 'approvalId', 128), normalized)
     return {
       approvalId: record.callId,
@@ -147,7 +149,7 @@ export class DeviceApprovalGate {
   }
 
   digest(command: HighRiskDeviceCommand): string {
-    return commandFingerprint(normalizedCommand(command))
+    return commandFingerprint(normalizeHighRiskDeviceCommand(command))
   }
 }
 
@@ -176,6 +178,10 @@ export class InMemoryDeviceApprovalStore implements DeviceApprovalSource {
     this.pending.set(request.approvalId, { command, request })
     this.emit({ type: 'device.approval.pending', approval: { ...request } })
     return request
+  }
+
+  requestApproval(command: HighRiskDeviceCommand): DeviceApprovalRequest {
+    return this.request(randomUUID(), command)
   }
 
   listApprovals(): readonly DeviceApprovalRequest[] {

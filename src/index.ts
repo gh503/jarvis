@@ -6,13 +6,14 @@ import type {} from '@deepseek-ai/dsh-host-webserver'
 import { ApprovalLedger } from './approval.js'
 import { AppRegistry } from './apps.js'
 import { AuditLog } from './audit.js'
+import { DeviceCommandGatewayClient } from './device-command-client.js'
 import { ReminderStore, type Reminder } from './reminders.js'
 import { readSystemStatus } from './system-status.js'
 
 export const name = 'jarvis-mac-mvp'
 export const inject = ['tools', 'webServer']
 
-const JARVIS_TOOLS = new Set(['jarvis_system_status', 'jarvis_open_app', 'jarvis_reminder'])
+const JARVIS_TOOLS = new Set(['jarvis_system_status', 'jarvis_open_app', 'jarvis_reminder', 'jarvis_device_control'])
 
 function reminderOutput(reminders: Reminder[]) {
   return { reminders }
@@ -21,7 +22,12 @@ function reminderOutput(reminders: Reminder[]) {
 function safeAuditDetail(tool: string, argumentsValue: unknown): Record<string, string> | undefined {
   if (typeof argumentsValue !== 'object' || argumentsValue === null) return undefined
   const detail: Record<string, string> = {}
-  for (const key of tool === 'jarvis_open_app' ? ['application'] : ['action', 'id', 'dueAt']) {
+  const keys = tool === 'jarvis_open_app'
+    ? ['application']
+    : tool === 'jarvis_device_control'
+      ? ['capability', 'externalEntityId', 'service', 'expectedState']
+      : ['action', 'id', 'dueAt']
+  for (const key of keys) {
     const value = Reflect.get(argumentsValue, key)
     if (typeof value === 'string') detail[key] = value.slice(0, 200)
   }
@@ -35,6 +41,11 @@ export async function apply(ctx: Context): Promise<void> {
   const audit = new AuditLog(dataDir)
   const reminders = new ReminderStore(dataDir)
   const approvals = new ApprovalLedger()
+  const deviceCommandToken = process.env.JARVIS_DEVICE_COMMAND_TOKEN
+  const deviceClient = deviceCommandToken === undefined ? undefined : new DeviceCommandGatewayClient({
+    url: process.env.JARVIS_DEVICE_GATEWAY_URL ?? 'http://127.0.0.1:3090',
+    token: deviceCommandToken,
+  })
   await Promise.all([audit.initialize(), reminders.initialize()])
 
   ctx.tools.guard(exec => JARVIS_TOOLS.has(exec.name) || exec.name === 'ask_user_question'
@@ -155,6 +166,64 @@ export async function apply(ctx: Context): Promise<void> {
     },
     async execute() {
       return readSystemStatus()
+    },
+  }))
+
+  ctx.tools.register(defineTool({
+    name: 'jarvis_device_control',
+    description: 'Request one allowlisted high-risk Home Assistant lock or alarm action. The paired PWA must approve it before the device adapter can execute it.',
+    parameters: {
+      capability: { type: 'string', required: true, enum: ['lock.set', 'alarm.set'] },
+      externalEntityId: { type: 'string', required: true, description: 'Normalized Home Assistant entity id' },
+      service: { type: 'string', required: true, description: 'Allowlisted Home Assistant service' },
+      expectedState: { type: 'string', required: true, description: 'Expected resulting entity state' },
+      serviceData: { type: 'object', additionalProperties: true, description: 'Provider service data; never returned in the public approval view' },
+    },
+    output: {
+      schema: {
+        type: 'object',
+        additionalProperties: false,
+        properties: {
+          state: { type: 'string', required: true, enum: ['awaiting-approval'] },
+          approvalId: { type: 'string', required: true },
+          capability: { type: 'string', required: true },
+          externalEntityId: { type: 'string', required: true },
+          service: { type: 'string', required: true },
+          expectedState: { type: 'string', required: true },
+          risk: { type: 'string', required: true, enum: ['high'] },
+          expiresAt: { type: 'number', required: true },
+        },
+      },
+      render: (_args, value) => [{ type: 'text', text: `Smart-device approval ${String(value.approvalId)} is waiting for a decision.` }],
+    },
+    async execute(args, exec) {
+      if (deviceClient === undefined) throw new Error('smart-device control is not configured')
+      if (args.capability !== 'lock.set' && args.capability !== 'alarm.set') throw new Error('smart-device capability is invalid')
+      if (typeof args.externalEntityId !== 'string' || typeof args.service !== 'string' || typeof args.expectedState !== 'string') {
+        throw new Error('smart-device command fields are invalid')
+      }
+      if (args.serviceData !== undefined && (typeof args.serviceData !== 'object' || args.serviceData === null || Array.isArray(args.serviceData))) {
+        throw new Error('smart-device service data is invalid')
+      }
+      const approval = await deviceClient.requestApproval({
+        commandId: String(exec.callId),
+        idempotencyKey: String(exec.callId),
+        capability: args.capability,
+        externalEntityId: args.externalEntityId,
+        service: args.service,
+        expectedState: args.expectedState,
+        ...(args.serviceData === undefined ? {} : { serviceData: args.serviceData as Readonly<Record<string, unknown>> }),
+      })
+      return {
+        state: 'awaiting-approval' as const,
+        approvalId: approval.approvalId,
+        capability: approval.capability,
+        externalEntityId: approval.externalEntityId,
+        service: approval.service,
+        expectedState: approval.expectedState,
+        risk: approval.risk,
+        expiresAt: approval.expiresAt,
+      }
     },
   }))
 
