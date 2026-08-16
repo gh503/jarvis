@@ -9,6 +9,7 @@ import { HarnessEventBridge, type ConversationEventSource } from './harness-even
 import { NODE_PROTOCOL_VERSION, parseNodeRegistration, type NodeRegistration } from './node-capabilities.js'
 import type { NodeCommand } from './node-command.js'
 import { FilePairingStateStore, PairingAuthority } from './pairing.js'
+import { PwaShell } from './pwa.js'
 import { TokenBucketRateLimiter, type RateLimitDecision, type TokenBucketRateLimiterOptions } from './rate-limit.js'
 import { FileSessionStateStore, SessionAuthenticationError, SessionAuthority, type SessionPrincipal } from './sessions.js'
 
@@ -59,6 +60,7 @@ export interface JarvisGatewayOptions {
   eventStatePath?: string
   eventHandshakeTimeoutMs?: number
   maxEventConnections?: number
+  pwaRoot?: string
 }
 
 export interface RunningGateway {
@@ -321,6 +323,7 @@ export function createJarvisGateway(options: JarvisGatewayOptions): JarvisGatewa
   const eventLog = options.eventLog ?? new RetainedEventLog(
     options.eventStatePath === undefined ? {} : { store: new FileEventLogStore(options.eventStatePath) },
   )
+  const pwa = options.pwaRoot === undefined ? undefined : new PwaShell(options.pwaRoot)
   const harnessEvents = options.harnessEvents ?? (options.harness === undefined
     ? new HarnessEventBridge({
         ...(options.harnessOrigin === undefined ? {} : { origin: options.harnessOrigin }),
@@ -612,6 +615,7 @@ export function createJarvisGateway(options: JarvisGatewayOptions): JarvisGatewa
         })
         return
       }
+      if (pwa?.serve(request, response, correlationId) === true) return
       const ownerAuthenticated = sameSecret(options.ownerToken, bearerToken(request, 'Bearer'))
       const deviceCredential = bearerToken(request, 'Device')
       const deviceNodeId = deviceCredential === undefined ? undefined : authority.identify(deviceCredential)

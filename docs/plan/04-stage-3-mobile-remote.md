@@ -1,6 +1,6 @@
 # Stage 3: Mobile Companion and Private Remote Access
 
-Status: planned
+Status: in progress
 Effort: 8-12 focused engineering days
 
 ## Objective
@@ -10,9 +10,11 @@ Allow the owner to converse with Jarvis, observe status, and approve actions fro
 ## Platform Baseline
 
 - V1 client is an installable responsive PWA.
-- First acceptance device must be named before implementation.
+- First acceptance device must be named before platform-specific adaptation or physical installation qualification.
 - Native mobile development remains deferred until a required capability fails the PWA gate.
 - Background always-listening voice is explicitly outside this stage.
+
+The first platform-independent increment is tracked in [#42](https://github.com/gh503/jarvis/issues/42). It serves a scoped, responsive PWA shell from the Gateway, caches only public application assets for offline startup, and clearly marks all account data unavailable until pairing. Physical installation remains unqualified until the owner names the first iPhone or Android device.
 
 ## Modules
 
