@@ -18,6 +18,8 @@ const ASSET_DEFINITIONS = new Map<string, PwaAssetDefinition>([
   ['/app/app.css', { file: 'app.css', contentType: 'text/css; charset=utf-8' }],
   ['/app/app.js', { file: 'app.js', contentType: 'text/javascript; charset=utf-8' }],
   ['/app/pairing.js', { file: 'pairing.js', contentType: 'text/javascript; charset=utf-8' }],
+  ['/app/device-store.js', { file: 'device-store.js', contentType: 'text/javascript; charset=utf-8' }],
+  ['/app/conversations.js', { file: 'conversations.js', contentType: 'text/javascript; charset=utf-8' }],
   ['/app/manifest.webmanifest', { file: 'manifest.webmanifest', contentType: 'application/manifest+json; charset=utf-8' }],
   ['/app/sw.js', { file: 'sw.js', contentType: 'text/javascript; charset=utf-8' }],
   ['/app/icon.svg', { file: 'icon.svg', contentType: 'image/svg+xml' }],

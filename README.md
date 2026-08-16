@@ -92,7 +92,9 @@ JARVIS_OWNER_TOKEN='the-same-local-owner-token' npm run pair:approve -- --code 1
 
 Owner Token 只提交给 loopback Gateway，不进入手机。Gateway 只持久化一次性领取密钥和设备凭据的 SHA-256 摘要；设备凭据通过领取密钥派生的 AES-256-GCM 密钥加密返回，重复领取返回同一密文。浏览器将不可导出的 P-256 私钥、设备凭据和短期 Session 保存在同源 IndexedDB；离线时只显示本地身份为非当前状态。清除站点数据会移除本地访问材料，但不会替代服务端设备撤销。
 
-短期 Session token 可访问 `GET/POST /v1/conversations`、`GET /v1/conversations/:id`、`POST /v1/conversations/:id/messages` 和 `POST /v1/conversations/:id/cancel`。消息只接受最多 16 KiB 的纯文本；远程 slash command 被拒绝。`/v1/events` 不在 URL 携带令牌，第一条消息必须是 `events.authenticate`；同源浏览器或无 Origin 的受信客户端可连接。客户端保存每个事件的 `cursor`，重连时提交该游标；若缓冲已淘汰、Gateway 重启或上游连续性丢失，`events.ready`/`sync.required` 会要求先重新读取会话快照。
+短期 Session token 可访问 `GET/POST /v1/conversations`、`GET /v1/conversations/:id`、`POST /v1/conversations/:id/messages` 和 `POST /v1/conversations/:id/cancel`。配对后的 PWA 可列出、新建、选择和继续文字对话；消息只接受最多 16 KiB 的纯文本，发送期间会锁定重复提交，远程 slash command 被拒绝。`/v1/events` 不在 URL 携带令牌，第一条消息必须是 `events.authenticate`；同源浏览器或无 Origin 的受信客户端可连接。客户端保存每个事件的 `cursor`，重连时提交该游标；若缓冲已淘汰、Gateway 重启或上游连续性丢失，`events.ready`/`sync.required` 会先要求重新读取权威会话快照，刷新失败时不会推进游标。
+
+PWA 只在同源 IndexedDB 保存最近一次规范化对话列表、当前最多 50 条文字消息和事件游标，不缓存 API 响应或 Owner Token。Gateway 不可达时，离线壳可只读显示该快照，并明确标记为“旧数据”；所有新建和发送操作保持禁用，恢复连接并重新验证 Session 后才切回实时状态。
 
 Gateway 默认允许每个连接来源突发 60 次请求并每秒恢复 1 次额度；每个已认证 Owner、设备或 Session 可突发 120 次并每秒恢复 2 次额度。它只使用直接连接地址，不信任客户端提供的转发来源头；HTTP `429` 会返回 `Retry-After`、限额余量和 correlation ID。
 
@@ -156,7 +158,7 @@ npm run restore -- --archive backups/jarvis-backup.jarvis
 - API Key：存放在未纳入 Git 的 `.env` 或 Harness 本机凭据存储，均不进入备份归档
 - 网络：Harness 始终只限本机回环；Gateway 仅可绑定明确的回环、私网或 overlay IP，非回环强制 TLS，禁止直接暴露到互联网
 
-这是单用户文字版 MVP；手机端已有可安装的离线应用外壳、Owner 批准的设备配对和短期 Session，尚未接入移动对话、审批、通知，也不包含语音、智能家居、任意终端、文件操作和消息发送。Gateway 已提供认证、设备身份、受控会话 API 和可恢复的实时事件；客户端不得直接暴露或调用 Harness Web 服务。
+这是单用户文字版 MVP；手机端已有可安装的离线应用、Owner 批准的设备配对、短期 Session、文字对话和实时同步，尚未接入审批与通知，也不包含语音、智能家居、任意终端、文件操作和第三方消息发送。Gateway 已提供认证、设备身份、受控会话 API 和可恢复的实时事件；客户端不得直接暴露或调用 Harness Web 服务。
 
 ## 上游边界
 

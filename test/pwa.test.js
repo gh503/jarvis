@@ -22,7 +22,8 @@ test('declares a scoped installable manifest and complete offline shell', async 
 
   const serviceWorker = await readFile(join(webRoot, 'sw.js'), 'utf8')
   for (const path of [
-    '/app/', '/app/app.css', '/app/app.js?v=4', '/app/pairing.js?v=4', '/app/apple-touch-icon.png', '/app/icon.svg',
+    '/app/', '/app/app.css', '/app/app.js?v=7', '/app/pairing.js?v=7', '/app/device-store.js?v=7',
+    '/app/conversations.js?v=7', '/app/apple-touch-icon.png', '/app/icon.svg',
     '/app/icon-192.png', '/app/icon-512.png', '/app/manifest.webmanifest',
   ]) {
     assert.ok(serviceWorker.includes(`'${path}'`), `${path} must be pre-cached`)
@@ -43,14 +44,18 @@ test('ships valid standard and Apple PNG icon dimensions', async () => {
 test('keeps the browser client on the public Gateway contract', async () => {
   const appSource = await readFile(join(webRoot, 'app.js'), 'utf8')
   const pairingSource = await readFile(join(webRoot, 'pairing.js'), 'utf8')
+  const conversationsSource = await readFile(join(webRoot, 'conversations.js'), 'utf8')
+  const deviceStoreSource = await readFile(join(webRoot, 'device-store.js'), 'utf8')
   const htmlSource = await readFile(join(webRoot, 'index.html'), 'utf8')
   assert.match(appSource, /fetch\('\.\.\/v1\/health'/)
   assert.match(appSource, /handlePairingState\(\{ phase: 'loading' \}\)/)
-  assert.match(pairingSource, /indexedDB\.open/)
+  assert.match(deviceStoreSource, /indexedDB\.open/)
   assert.match(pairingSource, /await this\.initialize\(\)/)
+  assert.match(conversationsSource, /events\.authenticate/)
+  assert.match(conversationsSource, /authenticatedRequest\('\/v1\/conversations'/)
   assert.match(htmlSource, /id="pair-button"[^>]+disabled/)
-  assert.doesNotMatch(`${appSource}\n${pairingSource}`, /@deepseek-ai|dsh|Harness|\/api\//i)
-  assert.doesNotMatch(`${appSource}\n${pairingSource}`, /localStorage|sessionStorage/)
+  assert.doesNotMatch(`${appSource}\n${pairingSource}\n${conversationsSource}`, /@deepseek-ai|dsh|Harness|\/api\//i)
+  assert.doesNotMatch(`${appSource}\n${pairingSource}\n${conversationsSource}`, /localStorage|sessionStorage/)
 })
 
 test('decrypts the Gateway claim envelope with the browser claim secret', async () => {
