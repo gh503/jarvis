@@ -51,6 +51,8 @@ const DEFAULT_RISKS: Readonly<Record<string, DeviceCapabilityRisk>> = Object.fre
   'alarm.set': 'high',
 })
 
+const RISK_ORDER: Readonly<Record<DeviceCapabilityRisk, number>> = Object.freeze({ read: 0, low: 1, medium: 2, high: 3 })
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value)
 }
@@ -172,9 +174,18 @@ export class DeviceRegistry {
     const names = [...new Set(input.capabilities.map(capability => requiredText(capability, 'capability')))]
     if (names.length !== input.capabilities.length) throw new Error(`duplicate capability on device: ${externalEntityId}`)
     const overrides = input.riskOverrides ?? {}
+    for (const [overrideName, overrideRisk] of Object.entries(overrides)) {
+      if (!names.includes(overrideName)) throw new Error(`risk override targets an unknown capability: ${overrideName}`)
+      validateRisk(overrideRisk, `${overrideName}.risk`)
+    }
     const capabilities = names.map(name => {
-      const risk = overrides[name] ?? DEFAULT_RISKS[name]
-      if (risk === undefined) throw new Error(`unsupported device capability: ${name}`)
+      const defaultRisk = DEFAULT_RISKS[name]
+      if (defaultRisk === undefined) throw new Error(`unsupported device capability: ${name}`)
+      const override = overrides[name]
+      if (override !== undefined && RISK_ORDER[override] < RISK_ORDER[defaultRisk]) {
+        throw new Error(`risk override cannot lower mandatory risk for ${name}`)
+      }
+      const risk = override ?? defaultRisk
       return { id: capabilityId(deviceId(source, externalEntityId), name), name, risk: validateRisk(risk, `${name}.risk`) }
     }).sort((left, right) => left.name.localeCompare(right.name))
     const reportedState = validateState(input.reportedState)

@@ -102,6 +102,21 @@ Deferred to later increments:
 - Medium/high-risk capability dispatch and phone approval.
 - Real Home Assistant service behavior and physical-device evidence.
 
+### High-risk approval gate
+
+Current increment: exact, single-use high-risk approval contract tracked by [#62](https://github.com/gh503/jarvis/issues/62). It is a local policy core and does not dispatch a lock or alarm service.
+
+Implemented in the current increment:
+
+- `lock.set` and `alarm.set` remain mandatory `high` risk; registry overrides cannot lower that floor.
+- Approval views expose normalized target/action metadata, digest, expiry, and risk only.
+- Authorization consumes the unchanged command once; mutation, expiry, replay, and cancellation fail closed.
+
+Deferred to later increments:
+
+- Gateway/PWA approval transport for smart-device approval records.
+- Real lock/alarm service calls and physical-device acceptance.
+
 Acceptance:
 
 - Reconnect does not duplicate state events or service calls.
