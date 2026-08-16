@@ -9,7 +9,7 @@ if [[ ! -d node_modules || ! -f dist/index.js ]]; then
   "${NPM_BIN:-npm}" run build
 fi
 
-export DSH_HOME="$ROOT/.dsh"
+export DSH_HOME="${DSH_HOME:-$ROOT/.dsh}"
 export DSH_TELEMETRY_DISABLED=1
 export DSH_PERMISSION_MODE=workspace-write
 export JARVIS_DATA_DIR="${JARVIS_DATA_DIR:-$ROOT/data}"

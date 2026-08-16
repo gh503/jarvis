@@ -13,6 +13,8 @@ Build a local-first personal Jarvis that uses DeepSeek Harness as its agent runt
 - Dependency installation, repository typecheck, and full build passed locally.
 - An out-of-tree plugin was loaded through a patch without modifying Harness.
 - The plugin registered `/jarvis/health`; a live request returned HTTP 200 and an unsupported method returned HTTP 405.
+- The Gateway now reaches Harness through a loopback-only HTTP bridge with a fixed five-method session allowlist; real-process verification created, listed, and read an empty session without invoking a model.
+- Gateway conversation responses expose only normalized session metadata and append-origin user/assistant text; Harness paths, presets, projections, tools, reasoning, and raw events remain internal.
 - Harness provides sessions, tools, model adapters, plugins, skills, MCP, subagents, jobs, workflows, schedules, workspaces, persistence, approvals, sandbox abstractions, Web UI, and host/client APIs.
 - The shipped Web server has no TLS, authentication, or origin policy. It must stay on loopback behind a Jarvis-owned security gateway.
 - The current SDK transport is subprocess stdio JSON-RPC. It is not a remote mobile API and lacks per-session close and prompt cancellation.
@@ -64,7 +66,7 @@ The gateway owns:
 - WebSocket lifecycle and push coordination.
 - Audit correlation identifiers.
 
-The gateway may reverse proxy the pinned Harness Web UI for early development, but mobile and device clients depend only on Jarvis APIs.
+The gateway uses an explicit Harness RPC allowlist and never acts as a generic reverse proxy. Mobile and device clients depend only on normalized Jarvis APIs.
 
 ### AD-03: Deployment shape
 
