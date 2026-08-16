@@ -25,6 +25,7 @@
 - 记录追加式操作审计，提醒和审计文件权限为 `0600`。
 - 默认只监听 `127.0.0.1`，并关闭 Harness 遥测。
 - 单调拒绝非 Jarvis 工具，模型不能绕过策略调用终端或文件工具。
+- 已实现节点命令安全核心：节点绑定、能力版本、本地暂停、应用白名单、过期检查和幂等执行；出站连接与配对仍属于后续阶段。
 
 ## 环境要求
 
@@ -40,6 +41,7 @@ cp .env.example .env
 # 编辑 .env，填入 DEEPSEEK_API_KEY
 npm install
 npm run verify
+npm run verify:runtime
 npm start
 ```
 
