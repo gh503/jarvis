@@ -180,6 +180,14 @@ export class PairingAuthority {
     return sameDigest(record.credentialDigest, credentialDigest(credential))
   }
 
+  identify(credential: string): string | undefined {
+    const digest = credentialDigest(credential)
+    for (const record of this.devices.values()) {
+      if (!record.revoked && sameDigest(record.credentialDigest, digest)) return record.nodeId
+    }
+    return undefined
+  }
+
   isActive(nodeId: string): boolean {
     const record = this.devices.get(nodeId)
     return record !== undefined && !record.revoked

@@ -32,7 +32,7 @@
 - Ed25519 设备私钥同样只保存在 macOS Keychain；读取时会验证公私钥匹配和指纹，已有身份不会被静默覆盖。
 - Node Agent 支持异步凭据提供器；每次启动读取当前凭据，停止时清除内存副本。
 - 已实现配对协议核心及 Gateway API：Ed25519 设备身份、短期单次验证码、凭据轮换、撤销和原子状态持久化。
-- 已实现私网受限的 `v1` Gateway 控制面原型：Owner/Device 认证、配对确认、轮换、撤销、请求 correlation ID，以及 `/v1/node` WebSocket 的认证、能力注册和在线连接管理；默认 loopback，可启用私网 TLS，但禁止公网绑定。
+- 已实现私网受限的 `v1` Gateway 控制面原型：Owner/Device 认证、配对确认、轮换、撤销、请求 correlation ID、按连接来源和认证身份隔离的有界限流，以及 `/v1/node` WebSocket 的认证、能力注册和在线连接管理；默认 loopback，可启用私网 TLS，但禁止公网绑定。
 - Gateway 可由设备凭据签发短期访问会话；refresh 每次轮换，旧 refresh 复用、Owner 登出或设备撤销都会使会话族失效。
 
 ## 环境要求
@@ -76,6 +76,8 @@ JARVIS_OWNER_TOKEN='use-a-local-secret-of-at-least-16-characters' npm run start:
 
 默认模式只监听 `127.0.0.1:3090`，配对状态原子写入未纳入 Git 的 `data/pairing-state.json`。节点 WebSocket 只接受 `/v1/node`，并限制消息大小、握手时间和连接数。
 
+Gateway 默认允许每个连接来源突发 60 次请求并每秒恢复 1 次额度；每个已认证 Owner、设备或 Session 可突发 120 次并每秒恢复 2 次额度。它只使用直接连接地址，不信任客户端提供的转发来源头；HTTP `429` 会返回 `Retry-After`、限额余量和 correlation ID。
+
 Gateway 也支持绑定到明确的 RFC 1918、Tailscale CGNAT 或 IPv6 ULA 地址。非 loopback 模式强制 HTTPS/WSS，拒绝公网地址、主机名和通配地址；TLS 私钥文件权限必须为 `0600` 或更严格：
 
 ```bash
@@ -86,7 +88,7 @@ JARVIS_GATEWAY_TLS_CERT='/private/path/gateway-certificate-chain.pem' \
 npm run start:gateway
 ```
 
-证书必须由连接设备信任并覆盖客户端使用的 Gateway 名称。该配置不会安装或管理 Tailscale，也不能直接暴露到互联网；手机访问仍需速率限制、Harness bridge 和可从游标恢复的事件同步。
+证书必须由连接设备信任并覆盖客户端使用的 Gateway 名称。该配置不会安装或管理 Tailscale，也不能直接暴露到互联网；手机访问仍需 Harness bridge 和可从游标恢复的事件同步。
 
 Gateway 运行后，可以在另一个终端为当前 Mac 创建身份并完成人工验证码确认：
 

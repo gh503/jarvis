@@ -205,6 +205,15 @@ export class SessionAuthority {
     return this.principal(record)
   }
 
+  identifyRefresh(refreshTokenValue: string): SessionPrincipal | undefined {
+    if (!validToken(refreshTokenValue)) return undefined
+    const digest = tokenDigest(refreshTokenValue)
+    const record = [...this.sessions.values()].find(candidate => sameDigest(candidate.refreshDigest, digest))
+    if (record === undefined || record.revokedAt !== null || record.refreshExpiresAt <= this.now()
+      || record.rotation >= this.maxRefreshRotations) return undefined
+    return this.principal(record)
+  }
+
   refresh(refreshTokenValue: string): SessionTokens {
     if (!validToken(refreshTokenValue)) throw new SessionAuthenticationError('invalid')
     const digest = tokenDigest(refreshTokenValue)
