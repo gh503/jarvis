@@ -1,6 +1,6 @@
-import { ConversationsClient } from './conversations.js?v=11'
-import { BrowserPairing } from './pairing.js?v=11'
-import { NotificationCenter } from './notifications.js?v=11'
+import { ConversationsClient } from './conversations.js?v=12'
+import { BrowserPairing } from './pairing.js?v=12'
+import { NotificationCenter } from './notifications.js?v=12'
 
 const connectionLabel = document.querySelector('#connection-label')
 const gatewayDetail = document.querySelector('#gateway-detail')
@@ -71,7 +71,7 @@ let pairingPhase = 'loading'
 let pairingExpiresAt
 let disconnectBusy = false
 let conversationsClient
-let stateForRendering = { conversations: [], approvals: [], approvalSubmittedIds: [] }
+let stateForRendering = { conversations: [], approvals: [], deviceApprovals: [], approvalSubmittedIds: [], deviceApprovalSubmittedIds: [] }
 let notificationState = { history: [], unreadCount: 0, preferences: undefined, permission: 'default' }
 let lastPairingPhase = 'loading'
 
@@ -345,19 +345,76 @@ function approvalCard(approval, mutable, busy) {
   return item
 }
 
+function deviceApprovalStatus(approval) {
+  return approval.expiresAt <= Date.now() ? '已过期' : '等待决定'
+}
+
+function deviceApprovalCard(approval, mutable, busy) {
+  const item = document.createElement('li')
+  item.className = 'approval-card device-approval-card'
+  item.dataset.deviceApprovalId = approval.approvalId
+  const header = document.createElement('div')
+  header.className = 'approval-card-header'
+  const title = document.createElement('strong')
+  title.textContent = approval.capability === 'lock.set' ? '门锁操作' : '警报操作'
+  const risk = document.createElement('span')
+  risk.className = 'risk-label'
+  risk.textContent = '必须审批'
+  header.append(title, risk)
+  const target = document.createElement('p')
+  target.className = 'approval-target'
+  target.textContent = approval.externalEntityId
+  const details = document.createElement('dl')
+  details.className = 'approval-details'
+  for (const [label, value] of [
+    ['动作', approval.service],
+    ['目标状态', approval.expectedState],
+    ['状态', deviceApprovalStatus(approval)],
+    ['到期', formatDate(approval.expiresAt, true)],
+  ]) {
+    const term = document.createElement('dt')
+    term.textContent = label
+    const description = document.createElement('dd')
+    description.textContent = value
+    details.append(term, description)
+  }
+  const actions = document.createElement('div')
+  actions.className = 'approval-actions'
+  const reject = document.createElement('button')
+  reject.type = 'button'
+  reject.className = 'secondary-button'
+  reject.dataset.deviceApprovalAction = 'rejected'
+  reject.textContent = '拒绝'
+  const allow = document.createElement('button')
+  allow.type = 'button'
+  allow.className = 'primary-button'
+  allow.dataset.deviceApprovalAction = 'allowed-once'
+  allow.textContent = '允许一次'
+  reject.disabled = !mutable || busy
+  allow.disabled = !mutable || busy || approval.expiresAt <= Date.now()
+  actions.append(reject, allow)
+  item.append(header, target, details, actions)
+  return item
+}
+
 function renderApprovals(state, mutable) {
   approvalList.replaceChildren()
   for (const approval of state.approvals) {
     const submitted = state.approvalSubmittedIds.includes(approval.id)
     approvalList.append(approvalCard(approval, mutable, state.approvalBusyId === approval.id || submitted))
   }
-  approvalEmpty.hidden = state.approvals.length > 0
-  approvalList.hidden = state.approvals.length === 0
+  for (const approval of state.deviceApprovals ?? []) {
+    const submitted = (state.deviceApprovalSubmittedIds ?? []).includes(approval.approvalId)
+    approvalList.append(deviceApprovalCard(approval, mutable, state.deviceApprovalBusyId === approval.approvalId || submitted))
+  }
+  const approvalCount = state.approvals.length + (state.deviceApprovals?.length ?? 0)
+  approvalEmpty.hidden = approvalCount > 0
+  approvalList.hidden = approvalCount === 0
   approvalNotice.hidden = state.message === undefined
   approvalNotice.textContent = state.message ?? ''
   for (const count of document.querySelectorAll('[data-approval-count]')) {
-    count.textContent = String(state.approvals.length)
-    count.hidden = state.approvals.length === 0
+    count.textContent = String(approvalCount)
+    count.hidden = approvalCount === 0
   }
 }
 
@@ -570,6 +627,12 @@ approvalList.addEventListener('click', event => {
   if (button === null || card === null) return
   if (button.dataset.approvalAction === 'cancel') void conversationsClient.cancelApproval(card.dataset.approvalId)
   else void conversationsClient.decideApproval(card.dataset.approvalId, button.dataset.approvalAction)
+})
+approvalList.addEventListener('click', event => {
+  const button = event.target instanceof Element ? event.target.closest('[data-device-approval-action]') : null
+  const card = button?.closest('[data-device-approval-id]')
+  if (button === null || card === null) return
+  void conversationsClient.decideDeviceApproval(card.dataset.deviceApprovalId, button.dataset.deviceApprovalAction)
 })
 mobileConversationSelect.addEventListener('change', () => { void conversationsClient.select(mobileConversationSelect.value) })
 newConversationButton.addEventListener('click', () => { void conversationsClient.create() })

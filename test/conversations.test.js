@@ -77,6 +77,7 @@ function gatewayPairing(calls, overrides = {}) {
       }
       if (path === '/v1/conversations') return { ok: true, status: 200, value: { conversations: [conversation] } }
       if (path === '/v1/approvals') return { ok: true, status: 200, value: { approvals: overrides.approvals ?? [] } }
+      if (path === '/v1/device-approvals') return { ok: true, status: 200, value: { approvals: overrides.deviceApprovals ?? [] } }
       if (path.startsWith('/v1/conversations/session-one?')) {
         return { ok: true, status: 200, value: { messages: [message], hasMore: false, nextBeforeSequence: null } }
       }
@@ -295,6 +296,37 @@ test('keeps approvals memory-only and reuses a decision key after a transport re
   client.setOnline(false)
   assert.deepEqual(states.at(-1).approvals, [])
   assert.equal(await client.decideApproval(approval.id, 'allowed-once'), false)
+})
+
+test('loads and decides smart-device approvals through the separate Gateway contract', async () => {
+  const calls = []
+  const states = []
+  let pending = [{
+    approvalId: 'device-approval-one', capability: 'lock.set', externalEntityId: 'lock.front_door',
+    service: 'lock_unlock', expectedState: 'unlocked', digest: 'b'.repeat(64), risk: 'high', expiresAt: Date.now() + 60_000,
+  }]
+  const pairing = gatewayPairing(calls, {
+    request: async (path, init) => {
+      if (path === '/v1/device-approvals') return { ok: true, status: 200, value: { approvals: pending } }
+      if (path.endsWith('/device-approval-one/decision')) {
+        pending = []
+        return { ok: true, status: 202, value: { approvalId: 'device-approval-one', outcome: 'allowed-once', accepted: true } }
+      }
+      return undefined
+    },
+  })
+  const client = new ConversationsClient(pairing, state => states.push(state), {
+    store: memoryStore(), location: { origin: 'https://jarvis.internal' }, socketFactory: url => new FakeSocket(url),
+    randomUUID: () => 'device-decision-one',
+  })
+  await client.start()
+  assert.equal(states.at(-1).deviceApprovals.length, 1)
+  assert.equal(await client.decideDeviceApproval('device-approval-one', 'allowed-once'), true)
+  const submitted = calls.find(call => typeof call[1] === 'string' && call[1].endsWith('/decision'))
+  assert.deepEqual(JSON.parse(submitted[3].body), {
+    digest: 'b'.repeat(64), outcome: 'allowed-once', idempotencyKey: 'device-decision-one',
+  })
+  assert.deepEqual(states.at(-1).deviceApprovals, [])
 })
 
 test('converges live approval requested and resolved events', async () => {
