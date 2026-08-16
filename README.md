@@ -41,6 +41,7 @@
 - Gateway 已从 `/app/` 提供响应式 PWA 外壳、安装清单和离线应用缓存；未配对时只显示真实连接状态，不缓存或伪装账户数据。真机安装仍待指定首台 iPhone 或 Android 后验收。
 - Gateway 已通过 Harness 的公开审批传输提供移动审批收件箱；只有带完整 `tool/call`、`approval/asked` 和 `approval/requested` 证据的 `jarvis_open_app` 可在 60 秒内远程允许一次，其他请求只能拒绝或取消本轮。
 - 配对后的 PWA 可读取 Gateway 认可的当前设备与会话状态，并可在设置中撤销自身设备凭据；撤销会关闭该设备全部会话与实时连接，并清除浏览器中的身份、令牌、对话快照和事件游标。
+- 配对后的 PWA 提供隐私优先的应用内通知中心；审批、对话完成和连接事件只生成固定摘要，支持分类开关、静默时段、每小时系统通知上限、已读/清空和显式系统通知授权。
 - 已提供离线一致性备份和原子恢复命令；运行租约阻止在 Harness 或 Gateway 活跃时复制状态，恢复前校验结构、权限和 SHA-256。
 
 ## 环境要求
@@ -97,6 +98,8 @@ Owner Token 只提交给 loopback Gateway，不进入手机。Gateway 只持久�
 短期 Session token 可访问 `GET/POST /v1/conversations`、`GET /v1/conversations/:id`、`POST /v1/conversations/:id/messages`、`POST /v1/conversations/:id/cancel`、`GET /v1/approvals`、`POST /v1/approvals/:id/decision` 以及 `GET/DELETE /v1/devices/current`。配对后的 PWA 可列出、新建、选择和继续文字对话，处理当前审批，并查看或撤销当前设备；设备状态响应只含名称、平台、凭据代次、配对时间和会话时限，不含公钥、凭据摘要或任何令牌。消息只接受最多 16 KiB 的纯文本，发送期间会锁定重复提交，远程 slash command 被拒绝。审批决定使用客户端幂等键，Gateway 将上游 `rpcId` 保留在 loopback 桥接层，手机只能提交 `allowed-once` 或 `rejected`；取消本轮沿用会话取消接口并由 Harness 产生 `cancelled`。`/v1/events` 不在 URL 携带令牌，第一条消息必须是 `events.authenticate`；同源浏览器或无 Origin 的受信客户端可连接。客户端保存每个事件的 `cursor`，重连时提交该游标；若缓冲已淘汰、Gateway 重启或上游连续性丢失，`events.ready`/`sync.required` 会先要求重新读取权威会话与审批快照，刷新失败时不会推进游标。
 
 PWA 只在同源 IndexedDB 保存最近一次规范化对话列表、当前最多 50 条文字消息和事件游标，不缓存审批、API 响应或 Owner Token。Gateway 不可达时，离线壳可只读显示对话快照并明确标记为“旧数据”，审批详情会从页面内存清除；所有新建、发送和审批操作保持禁用，恢复连接并重新验证 Session 后才切回实时状态。
+
+通知中心同样只保存最多 50 条固定摘要，不写入消息正文、审批参数、目标、令牌或 Harness 内部标识。系统通知不会自动请求权限；用户必须在设置中明确允许，静默时段和分类/频率限制只抑制系统弹出，不丢失应用内记录。后台 Web Push 和锁屏内容仍需在指定首台实体手机上完成可行性与隐私验收。
 
 Gateway 默认允许每个连接来源突发 60 次请求并每秒恢复 1 次额度；每个已认证 Owner、设备或 Session 可突发 120 次并每秒恢复 2 次额度。它只使用直接连接地址，不信任客户端提供的转发来源头；HTTP `429` 会返回 `Retry-After`、限额余量和 correlation ID。
 

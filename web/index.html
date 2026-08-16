@@ -12,7 +12,7 @@
     <link rel="icon" href="./icon.svg" type="image/svg+xml">
     <link rel="apple-touch-icon" sizes="180x180" href="./apple-touch-icon.png">
     <link rel="stylesheet" href="./app.css">
-    <script src="./app.js?v=10" type="module"></script>
+    <script src="./app.js?v=11" type="module"></script>
   </head>
   <body data-connection="checking">
     <a class="skip-link" href="#main-content">跳到主要内容</a>
@@ -38,6 +38,9 @@
           </button>
           <button class="nav-button" type="button" data-view-target="activity">
             <span aria-hidden="true">✓</span><span>审批</span><span class="approval-count" data-approval-count hidden>0</span>
+          </button>
+          <button class="nav-button" type="button" data-view-target="notifications">
+            <span aria-hidden="true">•</span><span>通知</span><span class="approval-count" data-notification-count hidden>0</span>
           </button>
           <button class="nav-button" type="button" data-view-target="settings">
             <span aria-hidden="true">⚙</span><span>设置</span>
@@ -108,6 +111,24 @@
           </section>
         </section>
 
+        <section class="view-panel" data-view-panel="notifications" aria-labelledby="notifications-title" hidden>
+          <header class="view-header">
+            <div>
+              <p class="eyebrow">隐私优先</p>
+              <h1 id="notifications-title">通知</h1>
+            </div>
+            <div class="notification-actions">
+              <button id="mark-notifications-read-button" class="secondary-button" type="button" disabled>全部已读</button>
+              <button id="clear-notifications-button" class="secondary-button" type="button" disabled>清空</button>
+            </div>
+          </header>
+          <div id="notification-empty" class="plain-empty">
+            <h2>暂无通知</h2>
+            <p>新的审批、对话完成和连接状态会显示在这里。</p>
+          </div>
+          <ol id="notification-list" class="notification-list" aria-live="polite" hidden></ol>
+        </section>
+
         <section class="view-panel" data-view-panel="settings" aria-labelledby="settings-title" hidden>
           <header class="view-header">
             <div>
@@ -172,6 +193,29 @@
               </div>
               <button id="install-button" class="secondary-button" type="button" hidden>安装</button>
             </section>
+            <section class="settings-row notification-settings" aria-labelledby="notification-settings-heading">
+              <div>
+                <h2 id="notification-settings-heading">通知偏好</h2>
+                <p>默认只保存固定的摘要文案，不保存消息正文或操作参数。</p>
+                <div class="notification-options">
+                  <label><input type="checkbox" data-notification-category="approval" checked> 审批</label>
+                  <label><input type="checkbox" data-notification-category="conversation" checked> 对话完成</label>
+                  <label><input type="checkbox" data-notification-category="connection" checked> 连接</label>
+                  <label><input id="notification-quiet-hours-enabled" type="checkbox"> 静默时段</label>
+                  <label>开始 <input id="notification-quiet-hours-start" type="time" value="22:00"></label>
+                  <label>结束 <input id="notification-quiet-hours-end" type="time" value="07:00"></label>
+                </div>
+                <div class="notification-rates" aria-label="每小时系统通知上限">
+                  <label>审批 <input data-notification-rate="approval" type="number" min="0" max="20" value="5"></label>
+                  <label>对话 <input data-notification-rate="conversation" type="number" min="0" max="20" value="5"></label>
+                  <label>连接 <input data-notification-rate="connection" type="number" min="0" max="20" value="3"></label>
+                </div>
+              </div>
+              <div class="settings-actions">
+                <button id="notification-permission-button" class="secondary-button" type="button">允许系统通知</button>
+                <span id="notification-permission-detail" class="value-label">尚未请求系统通知权限</span>
+              </div>
+            </section>
           </div>
         </section>
       </main>
@@ -180,6 +224,7 @@
     <nav class="mobile-nav" aria-label="主导航">
       <button class="mobile-nav-button is-active" type="button" data-view-target="chat" aria-current="page"><span aria-hidden="true">◫</span><span>对话</span></button>
       <button class="mobile-nav-button" type="button" data-view-target="activity"><span aria-hidden="true">✓</span><span>审批</span><span class="approval-count" data-approval-count hidden>0</span></button>
+      <button class="mobile-nav-button" type="button" data-view-target="notifications"><span aria-hidden="true">•</span><span>通知</span><span class="approval-count" data-notification-count hidden>0</span></button>
       <button class="mobile-nav-button" type="button" data-view-target="settings"><span aria-hidden="true">⚙</span><span>设置</span></button>
     </nav>
     <dialog id="disconnect-device-dialog" class="confirmation-dialog" aria-labelledby="disconnect-device-title">

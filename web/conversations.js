@@ -1,4 +1,4 @@
-import { deleteDeviceState, readDeviceState, writeDeviceState } from './device-store.js?v=10'
+import { deleteDeviceState, readDeviceState, writeDeviceState } from './device-store.js?v=11'
 
 const CACHE_KEY = 'conversation-cache'
 const CURSOR_KEY = 'event-cursor'
@@ -112,6 +112,7 @@ export class ConversationsClient {
     this.setTimeoutValue = options.setTimeout ?? ((callback, delay) => window.setTimeout(callback, delay))
     this.clearTimeoutValue = options.clearTimeout ?? (timer => window.clearTimeout(timer))
     this.randomUUID = options.randomUUID ?? (() => crypto.randomUUID())
+    this.onEvent = options.onEvent ?? (async () => {})
     this.store = options.store ?? {
       read: readDeviceState,
       write: writeDeviceState,
@@ -507,6 +508,7 @@ export class ConversationsClient {
       socket.close(CLOSE_PROTOCOL, 'unsupported event')
       return
     }
+    await this.onEvent(event)
     this.addActivity(eventDescription(event))
     this.cachedAt = Date.now()
     await this.persistCache()

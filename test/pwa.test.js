@@ -4,6 +4,7 @@ import { join } from 'node:path'
 import test from 'node:test'
 import { PairingAuthority, createDeviceIdentity } from '../dist/pairing.js'
 import { BrowserPairing, decryptPairingCredential } from '../web/pairing.js'
+import { NotificationCenter } from '../web/notifications.js'
 
 const webRoot = join(process.cwd(), 'web')
 
@@ -22,8 +23,8 @@ test('declares a scoped installable manifest and complete offline shell', async 
 
   const serviceWorker = await readFile(join(webRoot, 'sw.js'), 'utf8')
   for (const path of [
-    '/app/', '/app/app.css', '/app/app.js?v=10', '/app/pairing.js?v=10', '/app/device-store.js?v=10',
-    '/app/conversations.js?v=10', '/app/apple-touch-icon.png', '/app/icon.svg',
+    '/app/', '/app/app.css', '/app/app.js?v=11', '/app/pairing.js?v=11', '/app/device-store.js?v=11',
+    '/app/conversations.js?v=11', '/app/notifications.js?v=11', '/app/apple-touch-icon.png', '/app/icon.svg',
     '/app/icon-192.png', '/app/icon-512.png', '/app/manifest.webmanifest',
   ]) {
     assert.ok(serviceWorker.includes(`'${path}'`), `${path} must be pre-cached`)
@@ -45,6 +46,7 @@ test('keeps the browser client on the public Gateway contract', async () => {
   const appSource = await readFile(join(webRoot, 'app.js'), 'utf8')
   const pairingSource = await readFile(join(webRoot, 'pairing.js'), 'utf8')
   const conversationsSource = await readFile(join(webRoot, 'conversations.js'), 'utf8')
+  const notificationsSource = await readFile(join(webRoot, 'notifications.js'), 'utf8')
   const deviceStoreSource = await readFile(join(webRoot, 'device-store.js'), 'utf8')
   const htmlSource = await readFile(join(webRoot, 'index.html'), 'utf8')
   assert.match(appSource, /fetch\('\.\.\/v1\/health'/)
@@ -54,6 +56,9 @@ test('keeps the browser client on the public Gateway contract', async () => {
   assert.match(conversationsSource, /events\.authenticate/)
   assert.match(conversationsSource, /authenticatedRequest\('\/v1\/conversations'/)
   assert.match(conversationsSource, /authenticatedRequest\('\/v1\/approvals'/)
+  assert.match(notificationsSource, /class NotificationCenter/)
+  assert.match(notificationsSource, /固定摘要|高风险操作/)
+  assert.doesNotMatch(notificationsSource, /arguments|message|rpcId|accessToken|refreshToken/)
   assert.match(htmlSource, /id="approval-list"/)
   assert.match(htmlSource, /id="disconnect-device-dialog"/)
   assert.match(htmlSource, /id="disconnect-device-button"[^>]+hidden disabled/)
@@ -112,7 +117,7 @@ function currentDevice(state) {
   }
 }
 
-function memoryDeviceStore(initial) {
+function memoryDeviceStore(initial = {}) {
   const values = new Map(Object.entries(initial))
   return {
     values,
@@ -188,4 +193,83 @@ test('rejects current-device responses containing private or unexpected fields',
   await pairing.initialize()
   assert.equal(states.at(-1).phase, 'paired-error')
   assert.match(states.at(-1).message, /invalid current device/)
+})
+
+test('creates redacted, deduplicated notifications from normalized events', async () => {
+  const store = memoryDeviceStore()
+  const states = []
+  const systemNotifications = []
+  const center = new NotificationCenter({
+    store,
+    onState: state => states.push(state),
+    permission: 'granted',
+    systemNotify: notification => systemNotifications.push(notification),
+    now: () => 1_700_000_000_000,
+  })
+  await center.initialize()
+  const event = {
+    version: 1, cursor: 'A'.repeat(22) + '.8', occurredAt: 1_700_000_000_000,
+    type: 'approval.pending',
+    approval: {
+      id: 'approval-1', conversationId: 'conversation-1', toolName: 'jarvis_open_app',
+      callId: 'call-1', risk: 'high', canAllow: true,
+    },
+    arguments: { application: 'Secret App', command: 'private argument' },
+  }
+  assert.equal(await center.ingestEvent(event), true)
+  assert.equal(await center.ingestEvent(event), false)
+  assert.equal(states.at(-1).unreadCount, 1)
+  assert.equal(systemNotifications.length, 1)
+  assert.equal(systemNotifications[0].body.includes('private argument'), false)
+  assert.equal(JSON.stringify(systemNotifications[0]).includes('Secret App'), false)
+  assert.deepEqual(systemNotifications[0].resource, { view: 'activity', approvalId: 'approval-1' })
+  const restarted = new NotificationCenter({ store, permission: 'default' })
+  await restarted.initialize()
+  assert.equal(restarted.history[0].id, 'approval:approval-1:pending')
+})
+
+test('quiet hours and rate limits suppress system presentation but retain history', async () => {
+  const store = memoryDeviceStore()
+  const systemNotifications = []
+  const quietNow = new Date(2026, 0, 1, 23, 30, 0, 0)
+  const center = new NotificationCenter({
+    store,
+    permission: 'granted',
+    systemNotify: notification => systemNotifications.push(notification),
+    now: () => quietNow.getTime(),
+  })
+  await center.initialize()
+  await center.updatePreferences({
+    quietHours: { enabled: true, start: '23:00', end: '07:00' },
+    rateLimits: { conversation: 1 },
+  })
+  const base = { version: 1, occurredAt: quietNow.getTime(), type: 'conversation.status', running: false }
+  await center.ingestEvent({ ...base, cursor: 'B'.repeat(22) + '.1', conversationId: 'conversation-1' })
+  assert.equal(systemNotifications.length, 0)
+  assert.equal(store.values.get('notification-history').length, 1)
+  await center.updatePreferences({ quietHours: { enabled: false } })
+  await center.ingestEvent({ ...base, cursor: 'B'.repeat(22) + '.2', conversationId: 'conversation-2' })
+  assert.equal(systemNotifications.length, 1)
+  await center.ingestEvent({ ...base, cursor: 'B'.repeat(22) + '.3', conversationId: 'conversation-3' })
+  assert.equal(systemNotifications.length, 1)
+})
+
+test('notification history is bounded, persisted, and cleared on revocation', async () => {
+  const store = memoryDeviceStore()
+  const center = new NotificationCenter({ store, permission: 'default' })
+  await center.initialize()
+  for (let index = 0; index < 60; index += 1) {
+    await center.ingestEvent({
+      version: 1, cursor: 'C'.repeat(22) + '.' + index, occurredAt: 1_700_000_000_000 + index,
+      type: 'sync.required',
+    })
+  }
+  assert.equal(center.history.length, 50)
+  assert.equal(store.values.get('notification-history').length, 50)
+  await center.markAllRead()
+  assert.equal(center.history.every(item => item.read), true)
+  await center.clear()
+  assert.equal(store.values.has('notification-history'), false)
+  assert.equal(store.values.has('notification-preferences'), false)
+  assert.equal(center.history.length, 0)
 })
