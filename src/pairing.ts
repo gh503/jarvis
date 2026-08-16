@@ -92,8 +92,8 @@ function validateIdentifier(value: string, field: string): string {
 }
 
 function validateText(value: string, field: string): string {
-  if (value.length < 1 || value.length > 128 || /[\r\n]/.test(value)) {
-    throw new TypeError(`${field} must be 1 to 128 characters without line breaks`)
+  if (value.length < 1 || value.length > 128 || /[\u0000-\u001f\u007f]/.test(value)) {
+    throw new TypeError(`${field} must be 1 to 128 characters without control characters`)
   }
   return value
 }

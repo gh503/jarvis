@@ -119,4 +119,5 @@ test('rejects unsafe pairing data and unsupported platforms', () => {
   assert.throws(() => authority.createRequest(requestInput(identity, { nodeId: 'node/1' })), /nodeId/)
   assert.throws(() => authority.createRequest(requestInput(identity, { platform: 'linux' })), /platform/)
   assert.throws(() => authority.createRequest(requestInput(identity, { publicKey: 'short' })), /publicKey/)
+  assert.throws(() => authority.createRequest(requestInput(identity, { displayName: 'Fake\u001b[2JMac' })), /control characters/)
 })
