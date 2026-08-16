@@ -23,7 +23,7 @@ complete a model conversation.
 Use a disposable reminder and a harmless allowlisted application. Keep the values
 local and report only pass/fail plus timestamps.
 
-1. Put the owner-provided key in the untracked `.env` file, start Jarvis, and open the local Web UI.
+1. Configure the owner-provided key through the local Harness settings or the untracked `.env` file, start Jarvis, and open the local Web UI.
 2. Start a fresh conversation and ask for a short text reply. Confirm committed assistant text appears.
 3. Ask for current Mac status and create/list a reminder. Confirm both tool results appear.
 4. Ask to open `Notes`. Confirm the request pauses for approval; decline once and confirm no launch; repeat and approve once.
@@ -44,3 +44,22 @@ Evidence retained locally: yes/no
 
 The Mac MVP is not considered fully qualified until these owner-operated checks
 are recorded separately from automated startup and unit-test evidence.
+
+## Qualification record
+
+The owner-operated qualification completed on 2026-08-17 against commit
+`b185bd37c3be3621eaf04d251b94fa60964a05c3`:
+
+| Check | Result |
+| --- | --- |
+| Automated checks | Pass |
+| Fresh DeepSeek conversation returned committed assistant text | Pass |
+| System status tool completed | Pass |
+| Disposable reminder was created and listed | Pass |
+| First Notes request was declined without launch | Pass |
+| Second Notes request was approved and dispatched once | Pass |
+| Conversation and reminder survived a service restart | Pass |
+
+The model credential, conversation transcript, reminder fields, identifiers,
+and raw audit records remain local. This public record contains only the
+sanitized outcomes above and does not replace the separate automated checks.
