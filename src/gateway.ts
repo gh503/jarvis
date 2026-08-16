@@ -3,7 +3,9 @@ import { createServer as createHttpServer, type IncomingMessage, type Server as 
 import { createServer as createHttpsServer, type Server as HttpsServer } from 'node:https'
 import { BlockList, isIP } from 'node:net'
 import { WebSocket, WebSocketServer, type RawData } from 'ws'
+import { FileEventLogStore, RetainedEventLog, type JarvisEvent } from './event-log.js'
 import { HarnessBridge, HarnessBridgeError, type HarnessClient } from './harness-bridge.js'
+import { HarnessEventBridge, type ConversationEventSource } from './harness-events.js'
 import { NODE_PROTOCOL_VERSION, parseNodeRegistration, type NodeRegistration } from './node-capabilities.js'
 import type { NodeCommand } from './node-command.js'
 import { FilePairingStateStore, PairingAuthority } from './pairing.js'
@@ -12,8 +14,11 @@ import { FileSessionStateStore, SessionAuthenticationError, SessionAuthority, ty
 
 const MAX_BODY_BYTES = 32 * 1024
 const NODE_PATH = '/v1/node'
+const EVENTS_PATH = '/v1/events'
 const NODE_HANDSHAKE_TIMEOUT_MS = 10_000
 const MAX_NODE_CONNECTIONS = 128
+const EVENT_HANDSHAKE_TIMEOUT_MS = 10_000
+const MAX_EVENT_CONNECTIONS = 128
 const DEFAULT_SOURCE_RATE_LIMIT = { capacity: 60, refillPerSecond: 1, maxKeys: 4_096 }
 const DEFAULT_IDENTITY_RATE_LIMIT = { capacity: 120, refillPerSecond: 2, maxKeys: 1_024 }
 const ALLOWED_BIND_ADDRESSES = new BlockList()
@@ -49,6 +54,11 @@ export interface JarvisGatewayOptions {
   harness?: HarnessClient
   harnessOrigin?: string
   harnessRequestTimeoutMs?: number
+  harnessEvents?: ConversationEventSource
+  eventLog?: RetainedEventLog
+  eventStatePath?: string
+  eventHandshakeTimeoutMs?: number
+  maxEventConnections?: number
 }
 
 export interface RunningGateway {
@@ -72,6 +82,18 @@ interface NodeConnectionState {
   nodeId?: string
   registration?: NodeRegistration
   handshakeTimer: ReturnType<typeof setTimeout>
+}
+
+interface EventConnectionState {
+  phase: 'authenticate' | 'ready'
+  correlationId: string
+  handshakeTimer: ReturnType<typeof setTimeout>
+  expiryTimer?: ReturnType<typeof setTimeout>
+  sessionId?: string
+  nodeId?: string
+  accessToken?: string
+  lastAcknowledgedCursor?: string
+  unsubscribe?: () => void
 }
 
 function sameSecret(expected: string, actual: string | undefined): boolean {
@@ -197,7 +219,7 @@ function parseSocketMessage(data: RawData, isBinary: boolean): Record<string, un
   }
 }
 
-function sendSocket(socket: WebSocket, message: Record<string, unknown>): boolean {
+function sendSocket(socket: WebSocket, message: unknown): boolean {
   if (socket.readyState !== WebSocket.OPEN) return false
   socket.send(JSON.stringify(message))
   return true
@@ -279,6 +301,14 @@ export function createJarvisGateway(options: JarvisGatewayOptions): JarvisGatewa
   if (!Number.isInteger(maxNodeConnections) || maxNodeConnections < 1) {
     throw new RangeError('maxNodeConnections must be a positive integer')
   }
+  const eventHandshakeTimeoutMs = options.eventHandshakeTimeoutMs ?? EVENT_HANDSHAKE_TIMEOUT_MS
+  if (!Number.isInteger(eventHandshakeTimeoutMs) || eventHandshakeTimeoutMs < 1) {
+    throw new RangeError('eventHandshakeTimeoutMs must be a positive integer')
+  }
+  const maxEventConnections = options.maxEventConnections ?? MAX_EVENT_CONNECTIONS
+  if (!Number.isInteger(maxEventConnections) || maxEventConnections < 1) {
+    throw new RangeError('maxEventConnections must be a positive integer')
+  }
   const binding = validateBindHost(options.bindHost ?? '127.0.0.1')
   const tls = validateTls(options.tls)
   if (!binding.loopback && tls === undefined) throw new Error('TLS is required for non-loopback Gateway binding')
@@ -288,12 +318,28 @@ export function createJarvisGateway(options: JarvisGatewayOptions): JarvisGatewa
     ...(options.harnessOrigin === undefined ? {} : { origin: options.harnessOrigin }),
     ...(options.harnessRequestTimeoutMs === undefined ? {} : { timeoutMs: options.harnessRequestTimeoutMs }),
   })
+  const eventLog = options.eventLog ?? new RetainedEventLog(
+    options.eventStatePath === undefined ? {} : { store: new FileEventLogStore(options.eventStatePath) },
+  )
+  const harnessEvents = options.harnessEvents ?? (options.harness === undefined
+    ? new HarnessEventBridge({
+        ...(options.harnessOrigin === undefined ? {} : { origin: options.harnessOrigin }),
+        listVisibleConversations: () => harness.listConversations(),
+      })
+    : {
+        start() {},
+        stop: () => Promise.resolve(),
+      })
   const sourceRateLimiter = new TokenBucketRateLimiter(options.sourceRateLimit ?? DEFAULT_SOURCE_RATE_LIMIT)
   const identityRateLimiter = new TokenBucketRateLimiter(options.identityRateLimit ?? DEFAULT_IDENTITY_RATE_LIMIT)
   let server: GatewayServer | undefined
-  let socketServer: WebSocketServer | undefined
+  let nodeSocketServer: WebSocketServer | undefined
+  let eventSocketServer: WebSocketServer | undefined
+  let harnessAvailable = false
+  let harnessWasAvailable = false
   const nodeConnections = new Map<string, WebSocket>()
   const connectionStates = new Map<WebSocket, NodeConnectionState>()
+  const eventConnectionStates = new Map<WebSocket, EventConnectionState>()
 
   const rejectNode = (socket: WebSocket, reason: string): void => {
     const state = connectionStates.get(socket)
@@ -388,6 +434,166 @@ export function createJarvisGateway(options: JarvisGatewayOptions): JarvisGatewa
     socket.on('error', () => socket.terminate())
   }
 
+  const eventOriginAllowed = (request: IncomingMessage): boolean => {
+    const origin = request.headers.origin
+    if (origin === undefined) return true
+    if (typeof origin !== 'string' || request.headers.host === undefined) return false
+    try {
+      const parsed = new URL(origin)
+      const expected = new URL(`${secure ? 'https' : 'http'}://${request.headers.host}`)
+      return parsed.origin === expected.origin
+        && parsed.username === '' && parsed.password === '' && parsed.pathname === '/'
+        && parsed.search === '' && parsed.hash === ''
+    } catch {
+      return false
+    }
+  }
+
+  const rejectEvent = (socket: WebSocket, code: string, reason: string): void => {
+    const state = eventConnectionStates.get(socket)
+    if (state !== undefined) {
+      clearTimeout(state.handshakeTimer)
+      if (state.expiryTimer !== undefined) clearTimeout(state.expiryTimer)
+      state.unsubscribe?.()
+    }
+    if (socket.readyState !== WebSocket.OPEN) {
+      socket.terminate()
+      return
+    }
+    socket.send(JSON.stringify({
+      version: 1,
+      type: 'events.rejected',
+      code,
+      correlationId: state?.correlationId ?? randomUUID(),
+    }), () => socket.close(1008, reason))
+  }
+
+  const disconnectEventSession = (sessionId: string, reason: string): void => {
+    for (const [socket, state] of eventConnectionStates) {
+      if (state.sessionId === sessionId) rejectEvent(socket, 'session_invalid', reason)
+    }
+  }
+
+  const disconnectEventDevice = (nodeId: string, reason: string): void => {
+    for (const [socket, state] of eventConnectionStates) {
+      if (state.nodeId === nodeId) rejectEvent(socket, 'device_revoked', reason)
+    }
+  }
+
+  const revalidateEventSockets = (): void => {
+    for (const [socket, state] of eventConnectionStates) {
+      if (state.accessToken !== undefined && sessions.authenticate(state.accessToken) === undefined) {
+        rejectEvent(socket, 'session_invalid', 'session access ended')
+      } else if (state.nodeId !== undefined && !authority.isActive(state.nodeId)) {
+        rejectEvent(socket, 'device_revoked', 'device access revoked')
+      }
+    }
+  }
+
+  const handleEventMessage = (socket: WebSocket, data: RawData, isBinary: boolean): void => {
+    const state = eventConnectionStates.get(socket)
+    if (state === undefined) return
+    const message = parseSocketMessage(data, isBinary)
+    if (message === undefined || typeof message.type !== 'string') {
+      rejectEvent(socket, 'invalid_message', 'invalid event message')
+      return
+    }
+    if (state.phase === 'authenticate') {
+      if (message.type !== 'events.authenticate' || !exactFields(message, ['type', 'accessToken', 'cursor'])
+        || typeof message.accessToken !== 'string'
+        || (message.cursor !== undefined && (typeof message.cursor !== 'string' || message.cursor.length > 200))) {
+        rejectEvent(socket, 'authentication_rejected', 'event authentication rejected')
+        return
+      }
+      const principal = sessions.authenticate(message.accessToken)
+      if (principal === undefined || !authority.isActive(principal.nodeId)) {
+        if (principal !== undefined) sessions.revokeDevice(principal.nodeId)
+        rejectEvent(socket, 'authentication_rejected', 'event authentication rejected')
+        return
+      }
+      const identityDecision = identityRateLimiter.consume(`session:${principal.sessionId}`)
+      if (!identityDecision.allowed) {
+        rejectEvent(socket, 'rate_limited', 'event rate limit exceeded')
+        return
+      }
+      const view = sessions.get(principal.sessionId)
+      if (view === undefined || view.revokedAt !== null) {
+        rejectEvent(socket, 'authentication_rejected', 'event authentication rejected')
+        return
+      }
+      const replay = eventLog.replay(message.cursor as string | undefined)
+      const queued: JarvisEvent[] = []
+      let replaying = true
+      state.unsubscribe = eventLog.subscribe(event => {
+        if (replaying) queued.push(event)
+        else sendSocket(socket, event)
+      })
+      state.sessionId = principal.sessionId
+      state.nodeId = principal.nodeId
+      state.accessToken = message.accessToken
+      state.phase = 'ready'
+      clearTimeout(state.handshakeTimer)
+      const expiryTimer = setTimeout(
+        () => rejectEvent(socket, 'session_expired', 'session access expired'),
+        Math.max(1, view.accessExpiresAt - Date.now()),
+      )
+      expiryTimer.unref()
+      state.expiryTimer = expiryTimer
+      const requiresSnapshot = replay.requiresSnapshot || !harnessAvailable
+      const reason = !harnessAvailable ? 'harness_unavailable' : replay.reason
+      sendSocket(socket, {
+        version: 1,
+        type: 'events.ready',
+        cursor: replay.cursor,
+        replayCount: replay.events.length,
+        requiresSnapshot,
+        ...(reason === undefined ? {} : { reason }),
+        correlationId: state.correlationId,
+      })
+      if (!requiresSnapshot) {
+        for (const event of replay.events) sendSocket(socket, event)
+      }
+      replaying = false
+      for (const event of queued) sendSocket(socket, event)
+      return
+    }
+    if (message.type !== 'events.ack' || !exactFields(message, ['type', 'cursor']) || typeof message.cursor !== 'string'
+      || message.cursor.length > 200 || state.accessToken === undefined
+      || sessions.authenticate(state.accessToken) === undefined) {
+      rejectEvent(socket, 'invalid_message', 'invalid event acknowledgement')
+      return
+    }
+    const identityDecision = identityRateLimiter.consume(`session:${state.sessionId as string}`)
+    if (!identityDecision.allowed) {
+      rejectEvent(socket, 'rate_limited', 'event rate limit exceeded')
+      return
+    }
+    const acknowledged = eventLog.replay(message.cursor)
+    if (acknowledged.requiresSnapshot) {
+      rejectEvent(socket, 'invalid_cursor', 'event acknowledgement cursor is invalid')
+      return
+    }
+    state.lastAcknowledgedCursor = message.cursor
+  }
+
+  const handleEventConnection = (socket: WebSocket, request: IncomingMessage): void => {
+    const state: EventConnectionState = {
+      phase: 'authenticate',
+      correlationId: requestCorrelationId(request),
+      handshakeTimer: setTimeout(() => rejectEvent(socket, 'handshake_timeout', 'event handshake timed out'), eventHandshakeTimeoutMs),
+    }
+    state.handshakeTimer.unref()
+    eventConnectionStates.set(socket, state)
+    socket.on('message', (data, isBinary) => handleEventMessage(socket, data, isBinary))
+    socket.on('close', () => {
+      clearTimeout(state.handshakeTimer)
+      if (state.expiryTimer !== undefined) clearTimeout(state.expiryTimer)
+      state.unsubscribe?.()
+      eventConnectionStates.delete(socket)
+    })
+    socket.on('error', () => socket.terminate())
+  }
+
   const handle = async (request: IncomingMessage, response: ServerResponse): Promise<void> => {
     const correlationId = requestCorrelationId(request)
     try {
@@ -415,6 +621,7 @@ export function createJarvisGateway(options: JarvisGatewayOptions): JarvisGatewa
         : sessions.authenticate(sessionToken)
       if (sessionPrincipal !== undefined && !authority.isActive(sessionPrincipal.nodeId)) {
         sessions.revokeDevice(sessionPrincipal.nodeId)
+        disconnectEventDevice(sessionPrincipal.nodeId, 'device access revoked')
         sessionPrincipal = undefined
       }
       if (request.method === 'POST' && parts.length === 3 && parts[0] === 'v1' && parts[1] === 'sessions' && parts[2] === 'refresh') {
@@ -424,6 +631,7 @@ export function createJarvisGateway(options: JarvisGatewayOptions): JarvisGatewa
         if (refreshPrincipal !== undefined) {
           if (!authority.isActive(refreshPrincipal.nodeId)) {
             sessions.revokeDevice(refreshPrincipal.nodeId)
+            disconnectEventDevice(refreshPrincipal.nodeId, 'device access revoked')
             sendJson(response, 401, correlationId, { error: 'session device is revoked', code: 'device_revoked', correlationId })
             return
           }
@@ -435,14 +643,17 @@ export function createJarvisGateway(options: JarvisGatewayOptions): JarvisGatewa
         }
         try {
           const refreshed = sessions.refresh(body.refreshToken)
+          disconnectEventSession(refreshed.sessionId, 'session access refreshed')
           if (!authority.isActive(refreshed.nodeId)) {
             sessions.revokeDevice(refreshed.nodeId)
+            disconnectEventDevice(refreshed.nodeId, 'device access revoked')
             sendJson(response, 401, correlationId, { error: 'session device is revoked', code: 'device_revoked', correlationId })
             return
           }
           sendJson(response, 200, correlationId, refreshed)
         } catch (error) {
           if (!(error instanceof SessionAuthenticationError)) throw error
+          revalidateEventSockets()
           const code = error.code === 'reuse' ? 'refresh_reuse_detected' : `refresh_${error.code}`
           sendJson(response, 401, correlationId, { error: 'session refresh rejected', code, correlationId })
         }
@@ -552,6 +763,7 @@ export function createJarvisGateway(options: JarvisGatewayOptions): JarvisGatewa
           sendJson(response, 404, correlationId, { error: 'session not found or already revoked', correlationId })
           return
         }
+        disconnectEventSession(parts[2] as string, 'session signed out')
         sendJson(response, 204, correlationId, {})
         return
       }
@@ -608,6 +820,7 @@ export function createJarvisGateway(options: JarvisGatewayOptions): JarvisGatewa
           if (!authority.revoke(nodeId)) throw new Error('device revocation failed')
           sendJson(response, 204, correlationId, {})
           disconnectNode(nodeId, 'device access revoked')
+          disconnectEventDevice(nodeId, 'device access revoked')
           return
         }
       }
@@ -623,14 +836,29 @@ export function createJarvisGateway(options: JarvisGatewayOptions): JarvisGatewa
     }
   }
 
+  const handleHarnessAvailability = (available: boolean): void => {
+    if (!available) {
+      if (harnessAvailable) eventLog.publish({ type: 'sync.required', reason: 'harness_disconnected' })
+      harnessAvailable = false
+      return
+    }
+    harnessAvailable = true
+    if (!harnessWasAvailable) {
+      eventLog.publish({ type: 'sync.required', reason: 'gateway_restarted' })
+    }
+    harnessWasAvailable = true
+  }
+
   return {
     start(port = 0) {
       if (server !== undefined) return Promise.reject(new Error('gateway is already running'))
       server = tls === undefined
         ? createHttpServer((request, response) => { void handle(request, response) })
         : createHttpsServer({ ...tls, minVersion: 'TLSv1.2' }, (request, response) => { void handle(request, response) })
-      socketServer = new WebSocketServer({ noServer: true, maxPayload: maxBodyBytes })
-      socketServer.on('connection', handleNodeConnection)
+      nodeSocketServer = new WebSocketServer({ noServer: true, maxPayload: maxBodyBytes })
+      eventSocketServer = new WebSocketServer({ noServer: true, maxPayload: maxBodyBytes })
+      nodeSocketServer.on('connection', handleNodeConnection)
+      eventSocketServer.on('connection', handleEventConnection)
       server.on('upgrade', (request, socket, head) => {
         const correlationId = requestCorrelationId(request)
         const sourceDecision = sourceRateLimiter.consume(sourceKey(request))
@@ -642,20 +870,36 @@ export function createJarvisGateway(options: JarvisGatewayOptions): JarvisGatewa
           })
           return
         }
-        const path = new URL(request.url ?? '/', 'http://127.0.0.1').pathname
-        if (path !== NODE_PATH) {
+        const parsed = new URL(request.url ?? '/', 'http://127.0.0.1')
+        if ([...parsed.searchParams.keys()].length !== 0) {
           rejectUpgrade(socket, 404)
           return
         }
-        if (request.headers.origin !== undefined) {
-          rejectUpgrade(socket, 403)
+        if (parsed.pathname === NODE_PATH) {
+          if (request.headers.origin !== undefined) {
+            rejectUpgrade(socket, 403)
+            return
+          }
+          if (nodeSocketServer === undefined || nodeSocketServer.clients.size >= maxNodeConnections) {
+            rejectUpgrade(socket, 503)
+            return
+          }
+          nodeSocketServer.handleUpgrade(request, socket, head, upgraded => nodeSocketServer?.emit('connection', upgraded, request))
           return
         }
-        if (socketServer === undefined || socketServer.clients.size >= maxNodeConnections) {
-          rejectUpgrade(socket, 503)
+        if (parsed.pathname === EVENTS_PATH) {
+          if (!eventOriginAllowed(request)) {
+            rejectUpgrade(socket, 403)
+            return
+          }
+          if (eventSocketServer === undefined || eventSocketServer.clients.size >= maxEventConnections) {
+            rejectUpgrade(socket, 503)
+            return
+          }
+          eventSocketServer.handleUpgrade(request, socket, head, upgraded => eventSocketServer?.emit('connection', upgraded, request))
           return
         }
-        socketServer.handleUpgrade(request, socket, head, upgraded => socketServer?.emit('connection', upgraded, request))
+        rejectUpgrade(socket, 404)
       })
       return new Promise<RunningGateway>((resolve, reject) => {
         server?.once('error', reject)
@@ -667,6 +911,22 @@ export function createJarvisGateway(options: JarvisGatewayOptions): JarvisGatewa
           }
           const host = binding.host.includes(':') ? `[${binding.host}]` : binding.host
           const protocol = secure ? 'https' : 'http'
+          try {
+            harnessEvents.start({
+              onEvent: event => { eventLog.publish(event) },
+              onAvailability: handleHarnessAvailability,
+            })
+          } catch (error) {
+            const failedServer = server
+            server = undefined
+            nodeSocketServer?.close()
+            eventSocketServer?.close()
+            nodeSocketServer = undefined
+            eventSocketServer = undefined
+            failedServer?.close()
+            reject(error)
+            return
+          }
           resolve({
             server: server as GatewayServer,
             host: binding.host,
@@ -680,15 +940,26 @@ export function createJarvisGateway(options: JarvisGatewayOptions): JarvisGatewa
     stop() {
       if (server === undefined) return Promise.resolve()
       const current = server
-      const currentSocketServer = socketServer
+      const currentNodeSocketServer = nodeSocketServer
+      const currentEventSocketServer = eventSocketServer
       server = undefined
-      socketServer = undefined
+      nodeSocketServer = undefined
+      eventSocketServer = undefined
       for (const state of connectionStates.values()) clearTimeout(state.handshakeTimer)
-      for (const socket of currentSocketServer?.clients ?? []) socket.terminate()
+      for (const state of eventConnectionStates.values()) {
+        clearTimeout(state.handshakeTimer)
+        if (state.expiryTimer !== undefined) clearTimeout(state.expiryTimer)
+        state.unsubscribe?.()
+      }
+      for (const socket of currentNodeSocketServer?.clients ?? []) socket.terminate()
+      for (const socket of currentEventSocketServer?.clients ?? []) socket.terminate()
       nodeConnections.clear()
       connectionStates.clear()
-      currentSocketServer?.close()
-      return new Promise<void>((resolve, reject) => current.close(error => error === undefined ? resolve() : reject(error)))
+      eventConnectionStates.clear()
+      currentNodeSocketServer?.close()
+      currentEventSocketServer?.close()
+      const serverClosed = new Promise<void>((resolve, reject) => current.close(error => error === undefined ? resolve() : reject(error)))
+      return Promise.all([serverClosed, harnessEvents.stop()]).then(() => undefined)
     },
     connectedNodeIds() {
       return [...nodeConnections.keys()].sort()

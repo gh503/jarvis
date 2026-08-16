@@ -15,6 +15,8 @@ Build a local-first personal Jarvis that uses DeepSeek Harness as its agent runt
 - The plugin registered `/jarvis/health`; a live request returned HTTP 200 and an unsupported method returned HTTP 405.
 - The Gateway now reaches Harness through a loopback-only HTTP bridge with a fixed five-method session allowlist; real-process verification created, listed, and read an empty session without invoking a model.
 - Gateway conversation responses expose only normalized session metadata and append-origin user/assistant text; Harness paths, presets, projections, tools, reasoning, and raw events remain internal.
+- The authenticated `/v1/events` WebSocket projects the same public boundary, persists a bounded normalized replay log, closes on session expiry/revocation, and explicitly requires snapshot refresh after any replay gap.
+- Real-process verification observed a Harness session-created event through the Gateway and replayed that exact event after cursor reconnect without invoking a model.
 - Harness provides sessions, tools, model adapters, plugins, skills, MCP, subagents, jobs, workflows, schedules, workspaces, persistence, approvals, sandbox abstractions, Web UI, and host/client APIs.
 - The shipped Web server has no TLS, authentication, or origin policy. It must stay on loopback behind a Jarvis-owned security gateway.
 - The current SDK transport is subprocess stdio JSON-RPC. It is not a remote mobile API and lacks per-session close and prompt cancellation.
@@ -94,8 +96,8 @@ Optional later processes:
 
 ### AD-05: Internal communication
 
-- External clients: HTTPS plus versioned WebSocket events.
-- Gateway to Harness bridge: loopback HTTP/WebSocket initially; Unix domain socket is preferred when the bridge becomes independent of the Web carrier.
+- External clients: HTTPS plus authenticated versioned WebSocket events with bounded retained cursors and explicit snapshot fallback.
+- Gateway to Harness bridge: fixed-allowlist loopback HTTP plus normalized loopback WebSocket consumption; Unix domain socket is preferred when the bridge becomes independent of the Web carrier.
 - Device events: Home Assistant WebSocket API and MQTT 5.
 - Internal durable work: SQLite transactional outbox in V1. Do not add Redis, NATS, or Kafka until one-process delivery is insufficient.
 

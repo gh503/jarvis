@@ -35,6 +35,7 @@
 - 已实现私网受限的 `v1` Gateway 控制面原型：Owner/Device 认证、配对确认、轮换、撤销、请求 correlation ID、按连接来源和认证身份隔离的有界限流，以及 `/v1/node` WebSocket 的认证、能力注册和在线连接管理；默认 loopback，可启用私网 TLS，但禁止公网绑定。
 - Gateway 可由设备凭据签发短期访问会话；refresh 每次轮换，旧 refresh 复用、Owner 登出或设备撤销都会使会话族失效。
 - Gateway 通过固定 allowlist bridge 访问 loopback Harness；远程会话 API 只返回归一化的标题和最终用户/助手文本，不透传本机路径、内部事件、tool 或 reasoning 数据。
+- Gateway 已提供认证的 `/v1/events` WebSocket：只推送归一化会话事件，支持有界持久化游标重放；重启、游标过期或 Harness 事件中断时明确要求客户端全量刷新。
 
 ## 环境要求
 
@@ -75,9 +76,9 @@ Gateway 原型单独启动，必须通过环境变量提供 Owner Token：
 JARVIS_OWNER_TOKEN='use-a-local-secret-of-at-least-16-characters' npm run start:gateway
 ```
 
-默认模式只监听 `127.0.0.1:3090`，并只连接 `http://127.0.0.1:3080` 的 Harness。可用 `JARVIS_HARNESS_URL` 指向其他 `127.0.0.1` 端口，`JARVIS_HARNESS_TIMEOUT_MS` 默认 10000；非 loopback Harness 地址会在启动前被拒绝。配对状态原子写入未纳入 Git 的 `data/pairing-state.json`。节点 WebSocket 只接受 `/v1/node`，并限制消息大小、握手时间和连接数。
+默认模式只监听 `127.0.0.1:3090`，并只连接 `http://127.0.0.1:3080` 的 Harness。可用 `JARVIS_HARNESS_URL` 指向其他 `127.0.0.1` 端口，`JARVIS_HARNESS_TIMEOUT_MS` 默认 10000；非 loopback Harness 地址会在启动前被拒绝。配对状态原子写入未纳入 Git 的 `data/pairing-state.json`。节点和客户端 WebSocket 分别只接受 `/v1/node` 与 `/v1/events`，并各自限制消息大小、握手时间和连接数。
 
-短期 Session token 可访问 `GET/POST /v1/conversations`、`GET /v1/conversations/:id`、`POST /v1/conversations/:id/messages` 和 `POST /v1/conversations/:id/cancel`。消息只接受最多 16 KiB 的纯文本；远程 slash command 被拒绝。当前响应提供已提交的历史，实时事件与 retained cursor 属于下一片。
+短期 Session token 可访问 `GET/POST /v1/conversations`、`GET /v1/conversations/:id`、`POST /v1/conversations/:id/messages` 和 `POST /v1/conversations/:id/cancel`。消息只接受最多 16 KiB 的纯文本；远程 slash command 被拒绝。`/v1/events` 不在 URL 携带令牌，第一条消息必须是 `events.authenticate`；同源浏览器或无 Origin 的受信客户端可连接。客户端保存每个事件的 `cursor`，重连时提交该游标；若缓冲已淘汰、Gateway 重启或上游连续性丢失，`events.ready`/`sync.required` 会要求先重新读取会话快照。
 
 Gateway 默认允许每个连接来源突发 60 次请求并每秒恢复 1 次额度；每个已认证 Owner、设备或 Session 可突发 120 次并每秒恢复 2 次额度。它只使用直接连接地址，不信任客户端提供的转发来源头；HTTP `429` 会返回 `Retry-After`、限额余量和 correlation ID。
 
@@ -91,7 +92,7 @@ JARVIS_GATEWAY_TLS_CERT='/private/path/gateway-certificate-chain.pem' \
 npm run start:gateway
 ```
 
-证书必须由连接设备信任并覆盖客户端使用的 Gateway 名称。该配置不会安装或管理 Tailscale，也不能直接暴露到互联网；完整手机体验仍需可从游标恢复的事件同步。
+证书必须由连接设备信任并覆盖客户端使用的 Gateway 名称。该配置不会安装或管理 Tailscale，也不能直接暴露到互联网；完整手机体验仍需 PWA、私网接入和设备端验收。
 
 Gateway 运行后，可以在另一个终端为当前 Mac 创建身份并完成人工验证码确认：
 
@@ -120,11 +121,11 @@ JARVIS_OWNER_TOKEN='the-same-local-owner-token' npm run pair:node -- \
 - Harness 会话：`.dsh/sessions/`
 - Jarvis 提醒：`data/reminders.json`
 - Jarvis 审计：`data/audit.jsonl`
-- Gateway 配对与会话摘要：`data/pairing-state.json`、`data/session-state.json`
+- Gateway 配对、访问会话和有界归一化事件：`data/pairing-state.json`、`data/session-state.json`、`data/event-state.json`
 - API Key：仅存放在未纳入 Git 的 `.env`
 - 网络：Harness 始终只限本机回环；Gateway 仅可绑定明确的回环、私网或 overlay IP，非回环强制 TLS，禁止直接暴露到互联网
 
-这是单用户文字版 MVP，尚不包含手机 UI、实时远程事件、语音、智能家居、任意终端、文件操作和消息发送。Gateway 已提供认证、设备身份和受控会话 API；客户端不得直接暴露或调用 Harness Web 服务。
+这是单用户文字版 MVP，尚不包含手机 UI、语音、智能家居、任意终端、文件操作和消息发送。Gateway 已提供认证、设备身份、受控会话 API 和可恢复的实时事件；客户端不得直接暴露或调用 Harness Web 服务。
 
 ## 上游边界
 

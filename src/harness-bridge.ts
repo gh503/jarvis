@@ -102,9 +102,9 @@ function textFromBlocks(value: unknown): string {
   return value.flatMap(block => record(block) && block.type === 'text' && typeof block.text === 'string' ? [block.text] : []).join('')
 }
 
-function messageFromEntry(value: unknown): ConversationMessage | undefined {
-  if (!record(value) || !record(value.event)) return undefined
-  const event = value.event
+export function conversationMessageFromHarnessEvent(value: unknown): ConversationMessage | undefined {
+  if (!record(value)) return undefined
+  const event = value
   if (event.surfaceOp !== 'append') return undefined
   const sequence = event.seq
   const createdAt = event.time
@@ -121,6 +121,11 @@ function messageFromEntry(value: unknown): ConversationMessage | undefined {
     return { id: message.id, sequence: sequence as number, createdAt, role: 'assistant', text }
   }
   return undefined
+}
+
+function messageFromEntry(value: unknown): ConversationMessage | undefined {
+  if (!record(value)) return undefined
+  return conversationMessageFromHarnessEvent(value.event)
 }
 
 async function readBoundedJson(response: Response, maxBytes: number): Promise<unknown> {
@@ -162,8 +167,9 @@ export class HarnessBridge implements HarnessClient {
   async listConversations(): Promise<readonly ConversationSummary[]> {
     const value = await this.call('session.list', {})
     if (!record(value) || !Array.isArray(value.items)) throw new HarnessBridgeError('protocol', 'Harness returned an invalid session list')
-    return value.items.map(item => {
-      if (!record(item) || typeof item.running !== 'boolean' || typeof item.blank !== 'boolean') {
+    return value.items.filter(item => !record(item) || item.origin !== 'subagent').map(item => {
+      if (!record(item) || typeof item.running !== 'boolean' || typeof item.blank !== 'boolean'
+        || (item.origin !== undefined && item.origin !== 'subagent')) {
         throw new HarnessBridgeError('protocol', 'Harness returned an invalid session summary')
       }
       return {

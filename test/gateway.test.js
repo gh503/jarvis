@@ -6,6 +6,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import test from 'node:test'
 import WebSocket from 'ws'
+import { RetainedEventLog } from '../dist/event-log.js'
 import { createJarvisGateway } from '../dist/gateway.js'
 import { HarnessBridgeError } from '../dist/harness-bridge.js'
 import { NodeAgent } from '../dist/node-agent.js'
@@ -98,6 +99,40 @@ function nodeAgentConfig(endpoint, credential, socketFactory, execute) {
     },
     policy: new NodePolicy({ capabilities: { system_status: { version: 1 } } }),
     execute,
+  }
+}
+
+function socketInbox(socket) {
+  const queued = []
+  const waiters = []
+  socket.on('message', data => {
+    const value = JSON.parse(data.toString())
+    const waiter = waiters.shift()
+    if (waiter === undefined) queued.push(value)
+    else waiter.resolve(value)
+  })
+  socket.on('error', error => {
+    for (const waiter of waiters.splice(0)) waiter.reject(error)
+  })
+  return {
+    next() {
+      const value = queued.shift()
+      if (value !== undefined) return Promise.resolve(value)
+      return new Promise((resolve, reject) => waiters.push({ resolve, reject }))
+    },
+  }
+}
+
+function fakeConversationEvents() {
+  let handlers
+  return {
+    start(value) {
+      handlers = value
+      handlers.onAvailability(true)
+    },
+    async stop() { handlers = undefined },
+    emit(event) { handlers?.onEvent(event) },
+    available(value) { handlers?.onAvailability(value) },
   }
 }
 
@@ -598,6 +633,182 @@ test('maps Harness failures without exposing internal diagnostics', async () => 
     await expectFailure(new HarnessBridgeError('rejected', 'upstream-private', 'bad-request'), 400, 'harness_rejected')
     await expectFailure(new HarnessBridgeError('rejected', 'upstream-private', 'internal'), 502, 'harness_rejected')
   } finally {
+    await service.stop()
+  }
+})
+
+test('authenticates conversation events, replays retained cursors, and closes revoked sessions', async () => {
+  const authority = new PairingAuthority()
+  issueCredential(authority)
+  const sessions = new SessionAuthority()
+  const access = sessions.issue('node-1')
+  const harnessEvents = fakeConversationEvents()
+  const eventLog = new RetainedEventLog()
+  const service = createJarvisGateway({ ownerToken, authority, sessions, harnessEvents, eventLog })
+  const gateway = await service.start()
+  const endpoint = `ws://127.0.0.1:${gateway.port}/v1/events`
+  const sockets = []
+  try {
+    await assert.rejects(new Promise((resolve, reject) => {
+      const socket = new WebSocket(`${endpoint}?accessToken=forbidden`)
+      socket.once('open', resolve)
+      socket.once('error', reject)
+    }), /Unexpected server response: 404/)
+    await assert.rejects(new Promise((resolve, reject) => {
+      const socket = new WebSocket(endpoint, { origin: 'https://untrusted.example' })
+      socket.once('open', resolve)
+      socket.once('error', reject)
+    }), /Unexpected server response: 403/)
+
+    const unauthorized = new WebSocket(endpoint)
+    sockets.push(unauthorized)
+    const unauthorizedInbox = socketInbox(unauthorized)
+    await new Promise((resolve, reject) => {
+      unauthorized.once('open', resolve)
+      unauthorized.once('error', reject)
+    })
+    unauthorized.send(JSON.stringify({ type: 'events.authenticate', accessToken: ownerToken }))
+    assert.equal((await unauthorizedInbox.next()).type, 'events.rejected')
+
+    const first = new WebSocket(endpoint, { origin: gateway.origin })
+    sockets.push(first)
+    const firstInbox = socketInbox(first)
+    await new Promise((resolve, reject) => {
+      first.once('open', resolve)
+      first.once('error', reject)
+    })
+    first.send(JSON.stringify({ type: 'events.authenticate', accessToken: access.accessToken }))
+    const initialReady = await firstInbox.next()
+    assert.deepEqual({
+      type: initialReady.type,
+      replayCount: initialReady.replayCount,
+      requiresSnapshot: initialReady.requiresSnapshot,
+      reason: initialReady.reason,
+    }, { type: 'events.ready', replayCount: 0, requiresSnapshot: true, reason: 'initial' })
+    assert.match(initialReady.cursor, /^[A-Za-z0-9_-]{22}\.[0-9]+$/)
+
+    harnessEvents.emit({ type: 'conversation.status', conversationId: 'session-one', running: true })
+    const live = await firstInbox.next()
+    assert.equal(live.type, 'conversation.status')
+    assert.equal(live.running, true)
+    first.send(JSON.stringify({ type: 'events.ack', cursor: live.cursor }))
+    first.close()
+
+    const resumed = new WebSocket(endpoint)
+    sockets.push(resumed)
+    const resumedInbox = socketInbox(resumed)
+    await new Promise((resolve, reject) => {
+      resumed.once('open', resolve)
+      resumed.once('error', reject)
+    })
+    resumed.send(JSON.stringify({
+      type: 'events.authenticate', accessToken: access.accessToken, cursor: initialReady.cursor,
+    }))
+    const resumedReady = await resumedInbox.next()
+    assert.equal(resumedReady.type, 'events.ready')
+    assert.equal(resumedReady.requiresSnapshot, false)
+    assert.equal(resumedReady.replayCount, 1)
+    assert.deepEqual(await resumedInbox.next(), live)
+
+    const revoked = await request(gateway, `/v1/sessions/${access.sessionId}`, {
+      method: 'DELETE', headers: { authorization: `Bearer ${ownerToken}` },
+    })
+    assert.equal(revoked.status, 204)
+    const rejection = await resumedInbox.next()
+    assert.equal(rejection.type, 'events.rejected')
+    assert.equal(rejection.code, 'session_invalid')
+  } finally {
+    for (const socket of sockets) socket.terminate()
+    await service.stop()
+  }
+})
+
+test('requires event-stream resync after an upstream continuity gap', async () => {
+  const authority = new PairingAuthority()
+  issueCredential(authority)
+  const sessions = new SessionAuthority()
+  const access = sessions.issue('node-1')
+  const harnessEvents = fakeConversationEvents()
+  const service = createJarvisGateway({ ownerToken, authority, sessions, harnessEvents })
+  const gateway = await service.start()
+  const socket = new WebSocket(`ws://127.0.0.1:${gateway.port}/v1/events`)
+  const inbox = socketInbox(socket)
+  try {
+    await new Promise((resolve, reject) => {
+      socket.once('open', resolve)
+      socket.once('error', reject)
+    })
+    socket.send(JSON.stringify({ type: 'events.authenticate', accessToken: access.accessToken }))
+    assert.equal((await inbox.next()).type, 'events.ready')
+    harnessEvents.available(false)
+    const event = await inbox.next()
+    assert.equal(event.type, 'sync.required')
+    assert.equal(event.reason, 'harness_disconnected')
+  } finally {
+    socket.terminate()
+    await service.stop()
+  }
+})
+
+test('closes an active event stream when its access token expires', async () => {
+  const authority = new PairingAuthority()
+  issueCredential(authority)
+  const sessions = new SessionAuthority({ accessTtlMs: 1_000, refreshTtlMs: 2_000 })
+  const access = sessions.issue('node-1')
+  const harnessEvents = fakeConversationEvents()
+  const service = createJarvisGateway({ ownerToken, authority, sessions, harnessEvents })
+  const gateway = await service.start()
+  const socket = new WebSocket(`ws://127.0.0.1:${gateway.port}/v1/events`)
+  const inbox = socketInbox(socket)
+  try {
+    await new Promise((resolve, reject) => {
+      socket.once('open', resolve)
+      socket.once('error', reject)
+    })
+    socket.send(JSON.stringify({ type: 'events.authenticate', accessToken: access.accessToken }))
+    assert.equal((await inbox.next()).type, 'events.ready')
+    const rejection = await Promise.race([
+      inbox.next(),
+      new Promise((_, reject) => setTimeout(() => reject(new Error('event stream did not expire')), 2_000)),
+    ])
+    assert.equal(rejection.type, 'events.rejected')
+    assert.equal(rejection.code, 'session_expired')
+  } finally {
+    socket.terminate()
+    await service.stop()
+  }
+})
+
+test('applies the authenticated session rate limit to event acknowledgements', async () => {
+  const authority = new PairingAuthority()
+  issueCredential(authority)
+  const sessions = new SessionAuthority()
+  const access = sessions.issue('node-1')
+  const harnessEvents = fakeConversationEvents()
+  const service = createJarvisGateway({
+    ownerToken,
+    authority,
+    sessions,
+    harnessEvents,
+    identityRateLimit: { capacity: 1, refillPerSecond: 0.001, maxKeys: 16 },
+  })
+  const gateway = await service.start()
+  const socket = new WebSocket(`ws://127.0.0.1:${gateway.port}/v1/events`)
+  const inbox = socketInbox(socket)
+  try {
+    await new Promise((resolve, reject) => {
+      socket.once('open', resolve)
+      socket.once('error', reject)
+    })
+    socket.send(JSON.stringify({ type: 'events.authenticate', accessToken: access.accessToken }))
+    const ready = await inbox.next()
+    assert.equal(ready.type, 'events.ready')
+    socket.send(JSON.stringify({ type: 'events.ack', cursor: ready.cursor }))
+    const rejection = await inbox.next()
+    assert.equal(rejection.type, 'events.rejected')
+    assert.equal(rejection.code, 'rate_limited')
+  } finally {
+    socket.terminate()
     await service.stop()
   }
 })
