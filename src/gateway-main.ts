@@ -1,7 +1,9 @@
 import { readFileSync, statSync } from 'node:fs'
 import { join, resolve } from 'node:path'
-import { InMemoryDeviceApprovalStore } from './device-approval.js'
+import { InMemoryDeviceApprovalStore, type DeviceApprovalExecution } from './device-approval.js'
 import { createJarvisGateway, type GatewayTlsOptions } from './gateway.js'
+import { HomeAssistantAdapter } from './home-assistant.js'
+import { createHomeAssistantSocketFactory, readHomeAssistantRuntimeConfig } from './home-assistant-runtime.js'
 import { acquireRuntimeLease } from './runtime-lease.js'
 
 const ownerToken = process.env.JARVIS_OWNER_TOKEN
@@ -27,6 +29,7 @@ if (!Number.isInteger(harnessRequestTimeoutMs) || harnessRequestTimeoutMs < 1) {
   throw new Error('JARVIS_HARNESS_TIMEOUT_MS must be a positive integer')
 }
 const deviceCommandToken = process.env.JARVIS_DEVICE_COMMAND_TOKEN
+const homeAssistantConfig = readHomeAssistantRuntimeConfig()
 const tlsKeyPath = process.env.JARVIS_GATEWAY_TLS_KEY
 const tlsCertPath = process.env.JARVIS_GATEWAY_TLS_CERT
 if ((tlsKeyPath === undefined) !== (tlsCertPath === undefined)) {
@@ -42,6 +45,23 @@ if (tlsKeyPath !== undefined && tlsCertPath !== undefined) {
   tls = { key: readFileSync(tlsKeyPath), cert: readFileSync(tlsCertPath) }
 }
 
+const homeAssistant = homeAssistantConfig === undefined ? undefined : new HomeAssistantAdapter({
+  url: homeAssistantConfig.url,
+  accessToken: homeAssistantConfig.accessToken,
+  socketFactory: createHomeAssistantSocketFactory(),
+  onSnapshot: () => {},
+  onState: () => {},
+  onUnavailable: () => {},
+})
+const homeAssistantExecutionHandler = homeAssistant === undefined || homeAssistantConfig === undefined
+  ? undefined
+  : (execution: DeviceApprovalExecution) => {
+      void homeAssistant.callApprovedService({ ...execution.command, timeoutMs: homeAssistantConfig.commandTimeoutMs }, execution.authorization)
+    }
+const deviceApprovals = deviceCommandToken === undefined
+  ? undefined
+  : new InMemoryDeviceApprovalStore(undefined, homeAssistantExecutionHandler)
+const deviceApprovalOptions = deviceApprovals === undefined ? {} : { deviceApprovals }
 const lease = await acquireRuntimeLease(runtimeDir, 'gateway')
 let gateway: ReturnType<typeof createJarvisGateway>
 
@@ -49,23 +69,24 @@ try {
   const gatewayOptions = {
     ownerToken, pairingStatePath: statePath, sessionStatePath, eventStatePath, bindHost, harnessOrigin,
     harnessRequestTimeoutMs, pwaRoot,
-    ...(deviceCommandToken === undefined ? {} : {
-      deviceCommandToken,
-      deviceApprovals: new InMemoryDeviceApprovalStore(),
-    }),
+    ...(deviceCommandToken === undefined ? {} : { deviceCommandToken }),
+    ...deviceApprovalOptions,
   }
   gateway = tls === undefined
     ? createJarvisGateway(gatewayOptions)
     : createJarvisGateway({ ...gatewayOptions, tls })
+  homeAssistant?.start()
   const running = await gateway.start(configuredPort)
   console.log(`Jarvis Gateway listening on ${running.origin}`)
 } catch (error) {
+  homeAssistant?.stop()
   await lease.release()
   throw error
 }
 
 async function stop(): Promise<void> {
   try {
+    homeAssistant?.stop()
     await gateway.stop()
   } finally {
     await lease.release()

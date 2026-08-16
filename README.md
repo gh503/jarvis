@@ -97,7 +97,17 @@ export JARVIS_DEVICE_GATEWAY_URL='http://127.0.0.1:3090'
 JARVIS_OWNER_TOKEN='use-a-local-secret-of-at-least-16-characters' npm run start:gateway
 ```
 
-Harness 进程会继承这两个变量，并通过 loopback Gateway 的 `POST /v1/device-commands` 创建脱敏审批记录。`JARVIS_DEVICE_GATEWAY_URL` 只能指向 `127.0.0.1` 或 `[::1]`；两个进程必须使用同一个内部令牌。当前工具结果只表示审批已创建，配对 PWA 仍需批准，真实 Home Assistant 适配器和物理设备执行尚未装配。
+Harness 进程会继承这两个变量，并通过 loopback Gateway 的 `POST /v1/device-commands` 创建脱敏审批记录。`JARVIS_DEVICE_GATEWAY_URL` 只能指向 `127.0.0.1` 或 `[::1]`；两个进程必须使用同一个内部令牌。工具结果只表示审批已创建，配对 PWA 仍需批准；未配置 Home Assistant 时不会执行供应商调用。
+
+要在批准后连接 Home Assistant，另外设置 Gateway 进程使用的 WebSocket 地址和访问令牌：
+
+```bash
+export JARVIS_HOME_ASSISTANT_URL='wss://home-assistant.example/api/websocket'
+export JARVIS_HOME_ASSISTANT_TOKEN='keep-this-local-and-uncommitted'
+export JARVIS_HOME_ASSISTANT_COMMAND_TIMEOUT_MS='10000'
+```
+
+URL 必须是 `ws://` 或 `wss://`，不能在 URL 中嵌入用户名或密码；地址与令牌必须同时配置。令牌只保存在 Gateway 进程内存中，不会写入审批、事件、审计或响应。未配置 Home Assistant 时仍可创建审批，但批准后不会执行供应商调用；配置后，适配器只有在完成认证、快照和状态订阅后才发送命令，网络确认仍不等于实体状态已改变。
 
 默认模式只监听 `127.0.0.1:3090`，并只连接 `http://127.0.0.1:3080` 的 Harness。可用 `JARVIS_HARNESS_URL` 指向其他 `127.0.0.1` 端口，`JARVIS_HARNESS_TIMEOUT_MS` 默认 10000；非 loopback Harness 地址会在启动前被拒绝。配对状态原子写入未纳入 Git 的 `data/pairing-state.json`。节点和客户端 WebSocket 分别只接受 `/v1/node` 与 `/v1/events`，并各自限制消息大小、握手时间和连接数。
 
