@@ -35,7 +35,7 @@ Acceptance:
 
 ### `src/device-registry`
 
-Current increment: normalized registry core only. It is provider-independent and does not connect to Home Assistant, MQTT, or physical devices.
+Current increment: normalized registry core. It is provider-independent; provider runtime adapters remain separately configured and physical devices are not assumed.
 
 Deliver:
 
@@ -57,8 +57,8 @@ Implemented in the current increment:
 
 Deferred to later increments:
 
-- Home Assistant discovery/subscription and medium/high-risk service calls.
-- MQTT transport and duplicate-delivery handling.
+- Gateway/provider runtime assembly and medium/high-risk service calls.
+- Physical device discovery and acceptance evidence.
 - Simulator protocol behavior and real-device acceptance.
 
 ### `src/home-assistant`
@@ -131,7 +131,6 @@ Implemented in the current increment:
 
 Deferred to later increments:
 
-- Wiring a real Jarvis device command producer to this adapter.
 - Named Home Assistant instance, real lock/alarm behavior, and physical acceptance evidence.
 
 ### Real-time approval events
@@ -177,7 +176,6 @@ Implemented in the current increment:
 
 Deferred to later increments:
 
-- Real Home Assistant adapter assembly and provider credential configuration.
 - Real device execution and physical acceptance evidence.
 
 ### Configured Home Assistant execution wiring
@@ -239,7 +237,7 @@ Acceptance:
 
 ### `packages/device-mqtt`
 
-Current increment: scoped MQTT adapter and runtime transport tracked by [#78](https://github.com/gh503/jarvis/issues/78).
+Current increment: scoped MQTT adapter, runtime transport, and Gateway command path tracked by [#78](https://github.com/gh503/jarvis/issues/78) and [#80](https://github.com/gh503/jarvis/issues/80).
 
 Implemented in the current increment:
 
@@ -248,10 +246,13 @@ Implemented in the current increment:
 - Commands carry a bounded expiry and MQTT message expiry, while idempotency prevents duplicate or conflicting command delivery from creating a second publish.
 - The runtime transport uses the pinned MQTT client, supports `mqtt`/`mqtts`, keeps credentials in memory, and rejects embedded URL credentials.
 - Acknowledgement, observed state, terminal results, unavailable connection state, and retained-message expiry remain distinct.
+- A loopback-only Gateway route reuses the separate `DeviceCommand` token and returns only normalized command outcomes.
+- The Harness tool exposes only `switch.set`, `light.set`, `media.play_pause`, and `cover.set`; lock and alarm actions remain on the high-risk approval path.
+- Gateway startup survives an unavailable Broker, while command requests return an explicit unavailable outcome until the adapter is ready.
 
 Deferred to later increments:
 
-- Gateway command-source integration and provider-specific capability mapping.
+- Provider-specific capability and payload mapping.
 - Named owner-provided Broker, constrained-device credentials, and physical hardware evidence.
 
 Proposed topic family:

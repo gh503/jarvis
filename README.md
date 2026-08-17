@@ -44,11 +44,12 @@
 - 配对后的 PWA 可读取 Gateway 认可的当前设备与会话状态，并可在设置中撤销自身设备凭据；撤销会关闭该设备全部会话与实时连接，并清除浏览器中的身份、令牌、对话快照和事件游标。
 - 配对后的 PWA 提供隐私优先的应用内通知中心；审批、对话完成和连接事件只生成固定摘要，支持分类开关、静默时段、每小时系统通知上限、已读/清空和显式系统通知授权。
 - 已提供离线一致性备份和原子恢复命令；运行租约阻止在 Harness 或 Gateway 活跃时复制状态，恢复前校验结构、权限和 SHA-256。
-- 已实现智能设备注册核心：规范化设备、位置、能力、风险、别名、稳定外部身份映射和带时间戳状态；暂未连接 Home Assistant、MQTT 或真实设备。
-- 已实现只读 Home Assistant WebSocket 协议核心：认证、确定性实体快照、状态事件过滤、删除实体降级、断线重连和全量重同步；真实 Home Assistant 地址、凭据、服务行为和硬件验收仍未完成。
+- 已实现智能设备注册核心：规范化设备、位置、能力、风险、别名、稳定外部身份映射和带时间戳状态；真实设备验收仍未完成。
+- 已实现只读 Home Assistant WebSocket 协议核心及可选 Gateway 运行时装配：认证、确定性实体快照、状态事件过滤、删除实体降级、断线重连和全量重同步；真实 Home Assistant 地址、凭据、服务行为和硬件验收仍未完成。
 - 已实现低风险 Home Assistant 服务调用对账核心：灯、开关和普通媒体使用幂等键，服务确认与实际状态分离；只有后续目标状态被观察到才报告成功，中高风险动作和真实硬件验收仍需后续阶段。
 - 已实现智能家居高风险审批策略核心：锁和警报保持强制高风险，审批绑定精确命令摘要并只能消费一次；PWA 审批工作区、实时事件传输和带授权的 Home Assistant 锁/警报服务调用核心已接入，真实部署和硬件验收仍未完成。
 - Gateway 已提供独立的 `/v1/device-approvals` 会话接口，用于读取和幂等处理归一化的锁/警报审批记录；PWA 已展示该审批工作区，并通过 `/v1/events` 接收脱敏的 `device.approval.pending` / `device.approval.resolved` 事件。真实设备执行和物理验收仍未完成。
+- 已提供可选的 MQTT 5 设备适配器和 Gateway 低风险命令通道；默认不连接 Broker，真实 Broker、设备凭据和物理设备验收仍需单独配置与验证。
 
 ## 环境要求
 
@@ -116,9 +117,10 @@ export JARVIS_MQTT_URL='mqtts://broker.example:8883'
 export JARVIS_MQTT_USERNAME='device-scoped-user'
 export JARVIS_MQTT_PASSWORD='keep-this-local-and-uncommitted'
 export JARVIS_MQTT_CLIENT_ID='jarvis-mac-mqtt'
+export JARVIS_MQTT_DEVICE_ID='constrained-device-1'
 ```
 
-适配器固定在 `jarvis/v1/devices/{deviceId}/` topic 范围内，命令带有 MQTT message expiry 和 Jarvis 侧过期时间；相同幂等键不会重复发布，设备确认与最终结果分开处理。当前增量提供协议和运行时传输层，尚未声称连接了真实 Broker、定制硬件或完成物理设备验收。
+适配器固定在 `jarvis/v1/devices/{deviceId}/` topic 范围内，命令带有 MQTT message expiry 和 Jarvis 侧过期时间；相同幂等键不会重复发布，设备确认与最终结果分开处理。配置 `JARVIS_DEVICE_COMMAND_TOKEN` 后，Harness 可使用 `jarvis_mqtt_device_control` 提交 `switch.set`、`light.set`、`media.play_pause` 或 `cover.set`；锁和警报仍必须走审批工具。当前仍未声称连接了真实 Broker、定制硬件或完成物理设备验收。
 
 默认模式只监听 `127.0.0.1:3090`，并只连接 `http://127.0.0.1:3080` 的 Harness。可用 `JARVIS_HARNESS_URL` 指向其他 `127.0.0.1` 端口，`JARVIS_HARNESS_TIMEOUT_MS` 默认 10000；非 loopback Harness 地址会在启动前被拒绝。配对状态原子写入未纳入 Git 的 `data/pairing-state.json`。节点和客户端 WebSocket 分别只接受 `/v1/node` 与 `/v1/events`，并各自限制消息大小、握手时间和连接数。
 

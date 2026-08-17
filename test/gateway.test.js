@@ -285,6 +285,28 @@ test('gateway entrypoint rejects incomplete TLS and permissive private-key files
   }
 })
 
+test('gateway entrypoint rejects incomplete MQTT command configuration', () => {
+  const environment = Object.fromEntries(
+    Object.entries(process.env).filter(([name]) => !name.startsWith('JARVIS_MQTT_') && name !== 'JARVIS_DEVICE_COMMAND_TOKEN'),
+  )
+  const cases = [
+    { values: { JARVIS_MQTT_DEVICE_ID: 'sensor-node-1' }, message: /JARVIS_MQTT_URL is required/ },
+    { values: { JARVIS_MQTT_URL: 'mqtt://broker.invalid' }, message: /JARVIS_MQTT_DEVICE_ID is required/ },
+    {
+      values: { JARVIS_MQTT_URL: 'mqtt://broker.invalid', JARVIS_MQTT_DEVICE_ID: 'sensor-node-1' },
+      message: /JARVIS_DEVICE_COMMAND_TOKEN is required/,
+    },
+  ]
+  for (const entry of cases) {
+    const result = spawnSync(process.execPath, ['dist/gateway-main.js'], {
+      encoding: 'utf8',
+      env: { ...environment, JARVIS_OWNER_TOKEN: ownerToken, JARVIS_GATEWAY_PORT: '0', ...entry.values },
+    })
+    assert.notEqual(result.status, 0)
+    assert.match(result.stderr, entry.message)
+  }
+})
+
 test('runs authenticated pairing, device rotation, and owner revocation over versioned HTTP', async () => {
   const authority = new PairingAuthority(() => 1_000, 60_000)
   const service = createJarvisGateway({ ownerToken, authority })
@@ -1017,6 +1039,75 @@ test('accepts only loopback internal device-command submissions and returns a re
     assert.equal(invalid.status, 400)
   } finally {
     await service.stop()
+  }
+})
+
+test('accepts only bounded loopback MQTT commands and returns a redacted outcome', async () => {
+  const deviceCommandToken = 'device-command-token-for-tests'
+  const received = []
+  const mqttCommands = {
+    async sendCommand(command) {
+      received.push(command)
+      if (command.commandId === 'mqtt-command-unredacted') {
+        return {
+          commandId: command.commandId, idempotencyKey: command.idempotencyKey, capability: command.capability,
+          state: 'succeeded', acknowledged: true, payload: { providerToken: 'private-provider-token' },
+        }
+      }
+      return {
+        commandId: command.commandId, idempotencyKey: command.idempotencyKey, capability: command.capability,
+        state: 'succeeded', acknowledged: true, observedState: command.expectedState,
+      }
+    },
+  }
+  const service = createJarvisGateway({ ownerToken, deviceCommandToken, mqttCommands })
+  const gateway = await service.start()
+  const body = {
+    commandId: 'mqtt-command-gateway', idempotencyKey: 'mqtt-once-gateway', capability: 'light.set',
+    payload: { brightness: 50, providerToken: 'private-provider-token' }, expectedState: 'on',
+  }
+  const headers = { 'content-type': 'application/json', authorization: `DeviceCommand ${deviceCommandToken}` }
+  try {
+    assert.equal((await request(gateway, '/v1/mqtt-commands', {
+      method: 'POST', headers: { ...headers, authorization: 'DeviceCommand wrong-token' }, body: JSON.stringify(body),
+    })).status, 401)
+    const response = await request(gateway, '/v1/mqtt-commands', { method: 'POST', headers, body: JSON.stringify(body) })
+    assert.equal(response.status, 200)
+    const responseBody = await response.json()
+    assert.equal(received.length, 1)
+    assert.equal(received[0].payload.providerToken, 'private-provider-token')
+    assert.equal(responseBody.result.state, 'succeeded')
+    assert.equal('payload' in responseBody.result, false)
+    assert.doesNotMatch(JSON.stringify(responseBody), /private-provider-token/)
+
+    const unredacted = await request(gateway, '/v1/mqtt-commands', {
+      method: 'POST', headers,
+      body: JSON.stringify({ ...body, commandId: 'mqtt-command-unredacted', idempotencyKey: 'mqtt-once-unredacted' }),
+    })
+    assert.equal(unredacted.status, 400)
+    assert.doesNotMatch(JSON.stringify(await unredacted.json()), /private-provider-token/)
+
+    for (const invalidBody of [
+      { ...body, capability: 'lock.set' },
+      { ...body, payload: 'not-an-object' },
+      { ...body, rawFrame: 'private-provider-token' },
+    ]) {
+      const invalid = await request(gateway, '/v1/mqtt-commands', { method: 'POST', headers, body: JSON.stringify(invalidBody) })
+      assert.equal(invalid.status, 400)
+    }
+    assert.equal(received.length, 2)
+  } finally {
+    await service.stop()
+  }
+
+  const unavailableService = createJarvisGateway({ ownerToken, deviceCommandToken })
+  const unavailableGateway = await unavailableService.start()
+  try {
+    const unavailable = await request(unavailableGateway, '/v1/mqtt-commands', { method: 'POST', headers, body: JSON.stringify(body) })
+    assert.equal(unavailable.status, 503)
+    assert.equal((await unavailable.json()).code, 'mqtt_device_unavailable')
+  } finally {
+    await unavailableService.stop()
   }
 })
 

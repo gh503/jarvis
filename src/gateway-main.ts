@@ -4,6 +4,8 @@ import { InMemoryDeviceApprovalStore, type DeviceApprovalExecution } from './dev
 import { createJarvisGateway, type GatewayTlsOptions } from './gateway.js'
 import { HomeAssistantAdapter } from './home-assistant.js'
 import { createHomeAssistantSocketFactory, readHomeAssistantRuntimeConfig } from './home-assistant-runtime.js'
+import { MqttDeviceAdapter } from './device-mqtt.js'
+import { createMqttDeviceTransport, readMqttRuntimeConfig } from './mqtt-runtime.js'
 import { acquireRuntimeLease } from './runtime-lease.js'
 
 const ownerToken = process.env.JARVIS_OWNER_TOKEN
@@ -30,6 +32,15 @@ if (!Number.isInteger(harnessRequestTimeoutMs) || harnessRequestTimeoutMs < 1) {
 }
 const deviceCommandToken = process.env.JARVIS_DEVICE_COMMAND_TOKEN
 const homeAssistantConfig = readHomeAssistantRuntimeConfig()
+const mqttConfig = readMqttRuntimeConfig()
+const mqttDeviceId = process.env.JARVIS_MQTT_DEVICE_ID
+if (mqttConfig === undefined && mqttDeviceId !== undefined) throw new Error('JARVIS_MQTT_URL is required when JARVIS_MQTT_DEVICE_ID is configured')
+if (mqttConfig !== undefined && (mqttDeviceId === undefined || mqttDeviceId.length === 0)) {
+  throw new Error('JARVIS_MQTT_DEVICE_ID is required when MQTT is configured')
+}
+if (mqttConfig !== undefined && deviceCommandToken === undefined) {
+  throw new Error('JARVIS_DEVICE_COMMAND_TOKEN is required when MQTT is configured')
+}
 const tlsKeyPath = process.env.JARVIS_GATEWAY_TLS_KEY
 const tlsCertPath = process.env.JARVIS_GATEWAY_TLS_CERT
 if ((tlsKeyPath === undefined) !== (tlsCertPath === undefined)) {
@@ -62,6 +73,11 @@ const deviceApprovals = deviceCommandToken === undefined
   ? undefined
   : new InMemoryDeviceApprovalStore(undefined, homeAssistantExecutionHandler)
 const deviceApprovalOptions = deviceApprovals === undefined ? {} : { deviceApprovals }
+const mqttDevice = mqttConfig === undefined || mqttDeviceId === undefined ? undefined : new MqttDeviceAdapter({
+  deviceId: mqttDeviceId,
+  transport: createMqttDeviceTransport(mqttConfig),
+})
+const mqttCommandOptions = mqttDevice === undefined ? {} : { mqttCommands: mqttDevice }
 const lease = await acquireRuntimeLease(runtimeDir, 'gateway')
 let gateway: ReturnType<typeof createJarvisGateway>
 
@@ -71,15 +87,18 @@ try {
     harnessRequestTimeoutMs, pwaRoot,
     ...(deviceCommandToken === undefined ? {} : { deviceCommandToken }),
     ...deviceApprovalOptions,
+    ...mqttCommandOptions,
   }
   gateway = tls === undefined
     ? createJarvisGateway(gatewayOptions)
     : createJarvisGateway({ ...gatewayOptions, tls })
   homeAssistant?.start()
+  void mqttDevice?.start().catch(() => undefined)
   const running = await gateway.start(configuredPort)
   console.log(`Jarvis Gateway listening on ${running.origin}`)
 } catch (error) {
   homeAssistant?.stop()
+  await mqttDevice?.stop()
   await lease.release()
   throw error
 }
@@ -87,6 +106,7 @@ try {
 async function stop(): Promise<void> {
   try {
     homeAssistant?.stop()
+    await mqttDevice?.stop()
     await gateway.stop()
   } finally {
     await lease.release()
