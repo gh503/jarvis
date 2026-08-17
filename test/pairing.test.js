@@ -152,9 +152,38 @@ test('returns only normalized active device metadata', () => {
   assert.deepEqual(authority.getDevice('node-view'), {
     nodeId: 'node-view', displayName: 'Visible Mac', platform: 'macos', generation: 1, issuedAt: 1_000,
   })
+  assert.deepEqual(authority.listDevices(), [{
+    nodeId: 'node-view', displayName: 'Visible Mac', platform: 'macos', generation: 1, issuedAt: 1_000, revoked: false,
+  }])
   assert.doesNotMatch(JSON.stringify(authority.getDevice('node-view')), new RegExp(issued.credential))
   authority.revoke('node-view')
   assert.equal(authority.getDevice('node-view'), undefined)
+  assert.equal(authority.listDevices()[0].revoked, true)
+})
+
+test('persists a client-generated rotation and retries it idempotently with the new credential', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'jarvis-pairing-rotation-'))
+  try {
+    const path = join(directory, 'pairing-state.json')
+    const identity = createDeviceIdentity()
+    const authority = new PairingAuthority(() => 2_000, 60_000, new FilePairingStateStore(path))
+    const request = authority.createRequest(requestInput(identity))
+    const first = authority.confirm(request.requestId, request.verificationCode)
+    const next = 'z'.repeat(43)
+    assert.deepEqual(authority.rotateTo('node-1', first.credential, next, 1), {
+      nodeId: 'node-1', displayName: 'MacBook Air', platform: 'macos', generation: 2, issuedAt: 2_000,
+    })
+    const stored = await readFile(path, 'utf8')
+    assert.doesNotMatch(stored, new RegExp(first.credential))
+    assert.doesNotMatch(stored, new RegExp(next))
+
+    const restarted = new PairingAuthority(() => 3_000, 60_000, new FilePairingStateStore(path))
+    assert.equal(restarted.authenticate('node-1', first.credential), false)
+    assert.equal(restarted.authenticate('node-1', next), true)
+    assert.equal(restarted.rotateTo('node-1', next, next, 1).generation, 2)
+  } finally {
+    await rm(directory, { recursive: true, force: true })
+  }
 })
 
 test('revocation blocks current and future authentication', () => {

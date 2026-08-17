@@ -335,6 +335,18 @@ test('runs authenticated pairing, device rotation, and owner revocation over ver
     })
     assert.equal(confirmed.status, 200)
     const first = await confirmed.json()
+    const listed = await request(gateway, '/v1/devices', { headers: { authorization: `Bearer ${ownerToken}` } })
+    assert.equal(listed.status, 200)
+    const listedText = await listed.text()
+    assert.deepEqual(JSON.parse(listedText), { devices: [{
+      nodeId: 'node-1', displayName: 'Test Mac', platform: 'macos', generation: 1, issuedAt: 1_000, revoked: false,
+    }] })
+    assert.doesNotMatch(listedText, /publicKey|credentialDigest|credential/)
+    assert.doesNotMatch(listedText, new RegExp(first.credential))
+    assert.equal((await request(gateway, '/v1/devices')).status, 401)
+    assert.equal((await request(gateway, '/v1/devices', {
+      headers: { authorization: `Device ${first.credential}` },
+    })).status, 403)
     const rotated = await request(gateway, '/v1/devices/node-1', {
       method: 'POST', headers: { authorization: `Device ${first.credential}` },
     })
@@ -349,6 +361,40 @@ test('runs authenticated pairing, device rotation, and owner revocation over ver
       method: 'POST', headers: { authorization: `Device ${second.credential}` },
     })
     assert.equal(rejectedRotation.status, 401)
+  } finally {
+    await service.stop()
+  }
+})
+
+test('retries client-generated device credential rotation without exposing the credential', async () => {
+  const authority = new PairingAuthority(() => 2_000, 60_000)
+  const first = issueCredential(authority, 'pwa-phone')
+  const next = 'n'.repeat(43)
+  const service = createJarvisGateway({ ownerToken, authority })
+  const gateway = await service.start()
+  const body = JSON.stringify({ nextCredential: next, expectedGeneration: 1 })
+  try {
+    const rotated = await request(gateway, '/v1/devices/pwa-phone/credential', {
+      method: 'PUT', headers: { authorization: `Device ${first}`, 'content-type': 'application/json' }, body,
+    })
+    assert.equal(rotated.status, 200)
+    const rotatedText = await rotated.text()
+    assert.deepEqual(JSON.parse(rotatedText), { device: {
+      nodeId: 'pwa-phone', displayName: 'Test Mac', platform: 'macos', generation: 2, issuedAt: 2_000,
+    } })
+    assert.doesNotMatch(rotatedText, new RegExp(next))
+    assert.equal(authority.authenticate('pwa-phone', first), false)
+    assert.equal(authority.authenticate('pwa-phone', next), true)
+    assert.equal((await request(gateway, '/v1/devices/pwa-phone/credential', {
+      method: 'PUT', headers: { authorization: `Device ${first}`, 'content-type': 'application/json' }, body,
+    })).status, 401)
+    const retried = await request(gateway, '/v1/devices/pwa-phone/credential', {
+      method: 'PUT', headers: { authorization: `Device ${next}`, 'content-type': 'application/json' }, body,
+    })
+    assert.equal(retried.status, 200)
+    assert.deepEqual(await retried.json(), { device: {
+      nodeId: 'pwa-phone', displayName: 'Test Mac', platform: 'macos', generation: 2, issuedAt: 2_000,
+    } })
   } finally {
     await service.stop()
   }

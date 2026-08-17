@@ -980,6 +980,15 @@ export function createJarvisGateway(options: JarvisGatewayOptions): JarvisGatewa
         sendJson(response, 204, correlationId, {})
         return
       }
+      if (request.method === 'GET' && parts.length === 2 && parts[1] === 'devices') {
+        if (!ownerAuthenticated) {
+          sendJson(response, 403, correlationId, { error: 'owner authentication required', correlationId })
+          return
+        }
+        if ([...requestQuery(request).keys()].length !== 0) throw new Error('device list query is invalid')
+        sendJson(response, 200, correlationId, { devices: authority.listDevices() })
+        return
+      }
       if (request.method === 'POST' && parts.length === 3 && parts[1] === 'pairing' && parts[2] === 'requests') {
         if (!ownerAuthenticated) {
           sendJson(response, 403, correlationId, { error: 'owner authentication required', correlationId })
@@ -1018,6 +1027,23 @@ export function createJarvisGateway(options: JarvisGatewayOptions): JarvisGatewa
           throw new Error('pairing approval body is invalid')
         }
         sendJson(response, 200, correlationId, authority.approveClaimable(body.verificationCode))
+        return
+      }
+      if (request.method === 'PUT' && parts.length === 4 && parts[1] === 'devices'
+        && typeof parts[2] === 'string' && parts[3] === 'credential') {
+        const nodeId = parts[2]
+        if (deviceNodeId === undefined || deviceCredential === undefined || deviceNodeId !== nodeId) {
+          sendJson(response, 401, correlationId, { error: 'device authentication required', correlationId })
+          return
+        }
+        const body = await readJson(request, maxBodyBytes)
+        if (!record(body) || !exactFields(body, ['nextCredential', 'expectedGeneration'])
+          || typeof body.nextCredential !== 'string' || typeof body.expectedGeneration !== 'number') {
+          throw new Error('device credential rotation body is invalid')
+        }
+        const device = authority.rotateTo(nodeId, deviceCredential, body.nextCredential, body.expectedGeneration)
+        sendJson(response, 200, correlationId, { device })
+        disconnectNode(nodeId, 'device credential rotated')
         return
       }
       if (parts.length === 3 && parts[1] === 'devices' && typeof parts[2] === 'string') {

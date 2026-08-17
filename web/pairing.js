@@ -1,4 +1,4 @@
-import { clearDeviceState, deleteDeviceState, readDeviceState, writeDeviceState } from './device-store.js?v=17'
+import { clearDeviceState, deleteDeviceState, readDeviceState, writeDeviceState } from './device-store.js?v=18'
 
 const MAX_RESPONSE_CHARS = 2 * 1024 * 1024
 
@@ -70,7 +70,7 @@ function parseCurrentDevice(value, identity, session) {
     || !Number.isInteger(value.device.generation) || value.device.generation < 1
     || !Number.isFinite(value.device.issuedAt) || value.session.sessionId !== session.sessionId
     || !Number.isFinite(value.session.issuedAt) || !Number.isFinite(value.session.refreshedAt)
-    || value.device.issuedAt > value.session.issuedAt || value.session.refreshedAt < value.session.issuedAt
+    || value.session.refreshedAt < value.session.issuedAt
     || value.session.accessExpiresAt <= value.session.refreshedAt
     || value.session.refreshExpiresAt <= value.session.issuedAt
     || value.session.accessExpiresAt !== session.accessExpiresAt
@@ -78,6 +78,21 @@ function parseCurrentDevice(value, identity, session) {
     throw new Error('Gateway returned an invalid current device')
   }
   return value
+}
+
+function parseRotatedDevice(value, identity, expectedGeneration) {
+  const fields = ['nodeId', 'displayName', 'platform', 'generation', 'issuedAt']
+  if (!exactFields(value, ['device']) || !exactFields(value.device, fields)
+    || value.device.nodeId !== identity.nodeId || value.device.displayName !== identity.displayName
+    || value.device.platform !== 'pwa' || value.device.generation !== expectedGeneration + 1
+    || !Number.isFinite(value.device.issuedAt)) {
+    throw new Error('Gateway returned an invalid credential rotation')
+  }
+  return value.device
+}
+
+function createCredential() {
+  return encodeBase64Url(crypto.getRandomValues(new Uint8Array(32)))
 }
 
 async function createIdentity(displayName) {
@@ -120,9 +135,17 @@ export class BrowserPairing {
   async initializeState() {
     try {
       const identity = await this.store.read('identity')
-      const credential = await this.store.read('credential')
+      let credential = await this.store.read('credential')
       const pending = await this.store.read('pending')
       if (identity !== undefined && credential !== undefined) {
+        const rotation = await this.store.read('credential-rotation')
+        if (rotation !== undefined) {
+          try {
+            credential = await this.completeCredentialRotation(identity, credential, rotation)
+          } catch (error) {
+            if (!(error instanceof GatewayUnavailableError)) throw error
+          }
+        }
         await this.ensureSession(identity, credential)
         return
       }
@@ -347,6 +370,85 @@ export class BrowserPairing {
     await this.store.clear()
     this.initializationPromise = undefined
     this.onState({ phase: 'unpaired' })
+  }
+
+  async rotateCurrentCredential() {
+    await this.initialize()
+    const identity = await this.store.read('identity')
+    const credential = await this.store.read('credential')
+    if (identity === undefined || credential === undefined) throw new Error('此设备尚未配对')
+    let rotation = await this.store.read('credential-rotation')
+    if (rotation === undefined) {
+      rotation = {
+        nodeId: identity.nodeId,
+        nextCredential: createCredential(),
+        expectedGeneration: credential.generation,
+      }
+      await this.store.write('credential-rotation', rotation)
+    }
+    const rotated = await this.completeCredentialRotation(identity, credential, rotation)
+    const session = await this.store.read('session')
+    if (session === undefined) throw new Error('Gateway 会话不可用')
+    const activeSession = parseSession(session, identity.nodeId)
+    this.emitPaired({
+      device: {
+        nodeId: identity.nodeId,
+        displayName: identity.displayName,
+        platform: 'pwa',
+        generation: rotated.generation,
+        issuedAt: rotated.issuedAt,
+      },
+      session: activeSession,
+    })
+    return rotated
+  }
+
+  async completeCredentialRotation(identity, credential, rotation) {
+    const activeIsNext = credential?.credential === rotation?.nextCredential
+      && credential?.generation === rotation?.expectedGeneration + 1
+    if (rotation?.nodeId !== identity.nodeId || !validToken(rotation.nextCredential)
+      || !Number.isInteger(rotation.expectedGeneration)
+      || (!activeIsNext && rotation.expectedGeneration !== credential.generation)) {
+      throw new Error('本地凭证轮换状态无效')
+    }
+    const path = `/v1/devices/${encodeURIComponent(identity.nodeId)}/credential`
+    const body = JSON.stringify({
+      nextCredential: rotation.nextCredential,
+      expectedGeneration: rotation.expectedGeneration,
+    })
+    let response
+    try {
+      response = await this.request(path, {
+        method: 'PUT',
+        headers: { authorization: `Device ${credential.credential}` },
+        body,
+      })
+    } catch (error) {
+      if (!(error instanceof GatewayUnavailableError)) throw error
+      response = await this.request(path, {
+        method: 'PUT',
+        headers: { authorization: `Device ${rotation.nextCredential}` },
+        body,
+      })
+    }
+    if (response.status === 401) {
+      response = await this.request(path, {
+        method: 'PUT',
+        headers: { authorization: `Device ${rotation.nextCredential}` },
+        body,
+      })
+    }
+    if (!response.ok) throw new Error(`无法轮换设备凭证 (${response.status})`)
+    const device = parseRotatedDevice(response.value, identity, rotation.expectedGeneration)
+    const next = {
+      nodeId: identity.nodeId,
+      credential: rotation.nextCredential,
+      generation: device.generation,
+      issuedAt: device.issuedAt,
+    }
+    await this.store.write('credential', next)
+    await this.store.delete('credential-rotation')
+    return next
   }
 
   async handleRemoteRevocation() {

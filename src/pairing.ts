@@ -40,6 +40,10 @@ export interface DeviceView {
   issuedAt: number
 }
 
+export interface OwnerDeviceView extends DeviceView {
+  revoked: boolean
+}
+
 export interface BrowserPairingChallenge extends PairingRequest {
   claimToken: string
 }
@@ -385,9 +389,48 @@ export class PairingAuthority {
     }
   }
 
+  listDevices(): OwnerDeviceView[] {
+    return [...this.devices.values()]
+      .map(record => ({
+        nodeId: record.nodeId,
+        displayName: record.displayName,
+        platform: record.platform,
+        generation: record.generation,
+        issuedAt: record.issuedAt,
+        revoked: record.revoked,
+      }))
+      .sort((left, right) => left.displayName.localeCompare(right.displayName) || left.nodeId.localeCompare(right.nodeId))
+  }
+
   rotate(nodeId: string, currentCredential: string): IssuedCredential {
     const record = this.requireAuthenticated(nodeId, currentCredential)
     return this.issue(record.nodeId, record.publicKey, record.displayName, record.platform, record.generation + 1)
+  }
+
+  rotateTo(nodeId: string, currentCredential: string, nextCredential: string, expectedGeneration: number): DeviceView {
+    if (!/^[A-Za-z0-9_-]{43}$/.test(nextCredential)) throw new Error('next device credential is invalid')
+    if (!Number.isInteger(expectedGeneration) || expectedGeneration < 1) throw new Error('expected device generation is invalid')
+    const record = this.requireAuthenticated(nodeId, currentCredential)
+    if (record.generation === expectedGeneration + 1 && currentCredential === nextCredential) {
+      return this.getDevice(nodeId) as DeviceView
+    }
+    if (record.generation !== expectedGeneration) throw new Error('device credential generation has changed')
+    if (currentCredential === nextCredential) throw new Error('next device credential must be new')
+    const previousDigest = record.credentialDigest
+    const previousGeneration = record.generation
+    const previousIssuedAt = record.issuedAt
+    record.credentialDigest = credentialDigest(nextCredential)
+    record.generation += 1
+    record.issuedAt = this.now()
+    try {
+      this.persist()
+    } catch (error) {
+      record.credentialDigest = previousDigest
+      record.generation = previousGeneration
+      record.issuedAt = previousIssuedAt
+      throw error
+    }
+    return this.getDevice(nodeId) as DeviceView
   }
 
   revoke(nodeId: string): boolean {

@@ -137,7 +137,16 @@ JARVIS_OWNER_TOKEN='the-same-local-owner-token' npm run pair:approve -- --code 1
 
 Owner Token 只提交给 loopback Gateway，不进入手机。Gateway 只持久化一次性领取密钥和设备凭据的 SHA-256 摘要；设备凭据通过领取密钥派生的 AES-256-GCM 密钥加密返回，重复领取返回同一密文。浏览器将不可导出的 P-256 私钥、设备凭据和短期 Session 保存在同源 IndexedDB；离线时只显示本地身份为非当前状态。清除站点数据会移除本地访问材料，但不会替代服务端设备撤销。
 
-短期 Session token 可访问 `GET/POST /v1/conversations`、`GET /v1/conversations/:id`、`POST /v1/conversations/:id/messages`、`POST /v1/conversations/:id/cancel`、`GET /v1/approvals`、`POST /v1/approvals/:id/decision`、`GET /v1/device-approvals`、`POST /v1/device-approvals/:id/decision` 以及 `GET/DELETE /v1/devices/current`。配对后的 PWA 可列出、新建、选择和继续文字对话，处理当前审批和智能设备审批，并查看或撤销当前设备；设备状态响应只含名称、平台、凭据代次、配对时间和会话时限，不含公钥、凭据摘要或任何令牌。消息只接受最多 16 KiB 的纯文本，发送期间会锁定重复提交，远程 slash command 被拒绝。审批决定使用客户端幂等键，Gateway 将上游 `rpcId` 保留在 loopback 桥接层，手机只能提交 `allowed-once` 或 `rejected`；取消本轮沿用会话取消接口并由 Harness 产生 `cancelled`。`/v1/events` 不在 URL 携带令牌，第一条消息必须是 `events.authenticate`；同源浏览器或无 Origin 的受信客户端可连接。客户端保存每个事件的 `cursor`，重连时提交该游标；设备审批的请求和结果也会以不含服务数据或凭据的标准化事件进入 retained stream。若缓冲已淘汰、Gateway 重启或上游连续性丢失，`events.ready`/`sync.required` 会先要求重新读取权威会话与审批快照，刷新失败时不会推进游标。
+配对后可在 PWA“设置 > 设备身份”中轮换当前设备凭证。浏览器先生成并暂存下一代随机凭证，Gateway 只保存摘要；请求或响应中断时会分别用旧凭证和下一代凭证收敛，不删除会话、对话快照或设备私钥。Mac Owner 可查看脱敏设备清单并撤销丢失或疑似泄露的设备：
+
+```bash
+JARVIS_OWNER_TOKEN='the-same-local-owner-token' npm run devices -- list
+JARVIS_OWNER_TOKEN='the-same-local-owner-token' npm run devices -- revoke --id <device-id>
+```
+
+撤销命令默认要求在终端输入 `REVOKE` 二次确认；自动化环境必须显式传入 `--yes`。清单只含设备 ID、名称、平台、凭据代次、签发时间和撤销状态，不含公钥、凭据摘要、设备凭据或 Session token。Owner Token 只发送到 `127.0.0.1` Gateway，命令拒绝远端地址和 URL 内嵌凭据。
+
+短期 Session token 可访问 `GET/POST /v1/conversations`、`GET /v1/conversations/:id`、`POST /v1/conversations/:id/messages`、`POST /v1/conversations/:id/cancel`、`GET /v1/approvals`、`POST /v1/approvals/:id/decision`、`GET /v1/device-approvals`、`POST /v1/device-approvals/:id/decision` 以及 `GET/DELETE /v1/devices/current`。设备凭据可调用可重试的 `PUT /v1/devices/:id/credential`，Owner 可调用 `GET /v1/devices` 和 `DELETE /v1/devices/:id`。配对后的 PWA 可列出、新建、选择和继续文字对话，处理当前审批和智能设备审批，并查看、轮换或撤销当前设备；设备状态响应只含名称、平台、凭据代次、配对时间和会话时限，不含公钥、凭据摘要或任何令牌。消息只接受最多 16 KiB 的纯文本，发送期间会锁定重复提交，远程 slash command 被拒绝。审批决定使用客户端幂等键，Gateway 将上游 `rpcId` 保留在 loopback 桥接层，手机只能提交 `allowed-once` 或 `rejected`；取消本轮沿用会话取消接口并由 Harness 产生 `cancelled`。`/v1/events` 不在 URL 携带令牌，第一条消息必须是 `events.authenticate`；同源浏览器或无 Origin 的受信客户端可连接。客户端保存每个事件的 `cursor`，重连时提交该游标；设备审批的请求和结果也会以不含服务数据或凭据的标准化事件进入 retained stream。若缓冲已淘汰、Gateway 重启或上游连续性丢失，`events.ready`/`sync.required` 会先要求重新读取权威会话与审批快照，刷新失败时不会推进游标。
 
 PWA 只在同源 IndexedDB 保存最近一次规范化对话列表、当前最多 50 条文字消息和事件游标，不缓存审批、API 响应或 Owner Token。Gateway 不可达时，离线壳可只读显示对话快照并明确标记为“旧数据”，审批详情会从页面内存清除；所有新建、发送和审批操作保持禁用，恢复连接并重新验证 Session 后才切回实时状态。
 

@@ -49,6 +49,11 @@ path/query is rejected before any network request.
    Gateway rejects the refresh, start a new owner-approved pairing flow.
 7. **Revoked device**: do not retry old credentials. Pair the browser again
    through the Mac owner approval flow; no phone-side Owner Token is needed.
+8. **Lost or compromised device**: on the Mac, run `npm run devices -- list`,
+   identify the device by its owner-assigned name, then run
+   `npm run devices -- revoke --id <device-id>` and confirm with `REVOKE`.
+   Keep `JARVIS_OWNER_TOKEN` on the Mac and do not send the device list to a
+   public issue or support channel.
 
 ## Failure Meaning
 
