@@ -1,7 +1,7 @@
-import { ConversationsClient } from './conversations.js?v=15'
-import { BrowserPairing } from './pairing.js?v=15'
-import { NotificationCenter } from './notifications.js?v=15'
-import { PushToTalkController, SpeechPlaybackController } from './voice.js?v=15'
+import { ConversationsClient } from './conversations.js?v=16'
+import { BrowserPairing } from './pairing.js?v=16'
+import { NotificationCenter } from './notifications.js?v=16'
+import { PushToTalkController, SpeechPlaybackController } from './voice.js?v=16'
 
 const connectionLabel = document.querySelector('#connection-label')
 const gatewayDetail = document.querySelector('#gateway-detail')

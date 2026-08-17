@@ -143,6 +143,42 @@ test('refreshes the authoritative snapshot when the event stream requires synchr
   assert.equal(calls.filter(call => call[1] === '/v1/conversations').length, initialLists + 1)
 })
 
+test('does not append completed activity after a failed conversation turn', async () => {
+  const states = []
+  const sockets = []
+  const client = new ConversationsClient(gatewayPairing([]), state => states.push(state), {
+    store: memoryStore(),
+    location: { origin: 'https://jarvis.internal' },
+    socketFactory: url => {
+      const socket = new FakeSocket(url)
+      sockets.push(socket)
+      return socket
+    },
+  })
+  await client.start()
+  await tick()
+  sockets[0].open()
+  sockets[0].message({ type: 'events.ready', cursor, replayCount: 0, requiresSnapshot: false })
+  await tick()
+  sockets[0].message({
+    version: 1, type: 'conversation.status', cursor: `${'A'.repeat(22)}.2`, occurredAt: 2_000,
+    conversationId: conversation.id, running: true,
+  })
+  await tick()
+  sockets[0].message({
+    version: 1, type: 'conversation.error', cursor: `${'A'.repeat(22)}.3`, occurredAt: 3_000,
+    conversationId: conversation.id, code: 'harness_agent_error',
+  })
+  await tick()
+  sockets[0].message({
+    version: 1, type: 'conversation.status', cursor: `${'A'.repeat(22)}.4`, occurredAt: 4_000,
+    conversationId: conversation.id, running: false,
+  })
+  await tick()
+  assert.deepEqual(states.at(-1).activity.map(item => item.label), ['对话执行失败', 'Jarvis 正在回复'])
+  assert.match(states.at(-1).message, /未能完成/)
+})
+
 test('shows a cached snapshot as stale while offline without contacting the Gateway', async () => {
   const store = memoryStore()
   await store.write('conversation-cache', {
