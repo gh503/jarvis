@@ -21,6 +21,23 @@ Add privacy-controlled push-to-talk, streaming transcription, speech playback, a
 
 Raw audio and partial transcripts stay in the Jarvis voice plane. Only the accepted final transcript enters the Harness session as a user message. Harness assistant text events feed TTS through Jarvis; audio bytes do not become Harness session events.
 
+## Current Increment
+
+Browser push-to-talk transcription foundation is tracked by [#82](https://github.com/gh503/jarvis/issues/82).
+
+- Microphone use is disabled on every page load and begins only while the user holds the composer control.
+- One browser utterance is limited to 60 seconds and 16 KiB of transcript text.
+- Browser speech-recognition partials remain in page memory; one final transcript is inserted into the editable text draft and is never sent automatically.
+- Disabling voice, leaving the page, losing connectivity, or losing the paired session aborts the active recognizer and invalidates late callbacks.
+- Unsupported, denied, or failed recognition leaves the existing text composer available.
+- Jarvis does not receive or persist raw audio in this increment; browser/OS provider behavior is not represented as local-only ASR.
+
+Deferred from this increment:
+
+- Named Mac and phone microphone qualification.
+- Jarvis-owned streaming audio transport and selected ASR provider.
+- TTS playback, interruption, and Harness turn cancellation.
+
 ## Modules
 
 ### `packages/voice-protocol`
