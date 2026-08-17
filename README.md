@@ -195,6 +195,22 @@ npm run restore -- --archive backups/jarvis-backup.jarvis
 
 归档包含 Harness 会话、工作区映射、提醒、用户记忆、审计和已有 Gateway 状态，文件权限为 `0600`。它不包含 `.env`、Harness 模型凭据、Keychain 项、Owner Token 或 TLS 私钥。当前归档未加密，应只保存在受保护磁盘；完整停止、验证和跨机器恢复步骤见[备份与恢复指南](docs/operations/backup-restore.md)。
 
+## 本机记忆管理
+
+记忆内容从交互提示或标准输入读取，不作为命令参数传入。新记忆先进入 `proposed`，确认后才会出现在 `recall` 结果中：
+
+```bash
+printf '%s\n' '偏好使用简体中文' | npm run memory -- propose --class profile
+npm run memory -- list --status proposed
+npm run memory -- confirm --id <memory-id>
+npm run memory -- recall
+printf '%s\n' '偏好使用中文回答' | npm run memory -- edit --id <memory-id>
+npm run memory -- export --output backups/jarvis-memory.json
+npm run memory -- delete --id <memory-id>
+```
+
+导出文件以 `0600` 新建且不会覆盖已有路径。该入口仅面向本机 Owner，不是 Harness 工具；当前仍未把确认记忆自动加入模型提示词。
+
 ## 数据与安全
 
 - Harness 会话：`.dsh/sessions/`
