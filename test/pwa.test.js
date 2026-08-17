@@ -23,8 +23,8 @@ test('declares a scoped installable manifest and complete offline shell', async 
 
   const serviceWorker = await readFile(join(webRoot, 'sw.js'), 'utf8')
   for (const path of [
-    '/app/', '/app/app.css', '/app/app.js?v=12', '/app/pairing.js?v=12', '/app/device-store.js?v=12',
-    '/app/conversations.js?v=12', '/app/notifications.js?v=12', '/app/apple-touch-icon.png', '/app/icon.svg',
+    '/app/', '/app/app.css', '/app/app.js?v=13', '/app/pairing.js?v=13', '/app/device-store.js?v=13',
+    '/app/conversations.js?v=13', '/app/notifications.js?v=13', '/app/voice.js?v=13', '/app/apple-touch-icon.png', '/app/icon.svg',
     '/app/icon-192.png', '/app/icon-512.png', '/app/manifest.webmanifest',
   ]) {
     assert.ok(serviceWorker.includes(`'${path}'`), `${path} must be pre-cached`)
@@ -47,6 +47,7 @@ test('keeps the browser client on the public Gateway contract', async () => {
   const pairingSource = await readFile(join(webRoot, 'pairing.js'), 'utf8')
   const conversationsSource = await readFile(join(webRoot, 'conversations.js'), 'utf8')
   const notificationsSource = await readFile(join(webRoot, 'notifications.js'), 'utf8')
+  const voiceSource = await readFile(join(webRoot, 'voice.js'), 'utf8')
   const deviceStoreSource = await readFile(join(webRoot, 'device-store.js'), 'utf8')
   const htmlSource = await readFile(join(webRoot, 'index.html'), 'utf8')
   assert.match(appSource, /fetch\('\.\.\/v1\/health'/)
@@ -59,11 +60,15 @@ test('keeps the browser client on the public Gateway contract', async () => {
   assert.match(conversationsSource, /authenticatedRequest\('\/v1\/device-approvals'/)
   assert.match(notificationsSource, /class NotificationCenter/)
   assert.match(notificationsSource, /固定摘要|高风险操作/)
+  assert.match(voiceSource, /class PushToTalkController/)
+  assert.doesNotMatch(voiceSource, /indexedDB|localStorage|sessionStorage|fetch\(/)
   assert.doesNotMatch(notificationsSource, /arguments|message|rpcId|accessToken|refreshToken/)
   assert.match(htmlSource, /id="approval-list"/)
   assert.match(htmlSource, /id="disconnect-device-dialog"/)
   assert.match(htmlSource, /id="disconnect-device-button"[^>]+hidden disabled/)
   assert.match(htmlSource, /id="pair-button"[^>]+disabled/)
+  assert.match(htmlSource, /id="voice-button"[^>]+disabled/)
+  assert.match(htmlSource, /id="voice-enabled"[^>]+type="checkbox"/)
   assert.doesNotMatch(`${appSource}\n${pairingSource}\n${conversationsSource}`, /@deepseek-ai|dsh|Harness|\/api\//i)
   assert.doesNotMatch(`${appSource}\n${pairingSource}\n${conversationsSource}`, /localStorage|sessionStorage/)
   assert.doesNotMatch(conversationsSource, /\.close\((1002|1008|1011)/)

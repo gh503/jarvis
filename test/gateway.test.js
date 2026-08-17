@@ -187,7 +187,7 @@ test('serves the exact PWA shell routes with restrictive browser headers', async
     assert.equal(index.headers.get('cache-control'), 'no-cache')
     assert.match(index.headers.get('content-security-policy') ?? '', /default-src 'self'/)
     assert.match(index.headers.get('content-security-policy') ?? '', /frame-ancestors 'none'/)
-    assert.equal(index.headers.get('permissions-policy'), 'camera=(), geolocation=(), microphone=()')
+    assert.equal(index.headers.get('permissions-policy'), 'camera=(), geolocation=(), microphone=(self)')
     assert.equal(index.headers.get('x-content-type-options'), 'nosniff')
     assert.match(await index.text(), /<title>Jarvis<\/title>/)
 
@@ -210,6 +210,10 @@ test('serves the exact PWA shell routes with restrictive browser headers', async
         { src: '/app/icon-512.png', sizes: '512x512', type: 'image/png', purpose: 'any' },
       ],
     })
+
+    const voice = await request(gateway, '/app/voice.js')
+    assert.equal(voice.status, 200)
+    assert.match(voice.headers.get('content-type') ?? '', /^text\/javascript/)
 
     const head = await request(gateway, '/app/app.css', { method: 'HEAD' })
     assert.equal(head.status, 200)

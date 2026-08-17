@@ -319,12 +319,24 @@ body[data-connection="unavailable"] .status-dot { background: var(--danger); }
 .danger-button:hover { background: #fff1f0; }
 .danger-button:disabled { border-color: var(--border); color: var(--text-muted); background: var(--surface-muted); }
 
+.composer-area { width: min(780px, 100%); margin: 18px auto 0; }
+.voice-feedback {
+  display: flex;
+  min-height: 24px;
+  margin: 0 4px 6px;
+  gap: 8px;
+  color: var(--text-muted);
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+.voice-feedback[hidden] { display: none; }
+#voice-transcript { color: var(--text); }
 .composer {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) 40px;
+  grid-template-columns: auto minmax(0, 1fr) 40px;
   gap: 10px;
-  width: min(780px, 100%);
-  margin: 18px auto 0;
+  width: 100%;
+  margin: 0;
   padding: 10px;
   border: 1px solid var(--border);
   border-radius: 8px;
@@ -341,6 +353,18 @@ body[data-connection="unavailable"] .status-dot { background: var(--danger); }
   color: var(--text);
 }
 .composer textarea:focus { outline: 0; }
+.voice-button {
+  min-width: 88px;
+  height: 40px;
+  padding: 0 11px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--surface-muted);
+  color: var(--text);
+  font-size: 12px;
+  font-weight: 650;
+}
+.voice-button[aria-pressed="true"] { border-color: var(--danger); background: #fde7e7; color: var(--danger); }
 .send-button { width: 40px; height: 40px; border-color: var(--accent); background: var(--accent); color: #fff; }
 
 .settings-list { margin-top: 28px; border-top: 1px solid var(--border); }
@@ -358,6 +382,7 @@ body[data-connection="unavailable"] .status-dot { background: var(--danger); }
 .settings-actions { display: flex; flex-direction: column; align-items: flex-end; gap: 10px; }
 .notification-options, .notification-rates { display: flex; flex-wrap: wrap; gap: 10px 14px; margin-top: 12px; color: var(--text-muted); font-size: 13px; }
 .notification-options label, .notification-rates label { display: inline-flex; align-items: center; gap: 5px; }
+.toggle-control { display: inline-flex; align-items: center; gap: 8px; color: var(--text); font-weight: 650; }
 .notification-options input, .notification-rates input { accent-color: var(--accent); }
 .notification-rates input { width: 50px; height: 30px; padding: 0 5px; border: 1px solid var(--border); border-radius: 5px; background: var(--surface); color: var(--text); }
 .device-metadata { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 7px 18px; margin: 14px 0 0; }
@@ -443,7 +468,7 @@ body[data-connection="unavailable"] .status-dot { background: var(--danger); }
   .message-list { margin-top: 10px; padding-bottom: 10px; }
   .message { max-width: 92%; }
   .message-body { padding: 10px 11px; }
-  .composer { margin-top: 10px; }
+  .composer-area { margin-top: 10px; }
   .settings-row { grid-template-columns: minmax(0, 1fr) auto; gap: 12px; min-height: 88px; }
   .settings-row p { font-size: 13px; }
   .pairing-setup { grid-template-columns: 1fr; gap: 16px; }
@@ -494,6 +519,8 @@ body[data-connection="unavailable"] .status-dot { background: var(--danger); }
   .approval-actions .primary-button { grid-column: 1 / -1; grid-row: 1; }
   .notification-actions { flex-wrap: wrap; justify-content: flex-end; }
   .notification-options, .notification-rates { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .composer { grid-template-columns: minmax(72px, auto) minmax(0, 1fr) 40px; gap: 6px; padding: 8px; }
+  .voice-button { min-width: 72px; padding: 0 8px; }
 }
 
 @media (prefers-reduced-motion: reduce) {

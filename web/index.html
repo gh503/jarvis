@@ -12,7 +12,7 @@
     <link rel="icon" href="./icon.svg" type="image/svg+xml">
     <link rel="apple-touch-icon" sizes="180x180" href="./apple-touch-icon.png">
     <link rel="stylesheet" href="./app.css">
-    <script src="./app.js?v=12" type="module"></script>
+    <script src="./app.js?v=13" type="module"></script>
   </head>
   <body data-connection="checking">
     <a class="skip-link" href="#main-content">跳到主要内容</a>
@@ -84,10 +84,16 @@
           </div>
           <ol id="message-list" class="message-list" aria-live="polite" hidden></ol>
           <p id="conversation-notice" class="conversation-notice" role="status" aria-live="polite" hidden></p>
-          <form id="message-form" class="composer" aria-label="消息输入">
-            <textarea id="message-input" rows="1" placeholder="配对后即可发送消息" aria-label="消息" disabled></textarea>
-            <button id="send-button" class="send-button" type="submit" aria-label="发送消息" title="发送消息" disabled>↑</button>
-          </form>
+          <div class="composer-area">
+            <p id="voice-feedback" class="voice-feedback" role="status" aria-live="polite" hidden>
+              <span id="voice-state"></span><span id="voice-transcript"></span>
+            </p>
+            <form id="message-form" class="composer" aria-label="消息输入">
+              <button id="voice-button" class="voice-button" type="button" aria-label="按住说话" title="按住说话" aria-pressed="false" disabled>按住说话</button>
+              <textarea id="message-input" rows="1" placeholder="配对后即可发送消息" aria-label="消息" disabled></textarea>
+              <button id="send-button" class="send-button" type="submit" aria-label="发送消息" title="发送消息" disabled>↑</button>
+            </form>
+          </div>
         </section>
 
         <section class="view-panel" data-view-panel="activity" aria-labelledby="activity-title" hidden>
@@ -215,6 +221,13 @@
                 <button id="notification-permission-button" class="secondary-button" type="button">允许系统通知</button>
                 <span id="notification-permission-detail" class="value-label">尚未请求系统通知权限</span>
               </div>
+            </section>
+            <section class="settings-row" aria-labelledby="voice-settings-heading">
+              <div>
+                <h2 id="voice-settings-heading">语音输入</h2>
+                <p id="voice-support-detail">正在检查浏览器语音能力</p>
+              </div>
+              <label class="toggle-control"><input id="voice-enabled" type="checkbox"><span>启用</span></label>
             </section>
           </div>
         </section>

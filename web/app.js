@@ -1,6 +1,7 @@
-import { ConversationsClient } from './conversations.js?v=12'
-import { BrowserPairing } from './pairing.js?v=12'
-import { NotificationCenter } from './notifications.js?v=12'
+import { ConversationsClient } from './conversations.js?v=13'
+import { BrowserPairing } from './pairing.js?v=13'
+import { NotificationCenter } from './notifications.js?v=13'
+import { PushToTalkController } from './voice.js?v=13'
 
 const connectionLabel = document.querySelector('#connection-label')
 const gatewayDetail = document.querySelector('#gateway-detail')
@@ -39,6 +40,12 @@ const messageList = document.querySelector('#message-list')
 const messageForm = document.querySelector('#message-form')
 const messageInput = document.querySelector('#message-input')
 const sendButton = document.querySelector('#send-button')
+const voiceButton = document.querySelector('#voice-button')
+const voiceFeedback = document.querySelector('#voice-feedback')
+const voiceStateLabel = document.querySelector('#voice-state')
+const voiceTranscript = document.querySelector('#voice-transcript')
+const voiceEnabledInput = document.querySelector('#voice-enabled')
+const voiceSupportDetail = document.querySelector('#voice-support-detail')
 const newConversationButton = document.querySelector('#new-conversation-button')
 const emptyNewConversationButton = document.querySelector('#empty-new-conversation-button')
 const mobileConversationSelect = document.querySelector('#mobile-conversation-select')
@@ -74,6 +81,48 @@ let conversationsClient
 let stateForRendering = { conversations: [], approvals: [], deviceApprovals: [], approvalSubmittedIds: [], deviceApprovalSubmittedIds: [] }
 let notificationState = { history: [], unreadCount: 0, preferences: undefined, permission: 'default' }
 let lastPairingPhase = 'loading'
+let voiceState = { phase: 'disabled', enabled: false, supported: false }
+
+function voiceInteractionAllowed() {
+  const current = stateForRendering.conversations.find(item => item.id === stateForRendering.selectedId)
+  return stateForRendering.phase === 'ready' && pairingPhase === 'paired' && navigator.onLine
+    && current !== undefined && !stateForRendering.sending
+}
+
+function updateVoiceControls() {
+  const active = voiceState.phase === 'listening' || voiceState.phase === 'transcribing'
+  voiceButton.disabled = !voiceState.supported || !voiceState.enabled || !voiceInteractionAllowed()
+    || voiceState.phase === 'transcribing'
+  voiceButton.setAttribute('aria-pressed', String(active))
+  voiceButton.textContent = voiceState.phase === 'listening' ? '松开转写'
+    : voiceState.phase === 'transcribing' ? '转写中' : '按住说话'
+  voiceEnabledInput.disabled = !voiceState.supported
+  voiceEnabledInput.checked = voiceState.enabled
+  voiceSupportDetail.textContent = !voiceState.supported ? '此浏览器不支持语音输入'
+    : voiceState.enabled ? '已启用，仅在按住说话时使用麦克风' : '默认关闭'
+  voiceFeedback.hidden = voiceState.message === undefined
+  voiceStateLabel.textContent = voiceState.message ?? ''
+  voiceTranscript.textContent = voiceState.transcript ?? ''
+}
+
+function insertVoiceDraft(transcript) {
+  if (messageInput.disabled || transcript.trim().length === 0) return
+  const start = messageInput.selectionStart ?? messageInput.value.length
+  const end = messageInput.selectionEnd ?? start
+  const prefix = start > 0 && !/\s$/.test(messageInput.value.slice(0, start)) ? ' ' : ''
+  const suffix = end < messageInput.value.length && !/^\s/.test(messageInput.value.slice(end)) ? ' ' : ''
+  messageInput.setRangeText(`${prefix}${transcript.trim()}${suffix}`, start, end, 'end')
+  messageInput.dispatchEvent(new Event('input', { bubbles: true }))
+  messageInput.focus()
+}
+
+const voiceController = new PushToTalkController({
+  onState: state => {
+    voiceState = state
+    updateVoiceControls()
+  },
+  onFinalTranscript: insertVoiceDraft,
+})
 
 function showView(name) {
   for (const panel of document.querySelectorAll('[data-view-panel]')) {
@@ -196,6 +245,7 @@ function updateDisconnectControl() {
 function handlePairingState(state) {
   const previousPhase = lastPairingPhase
   pairingPhase = state.phase
+  if (state.phase !== 'paired' && (voiceState.phase === 'listening' || voiceState.phase === 'transcribing')) voiceController.cancel()
   lastPairingPhase = state.phase
   if ((state.phase === 'unpaired' || state.phase === 'revoked') && previousPhase !== state.phase) {
     void notificationCenter.clear()
@@ -249,6 +299,7 @@ function handlePairingState(state) {
   }
   updateDeviceSummary()
   updateDisconnectControl()
+  updateVoiceControls()
   if (conversationsClient !== undefined) {
     if (state.phase === 'paired') {
       conversationsClient.setOnline(navigator.onLine)
@@ -505,6 +556,8 @@ function handleConversationState(state) {
   messageInput.disabled = !mutable || current === undefined || state.sending
   sendButton.disabled = messageInput.disabled || messageInput.value.trim().length === 0
   messageInput.placeholder = current === undefined ? '先新建或选择对话' : state.sending ? '正在发送' : '输入消息'
+  if (!voiceInteractionAllowed() && (voiceState.phase === 'listening' || voiceState.phase === 'transcribing')) voiceController.cancel()
+  updateVoiceControls()
 
   renderApprovals(state, mutable)
   updateDisconnectControl()
@@ -657,6 +710,31 @@ messageForm.addEventListener('submit', async event => {
     sendButton.disabled = true
   }
 })
+voiceEnabledInput.addEventListener('change', () => {
+  voiceController.setEnabled(voiceEnabledInput.checked)
+})
+voiceButton.addEventListener('pointerdown', event => {
+  if (event.button !== 0 || voiceButton.disabled) return
+  event.preventDefault()
+  if (voiceController.start()) voiceButton.setPointerCapture(event.pointerId)
+})
+voiceButton.addEventListener('pointerup', event => {
+  if (voiceButton.hasPointerCapture(event.pointerId)) voiceButton.releasePointerCapture(event.pointerId)
+  voiceController.stop()
+})
+voiceButton.addEventListener('pointercancel', () => voiceController.cancel())
+voiceButton.addEventListener('keydown', event => {
+  if ((event.key === ' ' || event.key === 'Enter') && !event.repeat) {
+    event.preventDefault()
+    voiceController.start()
+  }
+})
+voiceButton.addEventListener('keyup', event => {
+  if (event.key === ' ' || event.key === 'Enter') {
+    event.preventDefault()
+    voiceController.stop()
+  }
+})
 refreshButton.addEventListener('click', () => {
   void probeGateway()
   void conversationsClient.refresh()
@@ -667,6 +745,7 @@ window.addEventListener('online', () => {
   updateDisconnectControl()
 })
 window.addEventListener('offline', () => {
+  voiceController.cancel()
   conversationsClient.setOnline(false)
   setConnection('offline', '离线', '设备当前没有网络连接')
   updateDisconnectControl()
@@ -675,6 +754,8 @@ document.addEventListener('visibilitychange', () => {
   if (document.visibilityState === 'visible') {
     void probeGateway()
     void conversationsClient.refresh()
+  } else {
+    voiceController.cancel()
   }
 })
 

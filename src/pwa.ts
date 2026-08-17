@@ -21,6 +21,7 @@ const ASSET_DEFINITIONS = new Map<string, PwaAssetDefinition>([
   ['/app/device-store.js', { file: 'device-store.js', contentType: 'text/javascript; charset=utf-8' }],
   ['/app/conversations.js', { file: 'conversations.js', contentType: 'text/javascript; charset=utf-8' }],
   ['/app/notifications.js', { file: 'notifications.js', contentType: 'text/javascript; charset=utf-8' }],
+  ['/app/voice.js', { file: 'voice.js', contentType: 'text/javascript; charset=utf-8' }],
   ['/app/manifest.webmanifest', { file: 'manifest.webmanifest', contentType: 'application/manifest+json; charset=utf-8' }],
   ['/app/sw.js', { file: 'sw.js', contentType: 'text/javascript; charset=utf-8' }],
   ['/app/icon.svg', { file: 'icon.svg', contentType: 'image/svg+xml' }],
@@ -32,7 +33,7 @@ const ASSET_DEFINITIONS = new Map<string, PwaAssetDefinition>([
 const SECURITY_HEADERS = {
   'content-security-policy': "default-src 'self'; base-uri 'none'; connect-src 'self' ws: wss:; font-src 'self'; form-action 'self'; frame-ancestors 'none'; img-src 'self'; manifest-src 'self'; object-src 'none'; script-src 'self'; style-src 'self'; worker-src 'self'",
   'cross-origin-opener-policy': 'same-origin',
-  'permissions-policy': 'camera=(), geolocation=(), microphone=()',
+  'permissions-policy': 'camera=(), geolocation=(), microphone=(self)',
   'referrer-policy': 'no-referrer',
   'x-content-type-options': 'nosniff',
   'x-frame-options': 'DENY',
