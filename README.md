@@ -209,7 +209,7 @@ npm run memory -- export --output backups/jarvis-memory.json
 npm run memory -- delete --id <memory-id>
 ```
 
-导出文件以 `0600` 新建且不会覆盖已有路径。该入口仅面向本机 Owner，不是 Harness 工具；当前仍未把确认记忆自动加入模型提示词。
+导出文件以 `0600` 新建且不会覆盖已有路径。该管理入口仅面向本机 Owner。Harness 的只读 `jarvis_memory_recall` 工具可按分类读取已确认、未过期且非敏感的记忆，并返回来源、置信度和确认时间；默认最多 10 条，硬上限 20 条和 16 KiB。该工具不能提议、确认、编辑或删除记忆，敏感记忆不会提交给模型。模型是否调用该工具取决于当前对话，它不是自动提示词注入，也不代表远端模型不会保留已提交的上下文。
 
 ## 数据与安全
 

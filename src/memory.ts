@@ -259,6 +259,21 @@ export class MemoryStore {
     }))
   }
 
+  async recallReadOnly(): Promise<MemoryItem[]> {
+    let result: MemoryItem[] = []
+    const queued = this.pending.then(async () => {
+      const now = this.now().getTime()
+      const document = await this.readDocument()
+      result = document.items.filter(item => item.status === 'confirmed'
+        && (item.retention.kind === 'until-deleted'
+          || new Date(item.retention.expiresAt as string).getTime() > now))
+        .map(cloneItem).sort((left, right) => left.createdAt.localeCompare(right.createdAt))
+    })
+    this.pending = queued.catch(() => undefined)
+    await queued
+    return result
+  }
+
   async export(): Promise<MemoryDocument> {
     return this.mutate(document => ({ result: structuredClone(document), changed: false }))
   }
