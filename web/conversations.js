@@ -156,6 +156,7 @@ export class ConversationsClient {
     this.approvalSubmittedIds = new Set()
     this.deviceApprovalSubmittedIds = new Set()
     this.cancellationPendingIds = new Set()
+    this.failedConversationIds = new Set()
     this.cancellationGeneration = 0
     this.cachedAt = undefined
     this.socket = undefined
@@ -201,6 +202,7 @@ export class ConversationsClient {
     this.approvalSubmittedIds.clear()
     this.deviceApprovalSubmittedIds.clear()
     this.cancellationPendingIds.clear()
+    this.failedConversationIds.clear()
     this.cancellationGeneration += 1
     this.clearReconnect()
     if (this.socket !== undefined) {
@@ -589,6 +591,7 @@ export class ConversationsClient {
       return
     }
     let eventNotice
+    let eventActivity = eventDescription(event)
     if (event.type === 'sync.required') {
       this.emit('stale')
       if (!await this.refresh()) return
@@ -596,6 +599,11 @@ export class ConversationsClient {
       if (!await this.refresh()) return
     } else if (event.type === 'conversation.status' && ID_PATTERN.test(event.conversationId)
       && typeof event.running === 'boolean') {
+      if (event.running) this.failedConversationIds.delete(event.conversationId)
+      if (!event.running && this.failedConversationIds.delete(event.conversationId)) {
+        eventActivity = undefined
+        eventNotice = 'Jarvis 未能完成本次回复'
+      }
       this.conversations = this.conversations.map(item => item.id === event.conversationId
         ? { ...item, running: event.running, updatedAt: event.occurredAt }
         : item).sort((left, right) => right.updatedAt - left.updatedAt)
@@ -609,6 +617,7 @@ export class ConversationsClient {
         this.messages = [...this.messages, event.message].sort((left, right) => left.sequence - right.sequence).slice(-MAX_MESSAGES)
       }
     } else if (event.type === 'conversation.error' && ID_PATTERN.test(event.conversationId)) {
+      this.failedConversationIds.add(event.conversationId)
       eventNotice = 'Jarvis 未能完成本次回复'
     } else if (event.type === 'approval.pending' && validApproval(event.approval)) {
       this.approvals = [event.approval, ...this.approvals.filter(item => item.id !== event.approval.id)]
@@ -635,7 +644,7 @@ export class ConversationsClient {
       return
     }
     await this.onEvent(event)
-    this.addActivity(eventDescription(event))
+    if (eventActivity !== undefined) this.addActivity(eventActivity)
     this.cachedAt = Date.now()
     await this.persistCache()
     await this.store.write(CURSOR_KEY, event.cursor)

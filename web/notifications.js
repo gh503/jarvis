@@ -99,6 +99,13 @@ function notificationForEvent(event) {
       resource: { view: 'chat', conversationId: event.conversationId },
     }
   }
+  if (event.type === 'conversation.error' && RESOURCE_ID_PATTERN.test(event.conversationId ?? '')) {
+    return {
+      id: `conversation:${event.conversationId}:failed:${event.cursor}`, category: 'conversation',
+      title: 'Jarvis 回复失败', body: '本次回复未能完成，请返回对话后重试。',
+      resource: { view: 'chat', conversationId: event.conversationId },
+    }
+  }
   if (event.type === 'sync.required') {
     return {
       id: `connection:${event.cursor}`, category: 'connection',
@@ -135,6 +142,7 @@ export class NotificationCenter {
     this.permission = options.permission ?? (typeof Notification === 'undefined' ? 'unsupported' : Notification.permission)
     this.history = []
     this.preferences = clonePreferences(DEFAULT_NOTIFICATION_PREFERENCES)
+    this.failedConversationIds = new Set()
   }
 
   async initialize() {
@@ -144,6 +152,12 @@ export class NotificationCenter {
   }
 
   async ingestEvent(event) {
+    if (event?.type === 'conversation.status' && RESOURCE_ID_PATTERN.test(event.conversationId ?? '')) {
+      if (event.running === true) this.failedConversationIds.delete(event.conversationId)
+      if (event.running === false && this.failedConversationIds.delete(event.conversationId)) return false
+    } else if (event?.type === 'conversation.error' && RESOURCE_ID_PATTERN.test(event.conversationId ?? '')) {
+      this.failedConversationIds.add(event.conversationId)
+    }
     const candidate = notificationForEvent(event)
     if (candidate === null || this.history.some(item => item.id === candidate.id)) return false
     const notification = {
@@ -203,6 +217,7 @@ export class NotificationCenter {
 
   async clear() {
     this.history = []
+    this.failedConversationIds.clear()
     await this.store.delete(NOTIFICATION_HISTORY_KEY)
     await this.store.delete(NOTIFICATION_PREFERENCES_KEY)
     this.preferences = clonePreferences(DEFAULT_NOTIFICATION_PREFERENCES)

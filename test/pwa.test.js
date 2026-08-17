@@ -23,8 +23,8 @@ test('declares a scoped installable manifest and complete offline shell', async 
 
   const serviceWorker = await readFile(join(webRoot, 'sw.js'), 'utf8')
   for (const path of [
-    '/app/', '/app/app.css', '/app/app.js?v=15', '/app/pairing.js?v=15', '/app/device-store.js?v=15',
-    '/app/conversations.js?v=15', '/app/notifications.js?v=15', '/app/voice.js?v=15', '/app/apple-touch-icon.png', '/app/icon.svg',
+    '/app/', '/app/app.css', '/app/app.js?v=16', '/app/pairing.js?v=16', '/app/device-store.js?v=16',
+    '/app/conversations.js?v=16', '/app/notifications.js?v=16', '/app/voice.js?v=16', '/app/apple-touch-icon.png', '/app/icon.svg',
     '/app/icon-192.png', '/app/icon-512.png', '/app/manifest.webmanifest',
   ]) {
     assert.ok(serviceWorker.includes(`'${path}'`), `${path} must be pre-cached`)
@@ -275,6 +275,31 @@ test('quiet hours and rate limits suppress system presentation but retain histor
   assert.equal(systemNotifications.length, 1)
   await center.ingestEvent({ ...base, cursor: 'B'.repeat(22) + '.3', conversationId: 'conversation-3' })
   assert.equal(systemNotifications.length, 1)
+})
+
+test('reports failed turns without emitting a false completion notification', async () => {
+  const store = memoryDeviceStore()
+  const center = new NotificationCenter({ store, permission: 'default' })
+  await center.initialize()
+  const base = { version: 1, occurredAt: 1_700_000_000_000, conversationId: 'conversation-1' }
+  assert.equal(await center.ingestEvent({
+    ...base, cursor: 'D'.repeat(22) + '.1', type: 'conversation.status', running: true,
+  }), false)
+  assert.equal(await center.ingestEvent({
+    ...base, cursor: 'D'.repeat(22) + '.2', type: 'conversation.error', code: 'harness_agent_error',
+  }), true)
+  assert.equal(await center.ingestEvent({
+    ...base, cursor: 'D'.repeat(22) + '.3', type: 'conversation.status', running: false,
+  }), false)
+  assert.equal(center.history.length, 1)
+  assert.equal(center.history[0].title, 'Jarvis 回复失败')
+  assert.deepEqual(center.history[0].resource, { view: 'chat', conversationId: 'conversation-1' })
+
+  assert.equal(await center.ingestEvent({
+    ...base, conversationId: 'conversation-2', cursor: 'D'.repeat(22) + '.4',
+    type: 'conversation.status', running: false,
+  }), true)
+  assert.equal(center.history[0].title, 'Jarvis 已完成回复')
 })
 
 test('notification history is bounded, persisted, and cleared on revocation', async () => {
