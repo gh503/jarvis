@@ -12,6 +12,7 @@
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "npm run build && node --test test/*.test.js",
     "start": "./scripts/start-mac.sh",
+    "start:memory": "node dist/memory-service-main.js",
     "start:gateway": "./scripts/start-gateway.sh",
     "backup": "npm run build --silent && node dist/backup-main.js backup",
     "restore": "npm run build --silent && node dist/backup-main.js restore",

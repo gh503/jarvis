@@ -81,11 +81,30 @@ done
 MEMORY_FILE="$RUNTIME_DIR/harness-data/memory.json"
 [[ -f "$MEMORY_FILE" ]]
 [[ "$(stat -f '%Lp' "$MEMORY_FILE")" == "600" ]]
+[[ -f "$RUNTIME_DIR/harness-data/memory-service.json" ]]
+[[ "$(stat -f '%Lp' "$RUNTIME_DIR/harness-data/memory-service.json")" == "600" ]]
+[[ -d "$RUNTIME_DIR/harness-data/.memory-writer.lock" ]]
 node --input-type=module -e '
   import { readFileSync } from "node:fs"
   const memory = JSON.parse(readFileSync(process.argv[1], "utf8"))
   if (memory.version !== 1 || !Array.isArray(memory.items) || memory.items.length !== 0) process.exit(1)
 ' "$MEMORY_FILE"
+
+printf 'runtime memory service check' | JARVIS_DATA_DIR="$RUNTIME_DIR/harness-data" \
+  npm run memory --silent -- propose --class episodic > "$RUNTIME_DIR/memory-propose.json"
+MEMORY_ID="$(node --input-type=module -e '
+  import { readFileSync } from "node:fs"
+  const value = JSON.parse(readFileSync(process.argv[1], "utf8"))
+  if (value.item?.status !== "proposed") process.exit(1)
+  process.stdout.write(value.item.id)
+' "$RUNTIME_DIR/memory-propose.json")"
+JARVIS_DATA_DIR="$RUNTIME_DIR/harness-data" npm run memory --silent -- delete --id "$MEMORY_ID" >/dev/null
+node --input-type=module -e '
+  import { readFileSync } from "node:fs"
+  const memory = JSON.parse(readFileSync(process.argv[1], "utf8"))
+  if (memory.items.length !== 0) process.exit(1)
+' "$MEMORY_FILE"
+! rg -q 'runtime memory service check' "$RUNTIME_DIR/harness-data/memory-audit.jsonl"
 
 http_status="$(curl -sS -o /dev/null -w '%{http_code}' -X POST "http://127.0.0.1:$PORT/jarvis/health")"
 [[ "$http_status" == "405" ]]

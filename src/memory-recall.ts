@@ -1,4 +1,8 @@
-import { type MemoryClass, type MemoryItem, type MemorySource, MemoryStore } from './memory.js'
+import { type MemoryClass, type MemoryItem, type MemorySource } from './memory.js'
+
+interface MemoryReader {
+  recallReadOnly(): Promise<MemoryItem[]>
+}
 
 export const MODEL_MEMORY_DEFAULT_LIMIT = 10
 export const MODEL_MEMORY_MAX_ITEMS = 20
@@ -39,7 +43,7 @@ function outputBytes(memories: ModelMemory[]): number {
 }
 
 export async function recallForModel(
-  store: MemoryStore,
+  store: MemoryReader,
   options: ModelMemoryRecallOptions = {},
 ): Promise<ModelMemoryRecall> {
   if (options.class !== undefined && options.class !== 'profile' && options.class !== 'episodic') {
