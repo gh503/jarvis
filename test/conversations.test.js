@@ -210,6 +210,97 @@ test('keeps the composer usable after rejecting an unsafe draft locally', async 
   assert.match(states.at(-1).message, /斜杠命令/)
 })
 
+test('deduplicates active-turn cancellation until an authoritative stopped snapshot', async () => {
+  const calls = []
+  const states = []
+  let running = true
+  let releaseCancellation
+  const cancellation = new Promise(resolve => { releaseCancellation = resolve })
+  const pairing = gatewayPairing(calls, {
+    request: async (path, init) => {
+      if (path === '/v1/conversations') {
+        return { ok: true, status: 200, value: { conversations: [{ ...conversation, running }] } }
+      }
+      if (path.endsWith('/cancel') && init.method === 'POST') return cancellation
+      return undefined
+    },
+  })
+  const client = new ConversationsClient(pairing, state => states.push(state), {
+    store: memoryStore(), location: { origin: 'https://jarvis.internal' }, socketFactory: url => new FakeSocket(url),
+  })
+  await client.start()
+  const first = client.cancelActive()
+  assert.deepEqual(states.at(-1).cancellationPendingIds, [conversation.id])
+  assert.equal(await client.cancelActive(), false)
+  assert.equal(calls.filter(call => typeof call[1] === 'string' && call[1].endsWith('/cancel')).length, 1)
+  releaseCancellation({ ok: true, status: 200, value: { accepted: true } })
+  assert.equal(await first, true)
+  assert.deepEqual(states.at(-1).cancellationPendingIds, [conversation.id])
+
+  running = false
+  assert.equal(await client.refresh(), true)
+  assert.deepEqual(states.at(-1).cancellationPendingIds, [])
+})
+
+test('fails active-turn cancellation closed and remains retryable after rejection', async () => {
+  const calls = []
+  const states = []
+  let listAvailable = true
+  const pairing = gatewayPairing(calls, {
+    request: async (path, init) => {
+      if (path === '/v1/conversations') {
+        return listAvailable
+          ? { ok: true, status: 200, value: { conversations: [{ ...conversation, running: true }] } }
+          : { ok: false, status: 503, value: {} }
+      }
+      if (path.endsWith('/cancel') && init.method === 'POST') return { ok: false, status: 503, value: {} }
+      return undefined
+    },
+  })
+  const client = new ConversationsClient(pairing, state => states.push(state), {
+    store: memoryStore(), location: { origin: 'https://jarvis.internal' }, socketFactory: url => new FakeSocket(url),
+  })
+  await client.start()
+  assert.equal(await client.cancelActive(), false)
+  assert.deepEqual(states.at(-1).cancellationPendingIds, [])
+  assert.match(states.at(-1).message, /503/)
+  assert.equal(await client.cancelActive(), false)
+  assert.equal(calls.filter(call => typeof call[1] === 'string' && call[1].endsWith('/cancel')).length, 2)
+  listAvailable = false
+  assert.equal(await client.refresh(), false)
+  assert.equal(states.at(-1).phase, 'stale')
+  assert.equal(await client.cancelActive(), false)
+  assert.equal(calls.filter(call => typeof call[1] === 'string' && call[1].endsWith('/cancel')).length, 2)
+  client.setOnline(false)
+  assert.equal(await client.cancelActive(), false)
+})
+
+test('invalidates a late cancellation response after device revocation', async () => {
+  const states = []
+  let releaseCancellation
+  const cancellation = new Promise(resolve => { releaseCancellation = resolve })
+  const pairing = gatewayPairing([], {
+    request: async (path, init) => {
+      if (path === '/v1/conversations') {
+        return { ok: true, status: 200, value: { conversations: [{ ...conversation, running: true }] } }
+      }
+      if (path.endsWith('/cancel') && init.method === 'POST') return cancellation
+      return undefined
+    },
+  })
+  const client = new ConversationsClient(pairing, state => states.push(state), {
+    store: memoryStore(), location: { origin: 'https://jarvis.internal' }, socketFactory: url => new FakeSocket(url),
+  })
+  await client.start()
+  const activeCancellation = client.cancelActive()
+  client.reset('revoked')
+  releaseCancellation({ ok: true, status: 200, value: { accepted: true } })
+  assert.equal(await activeCancellation, false)
+  assert.equal(states.at(-1).phase, 'revoked')
+  assert.deepEqual(states.at(-1).activity, [])
+  assert.deepEqual(states.at(-1).cancellationPendingIds, [])
+})
+
 test('does not advance the event cursor when a required snapshot fails', async () => {
   const calls = []
   const sockets = []

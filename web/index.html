@@ -12,7 +12,7 @@
     <link rel="icon" href="./icon.svg" type="image/svg+xml">
     <link rel="apple-touch-icon" sizes="180x180" href="./apple-touch-icon.png">
     <link rel="stylesheet" href="./app.css">
-    <script src="./app.js?v=14" type="module"></script>
+    <script src="./app.js?v=15" type="module"></script>
   </head>
   <body data-connection="checking">
     <a class="skip-link" href="#main-content">跳到主要内容</a>
@@ -72,6 +72,7 @@
               <select id="mobile-conversation-select" aria-label="选择对话" disabled>
                 <option>无对话</option>
               </select>
+              <button id="cancel-turn-button" class="icon-button cancel-turn-button" type="button" title="停止回复" aria-label="停止回复" hidden disabled>■</button>
               <span id="chat-freshness" class="freshness-label">未同步</span>
             </div>
           </header>
