@@ -78,6 +78,15 @@ done
 
 [[ -s "$HEALTH_FILE" ]]
 
+MEMORY_FILE="$RUNTIME_DIR/harness-data/memory.json"
+[[ -f "$MEMORY_FILE" ]]
+[[ "$(stat -f '%Lp' "$MEMORY_FILE")" == "600" ]]
+node --input-type=module -e '
+  import { readFileSync } from "node:fs"
+  const memory = JSON.parse(readFileSync(process.argv[1], "utf8"))
+  if (memory.version !== 1 || !Array.isArray(memory.items) || memory.items.length !== 0) process.exit(1)
+' "$MEMORY_FILE"
+
 http_status="$(curl -sS -o /dev/null -w '%{http_code}' -X POST "http://127.0.0.1:$PORT/jarvis/health")"
 [[ "$http_status" == "405" ]]
 
