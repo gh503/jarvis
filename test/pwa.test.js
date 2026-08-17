@@ -24,8 +24,8 @@ test('declares a scoped installable manifest and complete offline shell', async 
 
   const serviceWorker = await readFile(join(webRoot, 'sw.js'), 'utf8')
   for (const path of [
-    '/app/', '/app/app.css', '/app/app.js?v=18', '/app/pairing.js?v=18', '/app/device-store.js?v=18',
-    '/app/conversations.js?v=18', '/app/gateway-health.js?v=18', '/app/notifications.js?v=18', '/app/voice.js?v=18',
+    '/app/', '/app/app.css', '/app/app.js?v=19', '/app/pairing.js?v=19', '/app/device-store.js?v=19',
+    '/app/conversations.js?v=19', '/app/gateway-health.js?v=19', '/app/notifications.js?v=19', '/app/voice.js?v=19',
     '/app/apple-touch-icon.png', '/app/icon.svg',
     '/app/icon-192.png', '/app/icon-512.png', '/app/manifest.webmanifest',
   ]) {
