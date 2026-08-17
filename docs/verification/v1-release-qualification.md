@@ -68,6 +68,14 @@ an active access session remains usable, and a revoked device session remains
 invalid. The normal test suite separately covers refresh-token reuse detection,
 active WebSocket closure, owner revocation, and device self-revocation.
 
+The release artifact also includes an owner-facing `devices` command that
+lists only sanitized metadata and requires destructive confirmation before
+revocation. The PWA uses a client-generated, digest-only, retryable credential
+rotation protocol; tests cover normal completion and convergence after the
+first response is lost without clearing the active session or cached
+conversation data. Automated and synthetic-browser evidence does not replace
+the named physical-phone observation in the manual gate below.
+
 Keychain items, Owner Tokens, model credentials, TLS private keys, and raw
 device/session credentials are not backed up. Replacement-host recovery must
 provision those secrets separately and re-pair devices when their local secret

@@ -19,6 +19,7 @@
     "memory": "npm run build --silent && node dist/memory-main.js",
     "pair:node": "npm run build --silent && node dist/node-pairing-main.js",
     "pair:approve": "npm run build --silent && node dist/pairing-approval-main.js",
+    "devices": "npm run build --silent && node dist/device-management-main.js",
     "verify": "npm run typecheck && npm test",
     "verify:runtime": "./scripts/verify-local-runtime.sh",
     "verify:recovery": "npm run build --silent && ./scripts/verify-recovery-macos.sh",

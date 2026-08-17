@@ -1,8 +1,8 @@
-import { ConversationsClient } from './conversations.js?v=17'
-import { fetchGatewayHealth } from './gateway-health.js?v=17'
-import { BrowserPairing } from './pairing.js?v=17'
-import { NotificationCenter } from './notifications.js?v=17'
-import { PushToTalkController, SpeechPlaybackController } from './voice.js?v=17'
+import { ConversationsClient } from './conversations.js?v=18'
+import { fetchGatewayHealth } from './gateway-health.js?v=18'
+import { BrowserPairing } from './pairing.js?v=18'
+import { NotificationCenter } from './notifications.js?v=18'
+import { PushToTalkController, SpeechPlaybackController } from './voice.js?v=18'
 
 const connectionLabel = document.querySelector('#connection-label')
 const gatewayDetail = document.querySelector('#gateway-detail')
@@ -19,6 +19,10 @@ const devicePlatform = document.querySelector('#device-platform')
 const deviceGeneration = document.querySelector('#device-generation')
 const deviceIssuedAt = document.querySelector('#device-issued-at')
 const deviceSessionExpiry = document.querySelector('#device-session-expiry')
+const rotateDeviceCredentialButton = document.querySelector('#rotate-device-credential-button')
+const rotateDeviceCredentialDialog = document.querySelector('#rotate-device-credential-dialog')
+const confirmRotateDeviceCredentialButton = document.querySelector('#confirm-rotate-device-credential-button')
+const rotateDeviceCredentialError = document.querySelector('#rotate-device-credential-error')
 const disconnectDeviceButton = document.querySelector('#disconnect-device-button')
 const disconnectDeviceDialog = document.querySelector('#disconnect-device-dialog')
 const confirmDisconnectDeviceButton = document.querySelector('#confirm-disconnect-device-button')
@@ -79,6 +83,7 @@ let gatewayReachable = false
 let pairingPhase = 'loading'
 let pairingExpiresAt
 let disconnectBusy = false
+let credentialRotationBusy = false
 let conversationsClient
 let stateForRendering = { conversations: [], approvals: [], deviceApprovals: [], approvalSubmittedIds: [], deviceApprovalSubmittedIds: [] }
 let notificationState = { history: [], unreadCount: 0, preferences: undefined, permission: 'default' }
@@ -264,10 +269,13 @@ function setDeviceValue(label, className = 'is-muted') {
 
 function updateDisconnectControl() {
   const visible = pairingPhase === 'paired'
+  const mutable = visible && !disconnectBusy && !credentialRotationBusy && navigator.onLine && gatewayReachable
+  rotateDeviceCredentialButton.hidden = !visible
+  rotateDeviceCredentialButton.disabled = !mutable
   disconnectDeviceButton.hidden = !visible
-  disconnectDeviceButton.disabled = !visible || disconnectBusy || !navigator.onLine || !gatewayReachable
-    || stateForRendering.phase !== 'ready'
+  disconnectDeviceButton.disabled = !mutable
   confirmDisconnectDeviceButton.disabled = disconnectBusy
+  confirmRotateDeviceCredentialButton.disabled = credentialRotationBusy
 }
 
 function handlePairingState(state) {
@@ -688,6 +696,27 @@ pairButton.addEventListener('click', async () => {
   }
 })
 cancelPairingButton.addEventListener('click', () => { void pairing.cancel() })
+rotateDeviceCredentialButton.addEventListener('click', () => {
+  rotateDeviceCredentialError.hidden = true
+  rotateDeviceCredentialError.textContent = ''
+  rotateDeviceCredentialDialog.showModal()
+})
+confirmRotateDeviceCredentialButton.addEventListener('click', async () => {
+  if (credentialRotationBusy) return
+  credentialRotationBusy = true
+  updateDisconnectControl()
+  rotateDeviceCredentialError.hidden = true
+  try {
+    await pairing.rotateCurrentCredential()
+    rotateDeviceCredentialDialog.close()
+  } catch (error) {
+    rotateDeviceCredentialError.textContent = error instanceof Error ? error.message : '无法轮换设备凭证'
+    rotateDeviceCredentialError.hidden = false
+  } finally {
+    credentialRotationBusy = false
+    updateDisconnectControl()
+  }
+})
 disconnectDeviceButton.addEventListener('click', () => {
   disconnectDeviceError.hidden = true
   disconnectDeviceError.textContent = ''

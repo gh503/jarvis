@@ -24,8 +24,8 @@ test('declares a scoped installable manifest and complete offline shell', async 
 
   const serviceWorker = await readFile(join(webRoot, 'sw.js'), 'utf8')
   for (const path of [
-    '/app/', '/app/app.css', '/app/app.js?v=17', '/app/pairing.js?v=17', '/app/device-store.js?v=17',
-    '/app/conversations.js?v=17', '/app/gateway-health.js?v=17', '/app/notifications.js?v=17', '/app/voice.js?v=17',
+    '/app/', '/app/app.css', '/app/app.js?v=18', '/app/pairing.js?v=18', '/app/device-store.js?v=18',
+    '/app/conversations.js?v=18', '/app/gateway-health.js?v=18', '/app/notifications.js?v=18', '/app/voice.js?v=18',
     '/app/apple-touch-icon.png', '/app/icon.svg',
     '/app/icon-192.png', '/app/icon-512.png', '/app/manifest.webmanifest',
   ]) {
@@ -98,6 +98,8 @@ test('keeps the browser client on the public Gateway contract', async () => {
   assert.doesNotMatch(notificationsSource, /arguments|message|rpcId|accessToken|refreshToken/)
   assert.match(htmlSource, /id="approval-list"/)
   assert.match(htmlSource, /id="disconnect-device-dialog"/)
+  assert.match(htmlSource, /id="rotate-device-credential-dialog"/)
+  assert.match(htmlSource, /id="rotate-device-credential-button"[^>]+hidden disabled/)
   assert.match(htmlSource, /id="disconnect-device-button"[^>]+hidden disabled/)
   assert.match(htmlSource, /id="pair-button"[^>]+disabled/)
   assert.match(htmlSource, /id="voice-button"[^>]+disabled/)
@@ -193,6 +195,73 @@ test('shows authoritative device status and clears all browser state after self-
   assert.equal(store.values.size, 0)
   assert.equal(states.at(-1).phase, 'unpaired')
   assert.equal(calls.at(-1).init.headers.authorization, `Session ${initial.session.accessToken}`)
+})
+
+test('rotates the browser credential without clearing sessions or cached data', async () => {
+  const initial = pairedBrowserState()
+  const store = memoryDeviceStore(initial)
+  const states = []
+  const calls = []
+  let generation = 2
+  let issuedAt = initial.credential.issuedAt
+  const pairing = new BrowserPairing(state => states.push(state), async (path, init = {}) => {
+    calls.push({ path, init })
+    if (path.endsWith('/credential') && init.method === 'PUT') {
+      const requestBody = JSON.parse(init.body)
+      assert.equal(requestBody.expectedGeneration, 2)
+      assert.match(requestBody.nextCredential, /^[A-Za-z0-9_-]{43}$/)
+      generation = 3
+      issuedAt = Date.now()
+      return response(200, { device: {
+        nodeId: initial.identity.nodeId, displayName: initial.identity.displayName,
+        platform: 'pwa', generation, issuedAt,
+      } })
+    }
+    const current = currentDevice(initial)
+    current.device.generation = generation
+    current.device.issuedAt = issuedAt
+    return response(200, current)
+  }, store)
+
+  await pairing.initialize()
+  const previousCredential = store.values.get('credential').credential
+  await pairing.rotateCurrentCredential()
+  const rotated = store.values.get('credential')
+  assert.notEqual(rotated.credential, previousCredential)
+  assert.equal(rotated.generation, 3)
+  assert.equal(store.values.has('credential-rotation'), false)
+  assert.deepEqual(store.values.get('session'), initial.session)
+  assert.deepEqual(store.values.get('conversation-cache'), initial['conversation-cache'])
+  assert.equal(states.at(-1).generation, 3)
+  assert.equal(calls.find(call => call.path.endsWith('/credential')).init.headers.authorization, `Device ${previousCredential}`)
+})
+
+test('converges credential rotation after the first response is lost', async () => {
+  const initial = pairedBrowserState()
+  const store = memoryDeviceStore(initial)
+  const authorizations = []
+  let attempts = 0
+  const pairing = new BrowserPairing(() => {}, async (path, init = {}) => {
+    if (!path.endsWith('/credential')) return response(200, currentDevice(initial))
+    attempts += 1
+    authorizations.push(init.headers.authorization)
+    if (attempts === 1) throw new Error('response lost')
+    const requestBody = JSON.parse(init.body)
+    return response(200, { device: {
+      nodeId: initial.identity.nodeId, displayName: initial.identity.displayName,
+      platform: 'pwa', generation: 3, issuedAt: Date.now(),
+    } })
+  }, store)
+
+  await pairing.initialize()
+  const previousCredential = store.values.get('credential').credential
+  await pairing.rotateCurrentCredential()
+  const nextCredential = store.values.get('credential').credential
+  assert.equal(attempts, 2)
+  assert.equal(authorizations[0], `Device ${previousCredential}`)
+  assert.equal(authorizations[1], `Device ${nextCredential}`)
+  assert.equal(store.values.has('credential-rotation'), false)
+  assert.deepEqual(store.values.get('conversation-cache'), initial['conversation-cache'])
 })
 
 test('converges to revoked and clears cached data after a self-revocation response is lost', async () => {

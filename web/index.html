@@ -12,7 +12,7 @@
     <link rel="icon" href="./icon.svg" type="image/svg+xml">
     <link rel="apple-touch-icon" sizes="180x180" href="./apple-touch-icon.png">
     <link rel="stylesheet" href="./app.css">
-    <script src="./app.js?v=17" type="module"></script>
+    <script src="./app.js?v=18" type="module"></script>
   </head>
   <body data-connection="checking">
     <a class="skip-link" href="#main-content">跳到主要内容</a>
@@ -164,6 +164,7 @@
               </div>
               <div class="settings-actions">
                 <span id="device-value" class="value-label is-muted">未配对</span>
+                <button id="rotate-device-credential-button" class="secondary-button" type="button" hidden disabled>轮换凭证</button>
                 <button id="disconnect-device-button" class="danger-button" type="button" hidden disabled>断开此设备</button>
               </div>
             </section>
@@ -249,6 +250,17 @@
         <div class="dialog-actions">
           <button class="secondary-button" type="submit" value="cancel">取消</button>
           <button id="confirm-disconnect-device-button" class="danger-button" type="button">断开设备</button>
+        </div>
+      </form>
+    </dialog>
+    <dialog id="rotate-device-credential-dialog" class="confirmation-dialog" aria-labelledby="rotate-device-credential-title">
+      <form method="dialog">
+        <h2 id="rotate-device-credential-title">轮换设备凭证？</h2>
+        <p>Gateway 将撤销当前设备凭证并启用新凭证。对话和本地数据不会删除，当前会话会继续使用。</p>
+        <p id="rotate-device-credential-error" class="dialog-error" role="alert" hidden></p>
+        <div class="dialog-actions">
+          <button class="secondary-button" type="submit" value="cancel">取消</button>
+          <button id="confirm-rotate-device-credential-button" class="primary-button" type="button">轮换凭证</button>
         </div>
       </form>
     </dialog>
