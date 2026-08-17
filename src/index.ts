@@ -7,6 +7,7 @@ import { ApprovalLedger } from './approval.js'
 import { AppRegistry } from './apps.js'
 import { AuditLog } from './audit.js'
 import { DeviceCommandGatewayClient } from './device-command-client.js'
+import { recallForModel } from './memory-recall.js'
 import { MemoryStore } from './memory.js'
 import { MqttCommandGatewayClient } from './mqtt-command-client.js'
 import { ReminderStore, type Reminder } from './reminders.js'
@@ -15,7 +16,10 @@ import { readSystemStatus } from './system-status.js'
 export const name = 'jarvis-mac-mvp'
 export const inject = ['tools', 'webServer']
 
-const JARVIS_TOOLS = new Set(['jarvis_system_status', 'jarvis_open_app', 'jarvis_reminder', 'jarvis_device_control', 'jarvis_mqtt_device_control'])
+const JARVIS_TOOLS = new Set([
+  'jarvis_system_status', 'jarvis_open_app', 'jarvis_reminder', 'jarvis_memory_recall',
+  'jarvis_device_control', 'jarvis_mqtt_device_control',
+])
 
 function reminderOutput(reminders: Reminder[]) {
   return { reminders }
@@ -26,6 +30,8 @@ function safeAuditDetail(tool: string, argumentsValue: unknown): Record<string, 
   const detail: Record<string, string> = {}
   const keys = tool === 'jarvis_open_app'
     ? ['application']
+    : tool === 'jarvis_memory_recall'
+      ? ['class', 'limit']
     : tool === 'jarvis_device_control'
       ? ['capability', 'externalEntityId', 'service', 'expectedState']
       : tool === 'jarvis_mqtt_device_control'
@@ -175,6 +181,55 @@ export async function apply(ctx: Context): Promise<void> {
     },
     async execute() {
       return readSystemStatus()
+    },
+  }))
+
+  ctx.tools.register(defineTool({
+    name: 'jarvis_memory_recall',
+    description: 'Recall bounded owner-confirmed, non-sensitive personal memory. This tool is read-only and may omit results because of privacy or output limits.',
+    parameters: {
+      class: { type: 'string', enum: ['profile', 'episodic'], description: 'Optional memory class filter' },
+      limit: { type: 'integer', description: 'Maximum memories to return from 1 to 20; defaults to 10' },
+    },
+    output: {
+      schema: {
+        type: 'object',
+        additionalProperties: false,
+        properties: {
+          memories: {
+            type: 'array',
+            required: true,
+            items: {
+              type: 'object',
+              additionalProperties: false,
+              properties: {
+                id: { type: 'string', required: true },
+                class: { type: 'string', required: true, enum: ['profile', 'episodic'] },
+                content: { type: 'string', required: true },
+                confidence: { type: 'number', required: true },
+                source: {
+                  type: 'object',
+                  required: true,
+                  additionalProperties: false,
+                  properties: {
+                    kind: { type: 'string', required: true, enum: ['explicit-user', 'model-candidate', 'owner-edit'] },
+                    reference: { oneOf: [{ type: 'string' }, { type: 'null' }], required: true },
+                  },
+                },
+                confirmedAt: { type: 'string', required: true },
+              },
+            },
+          },
+          truncated: { type: 'boolean', required: true },
+        },
+      },
+      render: (_args, value) => [{ type: 'text', text: JSON.stringify(value, null, 2) }],
+    },
+    async execute(args) {
+      return recallForModel(memories, {
+        ...(args.class === undefined ? {} : { class: args.class }),
+        ...(args.limit === undefined ? {} : { limit: args.limit }),
+      })
     },
   }))
 
