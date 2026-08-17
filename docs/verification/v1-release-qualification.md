@@ -34,6 +34,19 @@ npm run verify:recovery
 npm run verify:release
 ```
 
+After GitHub publishes the final assets, download and verify those exact remote
+files rather than rebuilding them locally:
+
+```bash
+npm run verify:published-release -- v1.0.0
+```
+
+This command requires GitHub CLI authentication. It rejects draft and
+prerelease records, compares the downloaded ZIP against both the digest exposed
+by the GitHub Release API and the uploaded `.sha256` file, and performs the
+available tests, runtime checks, LaunchAgent crash recovery, and uninstall from
+the downloaded archive.
+
 CI also runs Gitleaks against full Git history. The gates establish:
 
 | Gate | Evidence |
@@ -44,7 +57,7 @@ CI also runs Gitleaks against full Git history. The gates establish:
 | Compatibility | Type, contract, and live no-key runtime checks pass with the pinned Harness revision. |
 | Recovery | Backup and empty-root restore preserve payload parity and credential/session/event semantics. |
 | Rollback | An incompatible archive fails before replacement and leaves prior destination state intact. |
-| Installation | A checksum-verified release ZIP installs in an isolated home, reaches health, persists data, and uninstalls without a listener or loaded job. |
+| Installation | A checksum-verified release ZIP installs in an isolated home, reaches health, recovers from a terminated supervised process with one loopback listener, persists data, and uninstalls without a listener or loaded job. |
 
 ## Credential lifecycle
 

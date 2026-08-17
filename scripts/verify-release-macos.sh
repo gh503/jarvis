@@ -74,6 +74,24 @@ const health = JSON.parse(readFileSync(process.argv[2], 'utf8'))
 if (health.service !== 'jarvis-mac-mvp' || health.status !== 'ok' || health.scope !== 'loopback-only') process.exit(1)
 NODE
 
+FIRST_PID="$(launchctl print "gui/$UID/$LABEL" | awk '$1 == "pid" && $2 == "=" { print $3; exit }')"
+[[ "$FIRST_PID" =~ '^[0-9]+$' ]]
+kill -TERM "$FIRST_PID"
+
+SECOND_PID=""
+for attempt in {1..30}; do
+  SECOND_PID="$(launchctl print "gui/$UID/$LABEL" 2>/dev/null | awk '$1 == "pid" && $2 == "=" { print $3; exit }')"
+  if [[ "$SECOND_PID" =~ '^[0-9]+$' ]] && [[ "$SECOND_PID" != "$FIRST_PID" ]] \
+    && curl -fsS "http://127.0.0.1:$PORT/jarvis/health" > "$HEALTH"; then
+    break
+  fi
+  sleep 1
+done
+[[ "$SECOND_PID" =~ '^[0-9]+$' ]]
+[[ "$SECOND_PID" != "$FIRST_PID" ]]
+LISTENERS="$(lsof -nP -iTCP:"$PORT" -sTCP:LISTEN -Fn | sed -n 's/^n//p')"
+[[ "$LISTENERS" == "127.0.0.1:$PORT" ]]
+
 HOME="$TEST_HOME" JARVIS_LAUNCH_AGENT_LABEL="$LABEL" ./scripts/uninstall-launch-agent.sh
 for attempt in {1..30}; do
   if ! lsof -nP -iTCP:"$PORT" -sTCP:LISTEN >/dev/null 2>&1; then
@@ -95,4 +113,4 @@ fi
 [[ -f "$CHECKOUT/data/reminders.json" ]]
 [[ -f "$CHECKOUT/data/audit.jsonl" ]]
 
-echo "Checksum-verified release archive installation, startup, recovery, persistence, and uninstall passed on port $PORT"
+echo "Checksum-verified release archive installation, crash restart, recovery, persistence, and uninstall passed on port $PORT"
