@@ -4,6 +4,7 @@ import { join } from 'node:path'
 import test from 'node:test'
 import { PairingAuthority, createDeviceIdentity } from '../dist/pairing.js'
 import { BrowserPairing, decryptPairingCredential } from '../web/pairing.js'
+import { fetchGatewayHealth } from '../web/gateway-health.js'
 import { NotificationCenter } from '../web/notifications.js'
 
 const webRoot = join(process.cwd(), 'web')
@@ -23,14 +24,22 @@ test('declares a scoped installable manifest and complete offline shell', async 
 
   const serviceWorker = await readFile(join(webRoot, 'sw.js'), 'utf8')
   for (const path of [
-    '/app/', '/app/app.css', '/app/app.js?v=16', '/app/pairing.js?v=16', '/app/device-store.js?v=16',
-    '/app/conversations.js?v=16', '/app/notifications.js?v=16', '/app/voice.js?v=16', '/app/apple-touch-icon.png', '/app/icon.svg',
+    '/app/', '/app/app.css', '/app/app.js?v=17', '/app/pairing.js?v=17', '/app/device-store.js?v=17',
+    '/app/conversations.js?v=17', '/app/gateway-health.js?v=17', '/app/notifications.js?v=17', '/app/voice.js?v=17',
+    '/app/apple-touch-icon.png', '/app/icon.svg',
     '/app/icon-192.png', '/app/icon-512.png', '/app/manifest.webmanifest',
   ]) {
     assert.ok(serviceWorker.includes(`'${path}'`), `${path} must be pre-cached`)
   }
   assert.match(serviceWorker, /event\.request\.mode === 'navigate'/)
   assert.match(serviceWorker, /caches\.match\('\/app\/'\)/)
+
+  for (const file of ['app.js', 'conversations.js', 'notifications.js', 'pairing.js']) {
+    const source = await readFile(join(webRoot, file), 'utf8')
+    for (const match of source.matchAll(/from '\.\/(.+?\?v=\d+)'/g)) {
+      assert.ok(serviceWorker.includes(`'/app/${match[1]}'`), `${file} dependency ${match[1]} must be pre-cached`)
+    }
+  }
 })
 
 test('ships valid standard and Apple PNG icon dimensions', async () => {
@@ -42,15 +51,38 @@ test('ships valid standard and Apple PNG icon dimensions', async () => {
   }
 })
 
+test('bounds Gateway health checks even when fetch ignores abort', async () => {
+  let aborted = false
+  const never = (_url, options) => {
+    options.signal.addEventListener('abort', () => { aborted = true })
+    return new Promise(() => {})
+  }
+  const timers = []
+  const request = fetchGatewayHealth(never, {
+    timeoutMs: 10,
+    setTimeout: callback => { timers.push(callback); return 1 },
+    clearTimeout: () => {},
+  })
+  timers[0]()
+  await assert.rejects(request, /timed out/)
+  assert.equal(aborted, true)
+
+  const health = await fetchGatewayHealth(async () => ({
+    ok: true, json: async () => ({ service: 'jarvis-gateway', status: 'ok', scope: 'loopback-only' }),
+  }), { setTimeout: () => 1, clearTimeout: () => {} })
+  assert.equal(health.status, 'ok')
+})
+
 test('keeps the browser client on the public Gateway contract', async () => {
   const appSource = await readFile(join(webRoot, 'app.js'), 'utf8')
+  const gatewayHealthSource = await readFile(join(webRoot, 'gateway-health.js'), 'utf8')
   const pairingSource = await readFile(join(webRoot, 'pairing.js'), 'utf8')
   const conversationsSource = await readFile(join(webRoot, 'conversations.js'), 'utf8')
   const notificationsSource = await readFile(join(webRoot, 'notifications.js'), 'utf8')
   const voiceSource = await readFile(join(webRoot, 'voice.js'), 'utf8')
   const deviceStoreSource = await readFile(join(webRoot, 'device-store.js'), 'utf8')
   const htmlSource = await readFile(join(webRoot, 'index.html'), 'utf8')
-  assert.match(appSource, /fetch\('\.\.\/v1\/health'/)
+  assert.match(gatewayHealthSource, /fetchValue\('\.\.\/v1\/health'/)
   assert.match(appSource, /handlePairingState\(\{ phase: 'loading' \}\)/)
   assert.match(deviceStoreSource, /indexedDB\.open/)
   assert.match(pairingSource, /await this\.initialize\(\)/)
@@ -74,8 +106,8 @@ test('keeps the browser client on the public Gateway contract', async () => {
   assert.match(appSource, /data-speech-key|speechKey/)
   assert.match(appSource, /playbackController\.cancel\(\)/)
   assert.match(appSource, /conversationsClient\.cancelActive\(\)/)
-  assert.doesNotMatch(`${appSource}\n${pairingSource}\n${conversationsSource}`, /@deepseek-ai|dsh|Harness|\/api\//i)
-  assert.doesNotMatch(`${appSource}\n${pairingSource}\n${conversationsSource}`, /localStorage|sessionStorage/)
+  assert.doesNotMatch(`${appSource}\n${gatewayHealthSource}\n${pairingSource}\n${conversationsSource}`, /@deepseek-ai|dsh|Harness|\/api\//i)
+  assert.doesNotMatch(`${appSource}\n${gatewayHealthSource}\n${pairingSource}\n${conversationsSource}`, /localStorage|sessionStorage/)
   assert.doesNotMatch(conversationsSource, /\.close\((1002|1008|1011)/)
 })
 

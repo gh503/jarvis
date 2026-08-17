@@ -1,7 +1,8 @@
-import { ConversationsClient } from './conversations.js?v=16'
-import { BrowserPairing } from './pairing.js?v=16'
-import { NotificationCenter } from './notifications.js?v=16'
-import { PushToTalkController, SpeechPlaybackController } from './voice.js?v=16'
+import { ConversationsClient } from './conversations.js?v=17'
+import { fetchGatewayHealth } from './gateway-health.js?v=17'
+import { BrowserPairing } from './pairing.js?v=17'
+import { NotificationCenter } from './notifications.js?v=17'
+import { PushToTalkController, SpeechPlaybackController } from './voice.js?v=17'
 
 const connectionLabel = document.querySelector('#connection-label')
 const gatewayDetail = document.querySelector('#gateway-detail')
@@ -635,16 +636,8 @@ async function probeGateway() {
   probeInProgress = true
   refreshButton.disabled = true
   setConnection('checking', '正在检查', '正在连接 Jarvis Gateway')
-  const controller = new AbortController()
-  const timeout = window.setTimeout(() => controller.abort(), 5_000)
   try {
-    const response = await fetch('../v1/health', {
-      cache: 'no-store',
-      headers: { accept: 'application/json' },
-      signal: controller.signal,
-    })
-    const health = await response.json()
-    if (!response.ok || health.service !== 'jarvis-gateway' || health.status !== 'ok') throw new Error('invalid gateway response')
+    const health = await fetchGatewayHealth()
     setConnection('online', '网关可用', `安全范围：${health.scope === 'loopback-only' ? '仅本机' : '私有网络'}`)
     if (pairingPhase === 'paired-offline') void pairing.accessSession(true).catch(() => {})
     if (pairingPhase !== 'paired') {
@@ -653,7 +646,6 @@ async function probeGateway() {
   } catch {
     setConnection('unavailable', '无法连接', 'Jarvis Gateway 暂时不可用')
   } finally {
-    window.clearTimeout(timeout)
     refreshButton.disabled = false
     probeInProgress = false
   }

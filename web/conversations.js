@@ -1,4 +1,4 @@
-import { deleteDeviceState, readDeviceState, writeDeviceState } from './device-store.js?v=12'
+import { deleteDeviceState, readDeviceState, writeDeviceState } from './device-store.js?v=17'
 
 const CACHE_KEY = 'conversation-cache'
 const CURSOR_KEY = 'event-cursor'
