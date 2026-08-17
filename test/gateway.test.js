@@ -215,6 +215,11 @@ test('serves the exact PWA shell routes with restrictive browser headers', async
     assert.equal(voice.status, 200)
     assert.match(voice.headers.get('content-type') ?? '', /^text\/javascript/)
 
+    const gatewayHealth = await request(gateway, '/app/gateway-health.js?v=17')
+    assert.equal(gatewayHealth.status, 200)
+    assert.match(gatewayHealth.headers.get('content-type') ?? '', /^text\/javascript/)
+    assert.match(await gatewayHealth.text(), /fetchGatewayHealth/)
+
     const head = await request(gateway, '/app/app.css', { method: 'HEAD' })
     assert.equal(head.status, 200)
     assert.match(head.headers.get('content-type') ?? '', /^text\/css/)

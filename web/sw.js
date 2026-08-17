@@ -1,13 +1,14 @@
-const CACHE_NAME = 'jarvis-pwa-shell-v16'
+const CACHE_NAME = 'jarvis-pwa-shell-v17'
 const SHELL_PATHS = [
   '/app/',
   '/app/app.css',
-  '/app/app.js?v=16',
-  '/app/pairing.js?v=16',
-  '/app/device-store.js?v=16',
-  '/app/conversations.js?v=16',
-  '/app/notifications.js?v=16',
-  '/app/voice.js?v=16',
+  '/app/app.js?v=17',
+  '/app/pairing.js?v=17',
+  '/app/device-store.js?v=17',
+  '/app/conversations.js?v=17',
+  '/app/gateway-health.js?v=17',
+  '/app/notifications.js?v=17',
+  '/app/voice.js?v=17',
   '/app/apple-touch-icon.png',
   '/app/icon.svg',
   '/app/icon-192.png',

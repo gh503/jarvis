@@ -1,4 +1,4 @@
-import { deleteDeviceState, readDeviceState, writeDeviceState } from './device-store.js?v=11'
+import { deleteDeviceState, readDeviceState, writeDeviceState } from './device-store.js?v=17'
 
 export const NOTIFICATION_HISTORY_KEY = 'notification-history'
 export const NOTIFICATION_PREFERENCES_KEY = 'notification-preferences'
