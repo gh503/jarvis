@@ -34,6 +34,19 @@ npm run verify:recovery
 npm run verify:release
 ```
 
+After GitHub publishes the final assets, download and verify those exact remote
+files rather than rebuilding them locally:
+
+```bash
+npm run verify:published-release -- v1.0.0
+```
+
+This command requires GitHub CLI authentication. It rejects draft and
+prerelease records, compares the downloaded ZIP against both the digest exposed
+by the GitHub Release API and the uploaded `.sha256` file, and performs the
+available tests, runtime checks, LaunchAgent crash recovery, and uninstall from
+the downloaded archive.
+
 CI also runs Gitleaks against full Git history. The gates establish:
 
 | Gate | Evidence |

@@ -22,6 +22,7 @@
     "verify": "npm run typecheck && npm test",
     "verify:runtime": "./scripts/verify-local-runtime.sh",
     "verify:recovery": "npm run build --silent && ./scripts/verify-recovery-macos.sh",
+    "verify:published-release": "./scripts/verify-published-release-macos.sh",
     "check:dependencies": "npm audit --omit=dev --audit-level=high",
     "check:gateway": "./scripts/check-private-gateway.sh",
     "verify:release": "./scripts/verify-release-macos.sh",
