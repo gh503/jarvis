@@ -44,7 +44,7 @@ CI also runs Gitleaks against full Git history. The gates establish:
 | Compatibility | Type, contract, and live no-key runtime checks pass with the pinned Harness revision. |
 | Recovery | Backup and empty-root restore preserve payload parity and credential/session/event semantics. |
 | Rollback | An incompatible archive fails before replacement and leaves prior destination state intact. |
-| Installation | A Git archive installs in an isolated home, reaches health, persists data, and uninstalls without a listener or loaded job. |
+| Installation | A checksum-verified release ZIP installs in an isolated home, reaches health, persists data, and uninstalls without a listener or loaded job. |
 
 ## Credential lifecycle
 
