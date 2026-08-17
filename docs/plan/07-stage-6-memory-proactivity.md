@@ -26,11 +26,12 @@ Raw model reasoning is never a memory authority.
 
 ## Current Increment
 
-The versioned owner-controlled source store is tracked by [#88](https://github.com/gh503/jarvis/issues/88).
+The versioned owner-controlled source store and local management CLI are tracked by [#88](https://github.com/gh503/jarvis/issues/88) and [#90](https://github.com/gh503/jarvis/issues/90).
 
 - Candidates enter only the proposed state and cannot become confirmed through model authority in this increment.
 - Confirmed edits supersede the previous source item; rejected, superseded, expired, and physically deleted items are excluded from recall.
 - The bounded private source file is initialized by Jarvis and included in offline backup/restore with semantic validation.
+- The local owner can manage every lifecycle transition and create a private full export without granting the model confirmation authority.
 - Automatic extraction, prompt-context retrieval, derived indexes, owner management UI, and proactive rules remain deferred.
 
 ## Modules
