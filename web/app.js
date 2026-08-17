@@ -1,7 +1,7 @@
-import { ConversationsClient } from './conversations.js?v=13'
-import { BrowserPairing } from './pairing.js?v=13'
-import { NotificationCenter } from './notifications.js?v=13'
-import { PushToTalkController } from './voice.js?v=13'
+import { ConversationsClient } from './conversations.js?v=14'
+import { BrowserPairing } from './pairing.js?v=14'
+import { NotificationCenter } from './notifications.js?v=14'
+import { PushToTalkController, SpeechPlaybackController } from './voice.js?v=14'
 
 const connectionLabel = document.querySelector('#connection-label')
 const gatewayDetail = document.querySelector('#gateway-detail')
@@ -82,6 +82,9 @@ let stateForRendering = { conversations: [], approvals: [], deviceApprovals: [],
 let notificationState = { history: [], unreadCount: 0, preferences: undefined, permission: 'default' }
 let lastPairingPhase = 'loading'
 let voiceState = { phase: 'disabled', enabled: false, supported: false }
+let playbackState = { phase: 'unavailable', supported: false }
+let playbackMessageKey
+const speechTextByKey = new Map()
 
 function voiceInteractionAllowed() {
   const current = stateForRendering.conversations.find(item => item.id === stateForRendering.selectedId)
@@ -100,9 +103,24 @@ function updateVoiceControls() {
   voiceEnabledInput.checked = voiceState.enabled
   voiceSupportDetail.textContent = !voiceState.supported ? '此浏览器不支持语音输入'
     : voiceState.enabled ? '已启用，仅在按住说话时使用麦克风' : '默认关闭'
-  voiceFeedback.hidden = voiceState.message === undefined
-  voiceStateLabel.textContent = voiceState.message ?? ''
-  voiceTranscript.textContent = voiceState.transcript ?? ''
+  updateAudioFeedback()
+}
+
+function updateAudioFeedback() {
+  const state = voiceState.message === undefined ? playbackState : voiceState
+  voiceFeedback.hidden = state.message === undefined
+  voiceStateLabel.textContent = state.message ?? ''
+  voiceTranscript.textContent = state.transcript ?? ''
+}
+
+function updatePlaybackControls() {
+  for (const button of document.querySelectorAll('[data-speech-key]')) {
+    const speaking = playbackState.phase === 'speaking' && button.dataset.speechKey === playbackMessageKey
+    button.textContent = speaking ? '停止朗读' : '朗读'
+    button.disabled = !playbackState.supported
+    button.setAttribute('aria-pressed', String(speaking))
+  }
+  updateAudioFeedback()
 }
 
 function insertVoiceDraft(transcript) {
@@ -122,6 +140,14 @@ const voiceController = new PushToTalkController({
     updateVoiceControls()
   },
   onFinalTranscript: insertVoiceDraft,
+})
+
+const playbackController = new SpeechPlaybackController({
+  onState: state => {
+    playbackState = state
+    if (state.phase !== 'speaking') playbackMessageKey = undefined
+    updatePlaybackControls()
+  },
 })
 
 function showView(name) {
@@ -246,6 +272,7 @@ function handlePairingState(state) {
   const previousPhase = lastPairingPhase
   pairingPhase = state.phase
   if (state.phase !== 'paired' && (voiceState.phase === 'listening' || voiceState.phase === 'transcribing')) voiceController.cancel()
+  if (state.phase !== 'paired') playbackController.cancel()
   lastPairingPhase = state.phase
   if ((state.phase === 'unpaired' || state.phase === 'revoked') && previousPhase !== state.phase) {
     void notificationCenter.clear()
@@ -529,7 +556,8 @@ function handleConversationState(state) {
 
   chatTitle.textContent = current === undefined ? '对话' : conversationLabel(current)
   messageList.replaceChildren()
-  for (const message of state.messages) {
+  speechTextByKey.clear()
+  for (const [messageIndex, message] of state.messages.entries()) {
     const item = document.createElement('li')
     item.className = `message is-${message.role}`
     const body = document.createElement('p')
@@ -539,8 +567,21 @@ function handleConversationState(state) {
     meta.className = 'message-meta'
     meta.textContent = `${message.role === 'assistant' ? 'Jarvis' : '你'} · ${formatDate(message.createdAt)}`
     item.append(body, meta)
+    if (message.role === 'assistant') {
+      const speechKey = `${state.selectedId}:${messageIndex}:${message.createdAt}`
+      speechTextByKey.set(speechKey, message.text)
+      const speechButton = document.createElement('button')
+      speechButton.type = 'button'
+      speechButton.className = 'message-speech-button'
+      speechButton.dataset.speechKey = speechKey
+      speechButton.setAttribute('aria-pressed', 'false')
+      speechButton.textContent = '朗读'
+      item.append(speechButton)
+    }
     messageList.append(item)
   }
+  if (playbackMessageKey !== undefined && !speechTextByKey.has(playbackMessageKey)) playbackController.cancel()
+  updatePlaybackControls()
   messageList.hidden = state.messages.length === 0
   conversationEmpty.hidden = state.messages.length > 0
   document.querySelector('#open-settings-button').hidden = pairingPhase === 'paired'
@@ -716,6 +757,7 @@ voiceEnabledInput.addEventListener('change', () => {
 voiceButton.addEventListener('pointerdown', event => {
   if (event.button !== 0 || voiceButton.disabled) return
   event.preventDefault()
+  playbackController.cancel()
   if (voiceController.start()) voiceButton.setPointerCapture(event.pointerId)
 })
 voiceButton.addEventListener('pointerup', event => {
@@ -726,8 +768,23 @@ voiceButton.addEventListener('pointercancel', () => voiceController.cancel())
 voiceButton.addEventListener('keydown', event => {
   if ((event.key === ' ' || event.key === 'Enter') && !event.repeat) {
     event.preventDefault()
+    playbackController.cancel()
     voiceController.start()
   }
+})
+messageList.addEventListener('click', event => {
+  const button = event.target instanceof Element ? event.target.closest('[data-speech-key]') : null
+  if (button === null) return
+  const key = button.dataset.speechKey
+  if (playbackState.phase === 'speaking' && playbackMessageKey === key) {
+    playbackController.cancel()
+    return
+  }
+  const text = speechTextByKey.get(key)
+  if (text === undefined) return
+  playbackController.cancel()
+  playbackMessageKey = key
+  if (!playbackController.speak(text)) playbackMessageKey = undefined
 })
 voiceButton.addEventListener('keyup', event => {
   if (event.key === ' ' || event.key === 'Enter') {
@@ -746,6 +803,7 @@ window.addEventListener('online', () => {
 })
 window.addEventListener('offline', () => {
   voiceController.cancel()
+  playbackController.cancel()
   conversationsClient.setOnline(false)
   setConnection('offline', '离线', '设备当前没有网络连接')
   updateDisconnectControl()
@@ -756,6 +814,7 @@ document.addEventListener('visibilitychange', () => {
     void conversationsClient.refresh()
   } else {
     voiceController.cancel()
+    playbackController.cancel()
   }
 })
 
