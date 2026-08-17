@@ -7,7 +7,7 @@ and Jarvis state. The archive is private but not encrypted.
 
 - Harness sessions under `.dsh/sessions/`.
 - Harness workspace and projection stores under `.dsh/storages/`.
-- Jarvis reminders and append-only audit records.
+- Jarvis reminders, owner-controlled memory, and append-only audit records.
 - Gateway pairing, access-session, and retained-event state when present.
 
 The archive never includes `.env`, Harness root settings or credentials,
@@ -33,7 +33,7 @@ owner-only permissions.
 
 Store the archive on an encrypted volume or in another encrypted backup system.
 The `0600` file mode prevents other local accounts from reading it but does not
-encrypt its conversations, reminders, or audit history.
+encrypt its conversations, reminders, memory, or audit history.
 
 ## Restore a backup
 
@@ -54,7 +54,7 @@ state.
 
 Restart with `npm start` or reinstall the LaunchAgent. Reconfigure Harness
 settings, model credentials, Keychain, Owner Token, and TLS credentials
-separately on a new Mac, then verify one restored conversation and reminder
+separately on a new Mac, then verify one restored conversation, reminder, and memory item
 before deleting the pre-restore copy.
 
 ## Alternate state directories

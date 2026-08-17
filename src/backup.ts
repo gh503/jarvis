@@ -13,6 +13,7 @@ import {
 import { dirname, isAbsolute, join, posix, relative, resolve, sep } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { acquireMaintenanceLease } from './runtime-lease.js'
+import { validateMemoryDocument } from './memory.js'
 
 const FORMAT = 'jarvis-backup'
 const FORMAT_VERSION = 1
@@ -25,6 +26,7 @@ const EXACT_FILES = [
   { path: '.dsh/storages/workspace.json', required: true },
   { path: '.dsh/storages/session_projcache.json', required: false },
   { path: 'data/reminders.json', required: true },
+  { path: 'data/memory.json', required: false },
   { path: 'data/audit.jsonl', required: true },
   { path: 'data/pairing-state.json', required: false },
   { path: 'data/session-state.json', required: false },
@@ -265,6 +267,8 @@ function validatePayloadSemantics(files: ValidatedFile[]): void {
   }
   const reminders = parseJsonFile(byPath.get('data/reminders.json') as ValidatedFile, 'data/reminders.json')
   if (!Array.isArray(reminders)) throw new Error('data/reminders.json must contain an array')
+  const memory = byPath.get('data/memory.json')
+  if (memory !== undefined) validateMemoryDocument(parseJsonFile(memory, 'data/memory.json'))
   parseJsonFile(byPath.get('.dsh/storages/workspace.json') as ValidatedFile, '.dsh/storages/workspace.json')
   for (const path of ['.dsh/storages/session_projcache.json', 'data/pairing-state.json', 'data/session-state.json', 'data/event-state.json']) {
     const file = byPath.get(path)

@@ -44,6 +44,7 @@
 - 配对后的 PWA 可读取 Gateway 认可的当前设备与会话状态，并可在设置中撤销自身设备凭据；撤销会关闭该设备全部会话与实时连接，并清除浏览器中的身份、令牌、对话快照和事件游标。
 - 配对后的 PWA 提供隐私优先的应用内通知中心；审批、对话完成和连接事件只生成固定摘要，支持分类开关、静默时段、每小时系统通知上限、已读/清空和显式系统通知授权。
 - 已提供离线一致性备份和原子恢复命令；运行租约阻止在 Harness 或 Gateway 活跃时复制状态，恢复前校验结构、权限和 SHA-256。
+- 已提供用户可控记忆的私有存储核心：候选默认仅为提议，确认、拒绝、编辑继承、到期、导出和物理删除均使用严格版本化状态；尚未接入模型自动提取、提示词召回或管理 UI。
 - 已实现智能设备注册核心：规范化设备、位置、能力、风险、别名、稳定外部身份映射和带时间戳状态；真实设备验收仍未完成。
 - 已实现只读 Home Assistant WebSocket 协议核心及可选 Gateway 运行时装配：认证、确定性实体快照、状态事件过滤、删除实体降级、断线重连和全量重同步；真实 Home Assistant 地址、凭据、服务行为和硬件验收仍未完成。
 - 已实现低风险 Home Assistant 服务调用对账核心：灯、开关和普通媒体使用幂等键，服务确认与实际状态分离；只有后续目标状态被观察到才报告成功，中高风险动作和真实硬件验收仍需后续阶段。
@@ -192,12 +193,13 @@ npm run backup -- --output backups/jarvis-backup.jarvis
 npm run restore -- --archive backups/jarvis-backup.jarvis
 ```
 
-归档包含 Harness 会话、工作区映射、提醒、审计和已有 Gateway 状态，文件权限为 `0600`。它不包含 `.env`、Harness 模型凭据、Keychain 项、Owner Token 或 TLS 私钥。当前归档未加密，应只保存在受保护磁盘；完整停止、验证和跨机器恢复步骤见[备份与恢复指南](docs/operations/backup-restore.md)。
+归档包含 Harness 会话、工作区映射、提醒、用户记忆、审计和已有 Gateway 状态，文件权限为 `0600`。它不包含 `.env`、Harness 模型凭据、Keychain 项、Owner Token 或 TLS 私钥。当前归档未加密，应只保存在受保护磁盘；完整停止、验证和跨机器恢复步骤见[备份与恢复指南](docs/operations/backup-restore.md)。
 
 ## 数据与安全
 
 - Harness 会话：`.dsh/sessions/`
 - Jarvis 提醒：`data/reminders.json`
+- Jarvis 用户记忆：`data/memory.json`
 - Jarvis 审计：`data/audit.jsonl`
 - Gateway 配对、访问会话和有界归一化事件：`data/pairing-state.json`、`data/session-state.json`、`data/event-state.json`
 - API Key：存放在未纳入 Git 的 `.env` 或 Harness 本机凭据存储，均不进入备份归档

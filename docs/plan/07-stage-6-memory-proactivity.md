@@ -24,6 +24,15 @@ Harness Schedule is retained only for session-local reminders. Its current deliv
 
 Raw model reasoning is never a memory authority.
 
+## Current Increment
+
+The versioned owner-controlled source store is tracked by [#88](https://github.com/gh503/jarvis/issues/88).
+
+- Candidates enter only the proposed state and cannot become confirmed through model authority in this increment.
+- Confirmed edits supersede the previous source item; rejected, superseded, expired, and physically deleted items are excluded from recall.
+- The bounded private source file is initialized by Jarvis and included in offline backup/restore with semantic validation.
+- Automatic extraction, prompt-context retrieval, derived indexes, owner management UI, and proactive rules remain deferred.
+
 ## Modules
 
 ### `packages/memory`

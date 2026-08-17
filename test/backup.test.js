@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict'
+import { createHash } from 'node:crypto'
 import { chmod, mkdir, mkdtemp, readFile, rm, stat, symlink, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -28,12 +29,22 @@ async function seedState(root) {
   await privateFile(join(dshHome, 'settings.yaml'), 'settings-canary-must-not-be-backed-up\n')
   await privateFile(join(dshHome, '.credentials.yaml'), 'credential-canary-must-not-be-backed-up\n')
   await privateFile(join(dataDir, 'reminders.json'), `${JSON.stringify([{ id: 'reminder-one', text: 'one reminder' }])}\n`)
+  await privateFile(join(dataDir, 'memory.json'), `${JSON.stringify({
+    version: 1,
+    items: [{
+      id: 'memory-one', ownerId: 'local-owner', class: 'profile', content: 'Preferred language is Chinese',
+      sensitivity: 'standard', confidence: 1, source: { kind: 'explicit-user', reference: 'message-one' },
+      retention: { kind: 'until-deleted', expiresAt: null }, status: 'confirmed',
+      createdAt: '2030-01-01T00:00:00.000Z', updatedAt: '2030-01-01T00:00:00.000Z',
+      confirmedAt: '2030-01-01T00:00:00.000Z', supersedesId: null,
+    }],
+  })}\n`)
   await privateFile(join(dataDir, 'audit.jsonl'), '{"id":"audit-one","phase":"policy"}\n{"id":"audit-two","phase":"result"}\n')
   await privateFile(join(root, '.env'), 'DEEPSEEK_API_KEY=environment-canary-must-not-be-backed-up\n')
   return { dshHome, dataDir, sessionPath }
 }
 
-test('backs up and restores one conversation, reminder, and audit chain without secrets', async () => {
+test('backs up and restores one conversation, reminder, memory, and audit chain without secrets', async () => {
   const root = await mkdtemp(join(tmpdir(), 'jarvis-backup-'))
   try {
     const source = await seedState(join(root, 'source'))
@@ -58,12 +69,31 @@ test('backs up and restores one conversation, reminder, and audit chain without 
       'one committed conversation',
     )
     assert.deepEqual(JSON.parse(await readFile(join(restoredData, 'reminders.json'), 'utf8')), [{ id: 'reminder-one', text: 'one reminder' }])
+    assert.deepEqual(
+      JSON.parse(await readFile(join(restoredData, 'memory.json'), 'utf8')),
+      JSON.parse(await readFile(join(source.dataDir, 'memory.json'), 'utf8')),
+    )
     assert.equal((await readFile(join(restoredData, 'audit.jsonl'), 'utf8')).trim().split('\n').length, 2)
     assert.equal(await readFile(join(restoredDsh, '.credentials.yaml'), 'utf8'), 'destination-credential-remains-local\n')
     assert.equal(await readFile(join(restoredDsh, 'settings.yaml'), 'utf8'), 'destination-settings-remain-local\n')
     assert.equal(await readFile(join(restoredData, 'service.log'), 'utf8'), 'unmanaged log remains local\n')
     assert.equal((await stat(join(restoredDsh, 'sessions'))).mode & 0o777, 0o700)
     assert.equal((await stat(join(restoredData, 'reminders.json'))).mode & 0o777, 0o600)
+    assert.equal((await stat(join(restoredData, 'memory.json'))).mode & 0o777, 0o600)
+  } finally {
+    await rm(root, { recursive: true, force: true })
+  }
+})
+
+test('backs up legacy state before the memory store is first initialized', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'jarvis-backup-legacy-'))
+  try {
+    const source = await seedState(join(root, 'source'))
+    await rm(join(source.dataDir, 'memory.json'))
+    const archivePath = join(root, 'legacy-backup.jarvis')
+    await createBackup({ outputPath: archivePath, dshHome: source.dshHome, dataDir: source.dataDir, runtimeDir: join(root, 'runtime') })
+    const archive = JSON.parse(await readFile(archivePath, 'utf8'))
+    assert.equal(archive.files.some(file => file.path === 'data/memory.json'), false)
   } finally {
     await rm(root, { recursive: true, force: true })
   }
@@ -103,6 +133,19 @@ test('rejects corrupted or unsafe archives before replacing existing state', asy
     await assert.rejects(
       restoreBackup({ archivePath: unsafeEntryPath, dshHome: targetDsh, dataDir: targetData, runtimeDir }),
       /unsafe permissions/,
+    )
+
+    const invalidMemory = structuredClone(document)
+    const memoryFile = invalidMemory.files.find(file => file.path === 'data/memory.json')
+    const invalidMemoryContent = Buffer.from('{"version":1,"items":[],"unexpected":true}\n')
+    memoryFile.size = invalidMemoryContent.byteLength
+    memoryFile.sha256 = createHash('sha256').update(invalidMemoryContent).digest('hex')
+    memoryFile.contentBase64 = invalidMemoryContent.toString('base64')
+    const invalidMemoryPath = join(root, 'invalid-memory.jarvis')
+    await privateFile(invalidMemoryPath, `${JSON.stringify(invalidMemory)}\n`)
+    await assert.rejects(
+      restoreBackup({ archivePath: invalidMemoryPath, dshHome: targetDsh, dataDir: targetData, runtimeDir }),
+      /memory document is invalid/,
     )
 
     await chmod(archivePath, 0o644)
