@@ -14,6 +14,16 @@ GATEWAY_HEALTH_FILE="$RUNTIME_DIR/gateway-health.json"
 PID=""
 GATEWAY_PID=""
 
+assert_loopback_listener() {
+  local port="$1"
+  local listeners
+  listeners="$(lsof -nP -iTCP:"$port" -sTCP:LISTEN -Fn | sed -n 's/^n//p')"
+  if [[ "$listeners" != "127.0.0.1:$port" ]]; then
+    print -u2 "port $port exposed unexpected listener(s): ${listeners:-none}"
+    exit 1
+  fi
+}
+
 cleanup() {
   if [[ -n "$GATEWAY_PID" ]]; then
     kill "$GATEWAY_PID" 2>/dev/null || true
@@ -77,6 +87,7 @@ for attempt in {1..30}; do
 done
 
 [[ -s "$HEALTH_FILE" ]]
+assert_loopback_listener "$PORT"
 
 MEMORY_FILE="$RUNTIME_DIR/harness-data/memory.json"
 [[ -f "$MEMORY_FILE" ]]
@@ -128,6 +139,7 @@ for attempt in {1..30}; do
   sleep 1
 done
 [[ -s "$GATEWAY_HEALTH_FILE" ]]
+assert_loopback_listener "$GATEWAY_PORT"
 
 JARVIS_GATEWAY_URL="http://127.0.0.1:$GATEWAY_PORT" \
   JARVIS_OWNER_TOKEN="$OWNER_TOKEN" \

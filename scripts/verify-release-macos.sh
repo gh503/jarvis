@@ -29,6 +29,7 @@ cd "$CHECKOUT"
 npm ci
 npm run verify
 npm run verify:runtime
+npm run verify:recovery
 
 for attempt in {1..30}; do
   candidate=$((30_000 + RANDOM % 20_000))

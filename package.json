@@ -21,6 +21,8 @@
     "pair:approve": "npm run build --silent && node dist/pairing-approval-main.js",
     "verify": "npm run typecheck && npm test",
     "verify:runtime": "./scripts/verify-local-runtime.sh",
+    "verify:recovery": "npm run build --silent && ./scripts/verify-recovery-macos.sh",
+    "check:dependencies": "npm audit --omit=dev --audit-level=high",
     "check:gateway": "./scripts/check-private-gateway.sh",
     "verify:release": "./scripts/verify-release-macos.sh",
     "release:archive": "./scripts/build-release-archive.sh"
