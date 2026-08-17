@@ -23,7 +23,7 @@ Raw audio and partial transcripts stay in the Jarvis voice plane. Only the accep
 
 ## Current Increment
 
-Browser push-to-talk transcription and explicit speech playback foundations are tracked by [#82](https://github.com/gh503/jarvis/issues/82) and [#84](https://github.com/gh503/jarvis/issues/84).
+Browser push-to-talk transcription, explicit speech playback, and active-turn cancellation foundations are tracked by [#82](https://github.com/gh503/jarvis/issues/82), [#84](https://github.com/gh503/jarvis/issues/84), and [#86](https://github.com/gh503/jarvis/issues/86).
 
 - Microphone use is disabled on every page load and begins only while the user holds the composer control.
 - One browser utterance is limited to 60 seconds and 16 KiB of transcript text.
@@ -33,12 +33,13 @@ Browser push-to-talk transcription and explicit speech playback foundations are 
 - Jarvis does not receive or persist raw audio in this increment; browser/OS provider behavior is not represented as local-only ASR.
 - Committed assistant messages expose an explicit bounded browser speech action; playback is never started for cached or newly synchronized history without a user action.
 - Starting a new push-to-talk utterance synchronously cancels current browser speech and invalidates late playback callbacks.
+- A selected running conversation exposes an explicit stop action; a successfully started push-to-talk utterance also requests cancellation through the authenticated Gateway and deduplicates requests until authoritative convergence.
 
 Deferred from this increment:
 
 - Named Mac and phone microphone qualification.
 - Jarvis-owned streaming audio transport and selected ASR provider.
-- Jarvis-owned streaming TTS and Harness turn cancellation.
+- Jarvis-owned streaming TTS and provider-level cancellation latency qualification.
 
 ## Modules
 

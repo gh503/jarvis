@@ -140,6 +140,7 @@ export class ConversationsClient {
     }
     this.active = false
     this.online = true
+    this.phase = 'disabled'
     this.loading = false
     this.sending = false
     this.conversations = []
@@ -154,6 +155,8 @@ export class ConversationsClient {
     this.deviceApprovalDecisionKeys = new Map()
     this.approvalSubmittedIds = new Set()
     this.deviceApprovalSubmittedIds = new Set()
+    this.cancellationPendingIds = new Set()
+    this.cancellationGeneration = 0
     this.cachedAt = undefined
     this.socket = undefined
     this.reconnectTimer = undefined
@@ -197,6 +200,8 @@ export class ConversationsClient {
     this.deviceApprovalDecisionKeys.clear()
     this.approvalSubmittedIds.clear()
     this.deviceApprovalSubmittedIds.clear()
+    this.cancellationPendingIds.clear()
+    this.cancellationGeneration += 1
     this.clearReconnect()
     if (this.socket !== undefined) {
       const socket = this.socket
@@ -229,6 +234,8 @@ export class ConversationsClient {
       this.deviceApprovalDecisionKeys.clear()
       this.approvalSubmittedIds.clear()
       this.deviceApprovalSubmittedIds.clear()
+      this.cancellationPendingIds.clear()
+      this.cancellationGeneration += 1
       this.clearReconnect()
       if (this.socket !== undefined) {
         const socket = this.socket
@@ -259,6 +266,10 @@ export class ConversationsClient {
         throw new Error(`无法读取智能设备审批 (${deviceApprovalsResponse.status})`)
       }
       this.conversations = parseConversationList(response.value)
+      const runningConversationIds = new Set(this.conversations.filter(item => item.running).map(item => item.id))
+      for (const conversationId of this.cancellationPendingIds) {
+        if (!runningConversationIds.has(conversationId)) this.cancellationPendingIds.delete(conversationId)
+      }
       this.approvals = parseApprovalList(approvalsResponse.value)
       this.deviceApprovals = deviceApprovalsResponse.status === 503
         ? [] : parseDeviceApprovalList(deviceApprovalsResponse.value)
@@ -362,6 +373,35 @@ export class ConversationsClient {
       this.sending = false
     }
     this.emit(this.active && this.online ? 'ready' : this.conversations.length > 0 ? 'stale' : 'disabled', errorMessage)
+    return errorMessage === undefined
+  }
+
+  async cancelActive() {
+    if (!this.active || !this.online || this.phase !== 'ready' || this.selectedId === null
+      || this.cancellationPendingIds.has(this.selectedId)) return false
+    const conversation = this.conversations.find(item => item.id === this.selectedId)
+    if (conversation?.running !== true) return false
+    const conversationId = conversation.id
+    const generation = this.cancellationGeneration
+    this.cancellationPendingIds.add(conversationId)
+    this.emit('ready')
+    let errorMessage
+    try {
+      const response = await this.pairing.authenticatedRequest(
+        `/v1/conversations/${encodeURIComponent(conversationId)}/cancel`,
+        { method: 'POST', body: '{}' },
+      )
+      if (response.status !== 200 || response.value?.accepted !== true) {
+        throw new Error(`无法停止回复 (${response.status})`)
+      }
+      if (!this.active || !this.online || generation !== this.cancellationGeneration) return false
+      this.addActivity('已请求停止回复')
+    } catch (error) {
+      if (generation !== this.cancellationGeneration) return false
+      this.cancellationPendingIds.delete(conversationId)
+      errorMessage = messageForError(error, '停止回复失败')
+    }
+    this.emit(this.active && this.online ? 'ready' : 'stale', errorMessage)
     return errorMessage === undefined
   }
 
@@ -559,6 +599,7 @@ export class ConversationsClient {
       this.conversations = this.conversations.map(item => item.id === event.conversationId
         ? { ...item, running: event.running, updatedAt: event.occurredAt }
         : item).sort((left, right) => right.updatedAt - left.updatedAt)
+      if (!event.running) this.cancellationPendingIds.delete(event.conversationId)
     } else if (event.type === 'conversation.message.committed' && ID_PATTERN.test(event.conversationId)
       && validMessage(event.message)) {
       this.conversations = this.conversations.map(item => item.id === event.conversationId
@@ -635,6 +676,7 @@ export class ConversationsClient {
   }
 
   emit(phase, message) {
+    this.phase = phase
     this.onState({
       phase,
       conversations: this.conversations.map(item => ({ ...item })),
@@ -647,6 +689,7 @@ export class ConversationsClient {
       deviceApprovalBusyId: this.deviceApprovalBusyId,
       approvalSubmittedIds: [...this.approvalSubmittedIds],
       deviceApprovalSubmittedIds: [...this.deviceApprovalSubmittedIds],
+      cancellationPendingIds: [...this.cancellationPendingIds],
       cachedAt: this.cachedAt,
       sending: this.sending,
       ...(message === undefined ? {} : { message }),

@@ -1,7 +1,7 @@
-import { ConversationsClient } from './conversations.js?v=14'
-import { BrowserPairing } from './pairing.js?v=14'
-import { NotificationCenter } from './notifications.js?v=14'
-import { PushToTalkController, SpeechPlaybackController } from './voice.js?v=14'
+import { ConversationsClient } from './conversations.js?v=15'
+import { BrowserPairing } from './pairing.js?v=15'
+import { NotificationCenter } from './notifications.js?v=15'
+import { PushToTalkController, SpeechPlaybackController } from './voice.js?v=15'
 
 const connectionLabel = document.querySelector('#connection-label')
 const gatewayDetail = document.querySelector('#gateway-detail')
@@ -49,6 +49,7 @@ const voiceSupportDetail = document.querySelector('#voice-support-detail')
 const newConversationButton = document.querySelector('#new-conversation-button')
 const emptyNewConversationButton = document.querySelector('#empty-new-conversation-button')
 const mobileConversationSelect = document.querySelector('#mobile-conversation-select')
+const cancelTurnButton = document.querySelector('#cancel-turn-button')
 const chatTitle = document.querySelector('#chat-title')
 const chatFreshness = document.querySelector('#chat-freshness')
 const conversationNotice = document.querySelector('#conversation-notice')
@@ -551,6 +552,11 @@ function handleConversationState(state) {
     }
   }
   mobileConversationSelect.disabled = !mutable || state.conversations.length === 0
+  const cancellationPending = current !== undefined && (state.cancellationPendingIds ?? []).includes(current.id)
+  cancelTurnButton.hidden = current?.running !== true
+  cancelTurnButton.disabled = !mutable || cancellationPending
+  cancelTurnButton.setAttribute('aria-busy', String(cancellationPending))
+  cancelTurnButton.title = cancellationPending ? '正在停止回复' : '停止回复'
   newConversationButton.disabled = !mutable || state.sending
   emptyNewConversationButton.disabled = !mutable || state.sending
 
@@ -729,6 +735,7 @@ approvalList.addEventListener('click', event => {
   void conversationsClient.decideDeviceApproval(card.dataset.deviceApprovalId, button.dataset.deviceApprovalAction)
 })
 mobileConversationSelect.addEventListener('change', () => { void conversationsClient.select(mobileConversationSelect.value) })
+cancelTurnButton.addEventListener('click', () => { void conversationsClient.cancelActive() })
 newConversationButton.addEventListener('click', () => { void conversationsClient.create() })
 emptyNewConversationButton.addEventListener('click', () => { void conversationsClient.create() })
 messageInput.addEventListener('input', () => {
@@ -758,7 +765,10 @@ voiceButton.addEventListener('pointerdown', event => {
   if (event.button !== 0 || voiceButton.disabled) return
   event.preventDefault()
   playbackController.cancel()
-  if (voiceController.start()) voiceButton.setPointerCapture(event.pointerId)
+  if (voiceController.start()) {
+    void conversationsClient.cancelActive()
+    voiceButton.setPointerCapture(event.pointerId)
+  }
 })
 voiceButton.addEventListener('pointerup', event => {
   if (voiceButton.hasPointerCapture(event.pointerId)) voiceButton.releasePointerCapture(event.pointerId)
@@ -769,7 +779,7 @@ voiceButton.addEventListener('keydown', event => {
   if ((event.key === ' ' || event.key === 'Enter') && !event.repeat) {
     event.preventDefault()
     playbackController.cancel()
-    voiceController.start()
+    if (voiceController.start()) void conversationsClient.cancelActive()
   }
 })
 messageList.addEventListener('click', event => {
