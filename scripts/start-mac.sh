@@ -15,5 +15,30 @@ export DSH_PERMISSION_MODE=workspace-write
 export JARVIS_DATA_DIR="${JARVIS_DATA_DIR:-$ROOT/data}"
 
 PORT="${JARVIS_PORT:-3080}"
-exec node dist/runtime-main.js harness -- \
-  "${NPM_BIN:-npm}" exec -- dsh web --patch "$ROOT/cordis.patch.yml" --host 127.0.0.1 --port "$PORT"
+MEMORY_PID=""
+HARNESS_PID=""
+cleanup() {
+  if [[ -n "$HARNESS_PID" ]]; then
+    kill "$HARNESS_PID" 2>/dev/null || true
+    wait "$HARNESS_PID" 2>/dev/null || true
+  fi
+  if [[ -n "$MEMORY_PID" ]]; then
+    kill "$MEMORY_PID" 2>/dev/null || true
+    wait "$MEMORY_PID" 2>/dev/null || true
+  fi
+}
+trap cleanup EXIT INT TERM
+
+node dist/memory-service-main.js &
+MEMORY_PID=$!
+for attempt in {1..50}; do
+  [[ -f "$JARVIS_DATA_DIR/memory-service.json" ]] && break
+  kill -0 "$MEMORY_PID" 2>/dev/null || { wait "$MEMORY_PID"; exit 1; }
+  sleep 0.1
+done
+[[ -f "$JARVIS_DATA_DIR/memory-service.json" ]]
+
+node dist/runtime-main.js harness -- \
+  "${NPM_BIN:-npm}" exec -- dsh web --patch "$ROOT/cordis.patch.yml" --host 127.0.0.1 --port "$PORT" &
+HARNESS_PID=$!
+wait "$HARNESS_PID"

@@ -8,7 +8,7 @@ import { AppRegistry } from './apps.js'
 import { AuditLog } from './audit.js'
 import { DeviceCommandGatewayClient } from './device-command-client.js'
 import { recallForModel } from './memory-recall.js'
-import { MemoryStore } from './memory.js'
+import { MemoryServiceClient } from './memory-service.js'
 import { MqttCommandGatewayClient } from './mqtt-command-client.js'
 import { ReminderStore, type Reminder } from './reminders.js'
 import { readSystemStatus } from './system-status.js'
@@ -60,8 +60,9 @@ export async function apply(ctx: Context): Promise<void> {
     url: process.env.JARVIS_DEVICE_GATEWAY_URL ?? 'http://127.0.0.1:3090',
     token: deviceCommandToken,
   })
-  const memories = new MemoryStore(dataDir)
-  await Promise.all([audit.initialize(), reminders.initialize(), memories.initialize()])
+  const memories = await MemoryServiceClient.discover(dataDir)
+  if (memories === undefined) throw new Error('Jarvis memory service is not running')
+  await Promise.all([audit.initialize(), reminders.initialize()])
 
   ctx.tools.guard(exec => JARVIS_TOOLS.has(exec.name) || exec.name === 'ask_user_question'
     ? undefined

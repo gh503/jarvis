@@ -4,6 +4,7 @@ import { stdin, stdout } from 'node:process'
 import { createInterface } from 'node:readline/promises'
 import { parseArgs } from 'node:util'
 import { MemoryStore, type MemoryClass, type MemorySensitivity, type MemoryStatus } from './memory.js'
+import { acquireDirectMemoryWriter, MemoryServiceClient, type MemoryOperations } from './memory-service.js'
 
 const MAX_INPUT_BYTES = 8 * 1024
 const STATUSES: MemoryStatus[] = ['proposed', 'confirmed', 'rejected', 'superseded', 'expired']
@@ -115,8 +116,19 @@ async function main(): Promise<void> {
   if (command === 'export') required(parsed.values, 'output')
   const content = command === 'propose' ? await readContent('Memory content')
     : command === 'edit' ? await readContent('Updated memory content') : undefined
-  const store = new MemoryStore(dataDir)
-  await store.initialize()
+  const client = await MemoryServiceClient.discover(dataDir)
+  let releaseWriter: (() => Promise<void>) | undefined
+  let store: MemoryOperations
+  if (client === undefined) {
+    releaseWriter = await acquireDirectMemoryWriter(dataDir)
+    const direct = new MemoryStore(dataDir)
+    await direct.initialize()
+    store = direct
+  } else {
+    store = client
+  }
+
+  try {
 
   if (command === 'propose') {
     const classValue = required(parsed.values, 'class')
@@ -167,6 +179,9 @@ async function main(): Promise<void> {
     print({ item: await store.editConfirmed(id, content as string) })
   } else if (command === 'delete') {
     print({ item: await store.delete(id) })
+  }
+  } finally {
+    if (releaseWriter !== undefined) await releaseWriter()
   }
 }
 
