@@ -23,8 +23,8 @@ test('declares a scoped installable manifest and complete offline shell', async 
 
   const serviceWorker = await readFile(join(webRoot, 'sw.js'), 'utf8')
   for (const path of [
-    '/app/', '/app/app.css', '/app/app.js?v=13', '/app/pairing.js?v=13', '/app/device-store.js?v=13',
-    '/app/conversations.js?v=13', '/app/notifications.js?v=13', '/app/voice.js?v=13', '/app/apple-touch-icon.png', '/app/icon.svg',
+    '/app/', '/app/app.css', '/app/app.js?v=14', '/app/pairing.js?v=14', '/app/device-store.js?v=14',
+    '/app/conversations.js?v=14', '/app/notifications.js?v=14', '/app/voice.js?v=14', '/app/apple-touch-icon.png', '/app/icon.svg',
     '/app/icon-192.png', '/app/icon-512.png', '/app/manifest.webmanifest',
   ]) {
     assert.ok(serviceWorker.includes(`'${path}'`), `${path} must be pre-cached`)
@@ -61,6 +61,7 @@ test('keeps the browser client on the public Gateway contract', async () => {
   assert.match(notificationsSource, /class NotificationCenter/)
   assert.match(notificationsSource, /固定摘要|高风险操作/)
   assert.match(voiceSource, /class PushToTalkController/)
+  assert.match(voiceSource, /class SpeechPlaybackController/)
   assert.doesNotMatch(voiceSource, /indexedDB|localStorage|sessionStorage|fetch\(/)
   assert.doesNotMatch(notificationsSource, /arguments|message|rpcId|accessToken|refreshToken/)
   assert.match(htmlSource, /id="approval-list"/)
@@ -69,6 +70,8 @@ test('keeps the browser client on the public Gateway contract', async () => {
   assert.match(htmlSource, /id="pair-button"[^>]+disabled/)
   assert.match(htmlSource, /id="voice-button"[^>]+disabled/)
   assert.match(htmlSource, /id="voice-enabled"[^>]+type="checkbox"/)
+  assert.match(appSource, /data-speech-key|speechKey/)
+  assert.match(appSource, /playbackController\.cancel\(\)/)
   assert.doesNotMatch(`${appSource}\n${pairingSource}\n${conversationsSource}`, /@deepseek-ai|dsh|Harness|\/api\//i)
   assert.doesNotMatch(`${appSource}\n${pairingSource}\n${conversationsSource}`, /localStorage|sessionStorage/)
   assert.doesNotMatch(conversationsSource, /\.close\((1002|1008|1011)/)

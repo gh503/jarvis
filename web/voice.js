@@ -3,6 +3,14 @@ function browserRecognitionFactory() {
   return typeof Recognition === 'function' ? () => new Recognition() : undefined
 }
 
+function browserSpeechPlayback() {
+  const synthesis = globalThis.speechSynthesis
+  const Utterance = globalThis.SpeechSynthesisUtterance
+  if (synthesis === undefined || typeof synthesis.speak !== 'function' || typeof synthesis.cancel !== 'function'
+    || typeof Utterance !== 'function') return {}
+  return { synthesis, utteranceFactory: text => new Utterance(text) }
+}
+
 const MAX_TRANSCRIPT_CHARS = 16 * 1024
 
 function transcriptFromResults(results) {
@@ -190,5 +198,103 @@ export class PushToTalkController {
       ...(message === undefined ? {} : { message }),
       ...(transcript === undefined || transcript.length === 0 ? {} : { transcript }),
     })
+  }
+}
+
+export class SpeechPlaybackController {
+  constructor(options = {}) {
+    const browser = options.synthesis === undefined && options.utteranceFactory === undefined ? browserSpeechPlayback() : {}
+    this.synthesis = options.synthesis ?? browser.synthesis
+    this.utteranceFactory = options.utteranceFactory ?? browser.utteranceFactory
+    this.onState = options.onState ?? (() => {})
+    this.language = options.language ?? 'zh-CN'
+    this.rate = options.rate ?? 1
+    if (typeof this.rate !== 'number' || !Number.isFinite(this.rate) || this.rate < 0.5 || this.rate > 2) {
+      throw new RangeError('rate must be between 0.5 and 2')
+    }
+    this.supported = this.synthesis !== undefined && typeof this.synthesis.speak === 'function'
+      && typeof this.synthesis.cancel === 'function' && typeof this.utteranceFactory === 'function'
+    this.generation = 0
+    this.utterance = undefined
+    this.phase = this.supported ? 'idle' : 'unavailable'
+    this.emit(this.phase)
+  }
+
+  getState() {
+    return { phase: this.phase, supported: this.supported }
+  }
+
+  speak(text) {
+    if (!this.supported) {
+      this.emit('unavailable', '此浏览器不支持语音播放')
+      return false
+    }
+    if (typeof text !== 'string' || text.trim().length === 0 || text.length > MAX_TRANSCRIPT_CHARS) {
+      this.emit('error', '朗读文本无效或过长')
+      return false
+    }
+    this.cancel()
+    const generation = ++this.generation
+    let utterance
+    try {
+      utterance = this.utteranceFactory(text.trim())
+    } catch {
+      this.emit('error', '语音播放无法启动')
+      return false
+    }
+    if (utterance === undefined || utterance === null) {
+      this.emit('error', '语音播放无法启动')
+      return false
+    }
+    this.utterance = utterance
+    utterance.lang = this.language
+    utterance.rate = this.rate
+    utterance.onstart = () => {
+      if (this.isCurrent(utterance, generation)) this.emit('speaking', '正在朗读')
+    }
+    utterance.onend = () => {
+      if (!this.isCurrent(utterance, generation)) return
+      this.utterance = undefined
+      this.emit('idle')
+    }
+    utterance.onerror = event => {
+      if (!this.isCurrent(utterance, generation)) return
+      this.utterance = undefined
+      this.emit(event.error === 'canceled' || event.error === 'interrupted' ? 'cancelled' : 'error',
+        event.error === 'canceled' || event.error === 'interrupted' ? '朗读已停止' : '语音播放失败')
+    }
+    this.emit('speaking', '正在启动朗读')
+    try {
+      this.synthesis.speak(utterance)
+      return true
+    } catch {
+      if (this.isCurrent(utterance, generation)) {
+        this.utterance = undefined
+        this.emit('error', '语音播放无法启动')
+      }
+      return false
+    }
+  }
+
+  cancel() {
+    if (this.utterance === undefined) return false
+    const utterance = this.utterance
+    this.generation += 1
+    this.utterance = undefined
+    utterance.onstart = null
+    utterance.onend = null
+    utterance.onerror = null
+    try { this.synthesis.cancel() } catch {}
+    this.emit('cancelled', '朗读已停止')
+    return true
+  }
+
+  isCurrent(utterance, generation) {
+    return this.utterance === utterance && this.generation === generation
+  }
+
+  emit(phase, message) {
+    this.phase = phase
+    this.onState({ phase, supported: this.supported, ...(message === undefined ? {} : { message }) })
   }
 }

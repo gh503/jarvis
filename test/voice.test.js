@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { PushToTalkController } from '../web/voice.js'
+import { PushToTalkController, SpeechPlaybackController } from '../web/voice.js'
 
 class FakeRecognition {
   startCalls = 0
@@ -114,4 +114,66 @@ test('automatically stops a bounded utterance and rejects oversized transcript c
   assert.equal(oversizedRecognition.abortCalls, 1)
   assert.equal(states.at(-1).phase, 'error')
   assert.deepEqual(finalTranscripts, [])
+})
+
+class FakeSynthesis {
+  spoken = []
+  cancelCalls = 0
+
+  speak(utterance) { this.spoken.push(utterance) }
+  cancel() { this.cancelCalls += 1 }
+}
+
+test('speaks one bounded text and ignores callbacks from replaced playback', () => {
+  const synthesis = new FakeSynthesis()
+  const states = []
+  const controller = new SpeechPlaybackController({
+    synthesis,
+    utteranceFactory: text => ({ text }),
+    onState: state => states.push(state),
+  })
+  assert.equal(controller.speak('第一条回复'), true)
+  const first = synthesis.spoken[0]
+  assert.equal(first.lang, 'zh-CN')
+  first.onstart()
+  assert.equal(states.at(-1).phase, 'speaking')
+  const staleEnd = first.onend
+
+  assert.equal(controller.speak('第二条回复'), true)
+  const second = synthesis.spoken[1]
+  assert.equal(synthesis.cancelCalls, 1)
+  staleEnd()
+  assert.equal(controller.getState().phase, 'speaking')
+  second.onend()
+  assert.equal(controller.getState().phase, 'idle')
+})
+
+test('cancels playback synchronously and fails closed for unsupported or oversized text', () => {
+  const synthesis = new FakeSynthesis()
+  const states = []
+  const controller = new SpeechPlaybackController({
+    synthesis,
+    utteranceFactory: text => ({ text }),
+    onState: state => states.push(state),
+  })
+  controller.speak('可读回复')
+  const staleEnd = synthesis.spoken[0].onend
+  assert.equal(controller.cancel(), true)
+  assert.equal(synthesis.cancelCalls, 1)
+  assert.equal(states.at(-1).phase, 'cancelled')
+  staleEnd()
+  assert.equal(states.at(-1).phase, 'cancelled')
+  assert.equal(controller.speak('x'.repeat(16 * 1024 + 1)), false)
+  assert.equal(states.at(-1).phase, 'error')
+
+  const unsupported = new SpeechPlaybackController({ synthesis: null, utteranceFactory: null })
+  assert.equal(unsupported.speak('不会播放'), false)
+  assert.equal(unsupported.getState().phase, 'unavailable')
+
+  const brokenFactory = new SpeechPlaybackController({
+    synthesis,
+    utteranceFactory: () => { throw new Error('unavailable') },
+  })
+  assert.equal(brokenFactory.speak('仍可继续使用文字'), false)
+  assert.equal(brokenFactory.getState().phase, 'error')
 })

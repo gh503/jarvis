@@ -256,6 +256,17 @@ body[data-connection="unavailable"] .status-dot { background: var(--danger); }
 .message.is-user .message-body { border-color: #b7dfcf; background: #e7f5ef; }
 .message-meta { color: var(--text-muted); font-size: 11px; }
 .message.is-user .message-meta { text-align: right; }
+.message-speech-button {
+  width: fit-content;
+  min-height: 28px;
+  padding: 0 9px;
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  background: var(--surface);
+  color: var(--text-muted);
+  font-size: 11px;
+}
+.message-speech-button[aria-pressed="true"] { border-color: var(--accent); color: var(--accent-strong); }
 .conversation-notice {
   width: min(780px, 100%);
   min-height: 28px;
