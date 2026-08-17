@@ -5,6 +5,7 @@ import { BlockList, isIP } from 'node:net'
 import { WebSocket, WebSocketServer, type RawData } from 'ws'
 import { MobileApprovalDecisionError } from './approval.js'
 import { normalizeHighRiskDeviceCommand, type DeviceApprovalOutcome, type DeviceApprovalSource, type HighRiskDeviceCommand } from './device-approval.js'
+import { normalizeMqttDeviceCommand, normalizeMqttDeviceCommandResult, type MqttDeviceCommand, type MqttDeviceCommandSource } from './device-mqtt.js'
 import { FileEventLogStore, RetainedEventLog, type JarvisEvent } from './event-log.js'
 import { HarnessBridge, HarnessBridgeError, type HarnessClient } from './harness-bridge.js'
 import { HarnessEventBridge, type ConversationEventSource } from './harness-events.js'
@@ -60,6 +61,7 @@ export interface JarvisGatewayOptions {
   harnessEvents?: ConversationEventSource
   deviceApprovals?: DeviceApprovalSource
   deviceCommandToken?: string
+  mqttCommands?: MqttDeviceCommandSource
   eventLog?: RetainedEventLog
   eventStatePath?: string
   eventHandshakeTimeoutMs?: number
@@ -700,6 +702,39 @@ export function createJarvisGateway(options: JarvisGatewayOptions): JarvisGatewa
         const command = normalizeHighRiskDeviceCommand(body as unknown as HighRiskDeviceCommand)
         const approval = await options.deviceApprovals.requestApproval(command)
         sendJson(response, 202, correlationId, { approval })
+        return
+      }
+      if (parts[0] === 'v1' && parts[1] === 'mqtt-commands') {
+        if (!binding.loopback || options.deviceCommandToken === undefined) {
+          sendJson(response, 404, correlationId, { error: 'route not found', correlationId })
+          return
+        }
+        if (!isLoopbackAddress(request.socket.remoteAddress)) {
+          sendJson(response, 403, correlationId, { error: 'loopback MQTT command required', correlationId })
+          return
+        }
+        if (!sameSecret(options.deviceCommandToken, bearerToken(request, 'DeviceCommand'))) {
+          sendJson(response, 401, correlationId, { error: 'device command authentication required', correlationId })
+          return
+        }
+        if (request.method !== 'POST' || parts.length !== 2 || options.mqttCommands === undefined) {
+          sendJson(response, options.mqttCommands === undefined ? 503 : 405, correlationId, {
+            error: options.mqttCommands === undefined ? 'MQTT device service is unavailable' : 'method not allowed',
+            ...(options.mqttCommands === undefined ? { code: 'mqtt_device_unavailable' } : {}),
+            correlationId,
+          })
+          return
+        }
+        const body = await readJson(request, maxBodyBytes)
+        if (!record(body) || !exactFields(body, ['commandId', 'idempotencyKey', 'capability', 'payload', 'expectedState'])) {
+          throw new Error('MQTT command body is invalid')
+        }
+        const command = normalizeMqttDeviceCommand(body as unknown as MqttDeviceCommand)
+        const result = normalizeMqttDeviceCommandResult(await options.mqttCommands.sendCommand(command))
+        if (result.commandId !== command.commandId || result.idempotencyKey !== command.idempotencyKey || result.capability !== command.capability) {
+          throw new Error('MQTT command result does not match the request')
+        }
+        sendJson(response, 200, correlationId, { result })
         return
       }
       if (request.method === 'POST' && parts.length === 3 && parts[0] === 'v1' && parts[1] === 'sessions' && parts[2] === 'refresh') {

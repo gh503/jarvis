@@ -7,13 +7,14 @@ import { ApprovalLedger } from './approval.js'
 import { AppRegistry } from './apps.js'
 import { AuditLog } from './audit.js'
 import { DeviceCommandGatewayClient } from './device-command-client.js'
+import { MqttCommandGatewayClient } from './mqtt-command-client.js'
 import { ReminderStore, type Reminder } from './reminders.js'
 import { readSystemStatus } from './system-status.js'
 
 export const name = 'jarvis-mac-mvp'
 export const inject = ['tools', 'webServer']
 
-const JARVIS_TOOLS = new Set(['jarvis_system_status', 'jarvis_open_app', 'jarvis_reminder', 'jarvis_device_control'])
+const JARVIS_TOOLS = new Set(['jarvis_system_status', 'jarvis_open_app', 'jarvis_reminder', 'jarvis_device_control', 'jarvis_mqtt_device_control'])
 
 function reminderOutput(reminders: Reminder[]) {
   return { reminders }
@@ -26,6 +27,8 @@ function safeAuditDetail(tool: string, argumentsValue: unknown): Record<string, 
     ? ['application']
     : tool === 'jarvis_device_control'
       ? ['capability', 'externalEntityId', 'service', 'expectedState']
+      : tool === 'jarvis_mqtt_device_control'
+        ? ['capability', 'expectedState']
       : ['action', 'id', 'dueAt']
   for (const key of keys) {
     const value = Reflect.get(argumentsValue, key)
@@ -43,6 +46,10 @@ export async function apply(ctx: Context): Promise<void> {
   const approvals = new ApprovalLedger()
   const deviceCommandToken = process.env.JARVIS_DEVICE_COMMAND_TOKEN
   const deviceClient = deviceCommandToken === undefined ? undefined : new DeviceCommandGatewayClient({
+    url: process.env.JARVIS_DEVICE_GATEWAY_URL ?? 'http://127.0.0.1:3090',
+    token: deviceCommandToken,
+  })
+  const mqttClient = deviceCommandToken === undefined ? undefined : new MqttCommandGatewayClient({
     url: process.env.JARVIS_DEVICE_GATEWAY_URL ?? 'http://127.0.0.1:3090',
     token: deviceCommandToken,
   })
@@ -166,6 +173,49 @@ export async function apply(ctx: Context): Promise<void> {
     },
     async execute() {
       return readSystemStatus()
+    },
+  }))
+
+  ctx.tools.register(defineTool({
+    name: 'jarvis_mqtt_device_control',
+    description: 'Send one bounded low-risk command to the configured MQTT device. Lock and alarm capabilities require the separate approval tool.',
+    parameters: {
+      capability: { type: 'string', required: true, enum: ['switch.set', 'light.set', 'media.play_pause', 'cover.set'] },
+      payload: { type: 'object', required: true, additionalProperties: true, description: 'Private device payload; never returned in the public result' },
+      expectedState: { type: 'string', description: 'Expected reported device state' },
+    },
+    output: {
+      schema: {
+        type: 'object',
+        additionalProperties: false,
+        properties: {
+          commandId: { type: 'string', required: true },
+          idempotencyKey: { type: 'string', required: true },
+          capability: { type: 'string', required: true },
+          state: { type: 'string', required: true },
+          acknowledged: { type: 'boolean', required: true },
+          observedState: { type: 'string' },
+          error: { type: 'string' },
+        },
+      },
+      render: (_args, value) => [{ type: 'text', text: `MQTT device command ${String(value.state)}.` }],
+    },
+    async execute(args, exec) {
+      if (mqttClient === undefined) throw new Error('MQTT device control is not configured')
+      if (!['switch.set', 'light.set', 'media.play_pause', 'cover.set'].includes(args.capability)) {
+        throw new Error('MQTT device capability is invalid')
+      }
+      if (typeof args.payload !== 'object' || args.payload === null || Array.isArray(args.payload)) {
+        throw new Error('MQTT device payload is invalid')
+      }
+      if (args.expectedState !== undefined && typeof args.expectedState !== 'string') throw new Error('MQTT expectedState is invalid')
+      return mqttClient.sendCommand({
+        commandId: String(exec.callId),
+        idempotencyKey: String(exec.callId),
+        capability: args.capability,
+        payload: args.payload as Readonly<Record<string, unknown>>,
+        ...(args.expectedState === undefined ? {} : { expectedState: args.expectedState }),
+      })
     },
   }))
 

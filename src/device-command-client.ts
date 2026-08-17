@@ -11,7 +11,7 @@ function record(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value)
 }
 
-function validateUrl(value: string): string {
+export function validateLoopbackGatewayUrl(value: string): string {
   let parsed: URL
   try {
     parsed = new URL(value)
@@ -50,7 +50,7 @@ export class DeviceCommandGatewayClient {
   private readonly fetchImpl: typeof fetch
 
   constructor(options: DeviceCommandGatewayClientOptions) {
-    this.origin = validateUrl(options.url)
+    this.origin = validateLoopbackGatewayUrl(options.url)
     if (options.token.length < 16) throw new Error('device Gateway token must contain at least 16 characters')
     this.token = options.token
     this.fetchImpl = options.fetchImpl ?? fetch

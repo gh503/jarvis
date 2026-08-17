@@ -57,9 +57,14 @@ export interface MqttDeviceTransport {
   close(): Promise<void>
 }
 
+export interface MqttDeviceCommandSource {
+  sendCommand(command: MqttDeviceCommand): Promise<MqttDeviceCommandResult>
+}
+
 export interface MqttDeviceAdapterOptions {
   deviceId: string
   transport: MqttDeviceTransport
+  allowedCapabilities?: readonly string[]
   topicPrefix?: string
   commandTtlMs?: number
   now?: () => number
@@ -72,6 +77,7 @@ export interface MqttDeviceAdapterOptions {
 
 const DEFAULT_TTL_MS = 60_000
 const MAX_PAYLOAD_BYTES = 32 * 1024
+const DEFAULT_ALLOWED_CAPABILITIES = ['switch.set', 'light.set', 'media.play_pause', 'cover.set'] as const
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value)
@@ -103,6 +109,38 @@ function commandFingerprint(command: MqttDeviceCommand): string {
   return commandDigest(command)
 }
 
+export function normalizeMqttDeviceCommand(command: MqttDeviceCommand, allowedCapabilities: readonly string[] = DEFAULT_ALLOWED_CAPABILITIES): MqttDeviceCommand {
+  if (!isRecord(command)) throw new TypeError('MQTT command must be an object')
+  const commandId = requiredText(command.commandId, 'commandId')
+  const idempotencyKey = requiredText(command.idempotencyKey, 'idempotencyKey')
+  const capability = requiredText(command.capability, 'capability')
+  if (!allowedCapabilities.includes(capability)) throw new Error(`MQTT capability is not allowlisted: ${capability}`)
+  if (!isRecord(command.payload)) throw new TypeError('MQTT command payload must be an object')
+  const expectedState = command.expectedState === undefined ? undefined : requiredText(command.expectedState, 'expectedState')
+  return { commandId, idempotencyKey, capability, payload: command.payload, ...(expectedState === undefined ? {} : { expectedState }) }
+}
+
+export function normalizeMqttDeviceCommandResult(value: MqttDeviceCommandResult): MqttDeviceCommandResult {
+  if (!isRecord(value) || Object.keys(value).some(key => ![
+    'commandId', 'idempotencyKey', 'capability', 'state', 'acknowledged', 'observedState', 'error',
+  ].includes(key))) throw new TypeError('MQTT command result is invalid')
+  const commandId = requiredText(value.commandId, 'commandId')
+  const idempotencyKey = requiredText(value.idempotencyKey, 'idempotencyKey')
+  const capability = requiredText(value.capability, 'capability')
+  if (!['succeeded', 'acknowledged-unconfirmed', 'failed', 'timed-out', 'unavailable', 'expired'].includes(value.state)) {
+    throw new TypeError('MQTT command result state is invalid')
+  }
+  if (typeof value.acknowledged !== 'boolean') throw new TypeError('MQTT command result acknowledgement is invalid')
+  if (value.state === 'succeeded' && !value.acknowledged) throw new TypeError('MQTT command success lacks acknowledgement')
+  const observedState = value.observedState === undefined ? undefined : requiredText(value.observedState, 'observedState')
+  const error = value.error === undefined ? undefined : requiredText(value.error, 'error', 512)
+  return {
+    commandId, idempotencyKey, capability, state: value.state, acknowledged: value.acknowledged,
+    ...(observedState === undefined ? {} : { observedState }),
+    ...(error === undefined ? {} : { error }),
+  }
+}
+
 function parseJson(payload: Uint8Array): unknown {
   if (payload.byteLength > MAX_PAYLOAD_BYTES) throw new Error('MQTT payload is too large')
   return JSON.parse(Buffer.from(payload).toString('utf8')) as unknown
@@ -123,6 +161,7 @@ interface StoredOutcome {
 export class MqttDeviceAdapter {
   private readonly deviceId: string
   private readonly transport: MqttDeviceTransport
+  private readonly allowedCapabilities: readonly string[]
   private readonly topicPrefix: string
   private readonly commandTtlMs: number
   private readonly now: () => number
@@ -137,10 +176,15 @@ export class MqttDeviceAdapter {
   private removeMessageListener: (() => void) | undefined
   private removeConnectListener: (() => void) | undefined
   private removeCloseListener: (() => void) | undefined
+  private lifecycleGeneration = 0
 
   constructor(options: MqttDeviceAdapterOptions) {
     this.deviceId = validateDeviceId(requiredText(options.deviceId, 'deviceId'))
     this.transport = options.transport
+    this.allowedCapabilities = [...(options.allowedCapabilities ?? DEFAULT_ALLOWED_CAPABILITIES)]
+    if (this.allowedCapabilities.length === 0 || this.allowedCapabilities.some(capability => !/^[A-Za-z0-9_.-]{1,128}$/.test(capability))) {
+      throw new TypeError('allowedCapabilities must contain valid capability names')
+    }
     this.topicPrefix = validateTopicPrefix(options.topicPrefix ?? 'jarvis/v1')
     this.commandTtlMs = options.commandTtlMs ?? DEFAULT_TTL_MS
     if (!Number.isInteger(this.commandTtlMs) || this.commandTtlMs < 1 || this.commandTtlMs > 120_000) {
@@ -164,6 +208,7 @@ export class MqttDeviceAdapter {
 
   async start(): Promise<void> {
     if (this.state === 'ready' || this.state === 'connecting') return
+    const generation = ++this.lifecycleGeneration
     this.state = 'connecting'
     this.notifyStatus()
     this.removeMessageListener?.()
@@ -176,12 +221,15 @@ export class MqttDeviceAdapter {
     this.removeCloseListener = this.transport.onClose(() => this.handleClose())
     try {
       await this.transport.connect()
+      if (generation !== this.lifecycleGeneration) return
       for (const suffix of ['presence', 'capabilities', 'state/reported', 'acks', 'results']) {
         await this.transport.subscribe(topicParts(this.topicPrefix, this.deviceId, suffix))
+        if (generation !== this.lifecycleGeneration) return
       }
       this.state = 'ready'
       this.notifyStatus()
     } catch (error) {
+      if (generation !== this.lifecycleGeneration) return
       this.state = 'degraded'
       this.notifyStatus()
       throw error
@@ -189,6 +237,7 @@ export class MqttDeviceAdapter {
   }
 
   async stop(): Promise<void> {
+    this.lifecycleGeneration += 1
     this.removeMessageListener?.()
     this.removeConnectListener?.()
     this.removeCloseListener?.()
@@ -235,13 +284,7 @@ export class MqttDeviceAdapter {
   }
 
   private normalizeCommand(command: MqttDeviceCommand): MqttDeviceCommand {
-    if (!isRecord(command)) throw new TypeError('MQTT command must be an object')
-    const commandId = requiredText(command.commandId, 'commandId')
-    const idempotencyKey = requiredText(command.idempotencyKey, 'idempotencyKey')
-    const capability = requiredText(command.capability, 'capability')
-    if (!isRecord(command.payload)) throw new TypeError('MQTT command payload must be an object')
-    const expectedState = command.expectedState === undefined ? undefined : requiredText(command.expectedState, 'expectedState')
-    return { commandId, idempotencyKey, capability, payload: command.payload, ...(expectedState === undefined ? {} : { expectedState }) }
+    return normalizeMqttDeviceCommand(command, this.allowedCapabilities)
   }
 
   private receive(topic: string, payload: Uint8Array): void {

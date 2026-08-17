@@ -110,6 +110,30 @@ test('separates acknowledgement from result and ignores duplicate delivery', asy
   await context.adapter.stop()
 })
 
+test('rejects non-allowlisted capabilities before publishing', async () => {
+  const context = createAdapter()
+  await context.adapter.start()
+  assert.throws(() => context.adapter.sendCommand({
+    commandId: 'command-lock', idempotencyKey: 'once-lock', capability: 'lock.set', payload: { state: 'unlocked' },
+  }), /not allowlisted/)
+  assert.equal(context.transport.published.length, 0)
+  await context.adapter.stop()
+})
+
+test('remains stopped when shutdown races with initial connection', async () => {
+  const transport = new FakeMqttTransport()
+  let finishConnect
+  transport.connect = () => new Promise(resolve => { finishConnect = resolve })
+  const adapter = new MqttDeviceAdapter({ deviceId: 'sensor-node-1', transport })
+  const starting = adapter.start()
+  await new Promise(resolve => setImmediate(resolve))
+  const stopping = adapter.stop()
+  finishConnect()
+  await Promise.all([starting, stopping])
+  assert.equal(adapter.getStatus(), 'stopped')
+  assert.equal(transport.subscriptions.length, 0)
+})
+
 test('expires commands and fails pending work when the device connection closes', async () => {
   const context = createAdapter({ commandTtlMs: 20 })
   await context.adapter.start()
