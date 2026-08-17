@@ -1,8 +1,8 @@
-import { ConversationsClient } from './conversations.js?v=18'
-import { fetchGatewayHealth } from './gateway-health.js?v=18'
-import { BrowserPairing } from './pairing.js?v=18'
-import { NotificationCenter } from './notifications.js?v=18'
-import { PushToTalkController, SpeechPlaybackController } from './voice.js?v=18'
+import { ConversationsClient } from './conversations.js?v=19'
+import { fetchGatewayHealth } from './gateway-health.js?v=19'
+import { BrowserPairing } from './pairing.js?v=19'
+import { NotificationCenter } from './notifications.js?v=19'
+import { PushToTalkController, SpeechPlaybackController } from './voice.js?v=19'
 
 const connectionLabel = document.querySelector('#connection-label')
 const gatewayDetail = document.querySelector('#gateway-detail')

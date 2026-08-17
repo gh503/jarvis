@@ -371,6 +371,57 @@ test('does not advance the event cursor when a required snapshot fails', async (
   assert.equal(sockets[0].closeCode, 4002)
 })
 
+test('backs off failed event reconnects and resets after synchronization', async () => {
+  const calls = []
+  const sockets = []
+  const timers = []
+  let failSnapshot = false
+  const pairing = gatewayPairing(calls, {
+    request: async path => {
+      if (failSnapshot && path === '/v1/conversations') return { ok: false, status: 503, value: {} }
+      return undefined
+    },
+  })
+  const client = new ConversationsClient(pairing, () => {}, {
+    store: memoryStore(),
+    location: { origin: 'https://jarvis.internal' },
+    socketFactory: url => {
+      const socket = new FakeSocket(url)
+      sockets.push(socket)
+      return socket
+    },
+    setTimeout: (callback, delay) => {
+      timers.push({ callback, delay })
+      return timers.length
+    },
+    clearTimeout: () => {},
+  })
+  await client.start()
+  await tick()
+
+  failSnapshot = true
+  sockets[0].message({ type: 'events.ready', cursor, replayCount: 0, requiresSnapshot: true, reason: 'initial' })
+  await tick()
+  await tick()
+  assert.equal(timers[0].delay, 2_000)
+
+  timers.shift().callback()
+  await tick()
+  sockets[1].message({ type: 'events.ready', cursor, replayCount: 0, requiresSnapshot: true, reason: 'initial' })
+  await tick()
+  await tick()
+  assert.equal(timers[0].delay, 4_000)
+
+  failSnapshot = false
+  timers.shift().callback()
+  await tick()
+  sockets[2].message({ type: 'events.ready', cursor, replayCount: 0, requiresSnapshot: true, reason: 'initial' })
+  await tick()
+  await tick()
+  sockets[2].close()
+  assert.equal(timers[0].delay, 2_000)
+})
+
 test('keeps approvals memory-only and reuses a decision key after a transport retry', async () => {
   const calls = []
   const states = []

@@ -1,4 +1,4 @@
-import { deleteDeviceState, readDeviceState, writeDeviceState } from './device-store.js?v=18'
+import { deleteDeviceState, readDeviceState, writeDeviceState } from './device-store.js?v=19'
 
 const CACHE_KEY = 'conversation-cache'
 const CURSOR_KEY = 'event-cursor'
@@ -10,6 +10,8 @@ const MAX_EVENT_CHARS = 64 * 1024
 const CLOSE_PROTOCOL = 4000
 const CLOSE_AUTHENTICATION = 4001
 const CLOSE_PROCESSING = 4002
+const INITIAL_RECONNECT_DELAY_MS = 2_000
+const MAX_RECONNECT_DELAY_MS = 30_000
 
 function validSummary(value) {
   return value !== null && typeof value === 'object' && ID_PATTERN.test(value.id)
@@ -161,12 +163,14 @@ export class ConversationsClient {
     this.cachedAt = undefined
     this.socket = undefined
     this.reconnectTimer = undefined
+    this.reconnectDelayMs = INITIAL_RECONNECT_DELAY_MS
     this.forceRenewSession = false
   }
 
   async start() {
     if (this.active) return
     this.active = true
+    this.reconnectDelayMs = INITIAL_RECONNECT_DELAY_MS
     let cached
     try {
       cached = parseCache(await this.store.read(CACHE_KEY))
@@ -248,6 +252,7 @@ export class ConversationsClient {
       return
     }
     if (this.active) {
+      this.reconnectDelayMs = INITIAL_RECONNECT_DELAY_MS
       void this.refresh().then(() => this.connectEvents())
     }
   }
@@ -583,6 +588,7 @@ export class ConversationsClient {
         return
       }
       await this.store.write(CURSOR_KEY, event.cursor)
+      this.reconnectDelayMs = INITIAL_RECONNECT_DELAY_MS
       return
     }
     if (event?.version !== 1 || typeof event.cursor !== 'string' || !CURSOR_PATTERN.test(event.cursor)
@@ -648,6 +654,7 @@ export class ConversationsClient {
     this.cachedAt = Date.now()
     await this.persistCache()
     await this.store.write(CURSOR_KEY, event.cursor)
+    this.reconnectDelayMs = INITIAL_RECONNECT_DELAY_MS
     if (socket.readyState === 1) socket.send(JSON.stringify({ type: 'events.ack', cursor: event.cursor }))
     this.emit('ready', eventNotice)
   }
@@ -673,10 +680,12 @@ export class ConversationsClient {
 
   scheduleReconnect() {
     if (!this.active || !this.online || this.reconnectTimer !== undefined) return
+    const delay = this.reconnectDelayMs
+    this.reconnectDelayMs = Math.min(MAX_RECONNECT_DELAY_MS, delay * 2)
     this.reconnectTimer = this.setTimeoutValue(() => {
       this.reconnectTimer = undefined
       void this.connectEvents()
-    }, 2_000)
+    }, delay)
   }
 
   clearReconnect() {
