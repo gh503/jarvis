@@ -9,7 +9,11 @@ fi
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 REF="${JARVIS_RELEASE_REF:-HEAD}"
 TEMPORARY="$(mktemp -d "${TMPDIR:-/tmp}/jarvis-release.XXXXXX")"
-CHECKOUT="$TEMPORARY/jarvis"
+VERSION="$(git -C "$ROOT" show "$REF:package.json" | node -e 'let input=""; process.stdin.on("data", chunk => input += chunk); process.stdin.on("end", () => process.stdout.write(JSON.parse(input).version))')"
+RELEASE_ARCHIVE="$TEMPORARY/jarvis-mac-mvp-v$VERSION.zip"
+RELEASE_CHECKSUM="$RELEASE_ARCHIVE.sha256"
+EXTRACT_ROOT="$TEMPORARY/extracted"
+CHECKOUT="$EXTRACT_ROOT/jarvis-mac-mvp-v$VERSION"
 TEST_HOME="$TEMPORARY/home"
 LABEL="ai.jarvis.release-test.$$.${RANDOM}"
 PORT=""
@@ -23,8 +27,14 @@ cleanup() {
 }
 trap cleanup EXIT INT TERM
 
-mkdir -p "$CHECKOUT" "$TEST_HOME"
-git -C "$ROOT" archive "$REF" | tar -x -C "$CHECKOUT"
+mkdir -p "$EXTRACT_ROOT" "$TEST_HOME"
+"$ROOT/scripts/build-release-archive.sh" "$RELEASE_ARCHIVE" "$REF" >/dev/null
+(
+  cd "$TEMPORARY"
+  shasum -a 256 -c "$(basename "$RELEASE_CHECKSUM")"
+)
+unzip -q "$RELEASE_ARCHIVE" -d "$EXTRACT_ROOT"
+[[ -d "$CHECKOUT" ]]
 cd "$CHECKOUT"
 npm ci
 npm run verify
@@ -85,4 +95,4 @@ fi
 [[ -f "$CHECKOUT/data/reminders.json" ]]
 [[ -f "$CHECKOUT/data/audit.jsonl" ]]
 
-echo "Clean macOS install, startup, health, persistence, and uninstall verification passed on port $PORT"
+echo "Checksum-verified release archive installation, startup, recovery, persistence, and uninstall passed on port $PORT"
