@@ -1,5 +1,7 @@
 # Jarvis Technical Design
 
+> **Superseded for v2 by [docs/v2](../v2/README.md).** Retained as v1 Mac MVP history.
+
 Status: accepted baseline for the Mac MVP; later-stage choices remain gated
 
 ## 1. Objective

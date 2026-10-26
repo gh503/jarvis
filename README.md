@@ -3,6 +3,9 @@
 [![CI](https://github.com/gh503/jarvis/actions/workflows/ci.yml/badge.svg)](https://github.com/gh503/jarvis/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
+> **v2 redesign in progress (`feat/jarvis-v2`)**
+> 产品与记忆设计已固化在 [docs/v2](docs/v2/README.md)。v2 是“有感官、有记忆、知道何时不打扰”的常驻助手，不再以文字聊天窗口为中心。下方 v1 Mac MVP 说明保留为历史；v2 实现尚未开始。
+
 一个仅在本机运行的个人 Jarvis 原型，使用 DeepSeek Harness 提供对话、会话持久化和人工审批界面。
 
 ## 项目状态
