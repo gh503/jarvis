@@ -1,12 +1,12 @@
 import { readFile } from 'node:fs/promises'
-import type { OllamaClient } from '../model/ollama.ts'
+import type { ModelClient } from '../model/ollama.ts'
 import type { OcrClient } from './ocr.ts'
 import type { Capture } from './screen.ts'
 
 const MAX_IMAGE_BYTES = 12 * 1024 * 1024
 
 async function describeText(
-  client: OllamaClient,
+  client: ModelClient,
   text: string,
   mode: string,
   userText: string,
@@ -32,7 +32,7 @@ async function describeText(
 }
 
 async function describeImage(
-  client: OllamaClient,
+  client: ModelClient,
   capture: Capture,
   userText: string,
   signal?: AbortSignal,
@@ -60,7 +60,7 @@ async function describeImage(
 }
 
 export async function describeCapture(
-  client: OllamaClient,
+  client: ModelClient,
   capture: Capture,
   userText: string,
   signal?: AbortSignal,

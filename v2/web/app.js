@@ -33,6 +33,8 @@ const state = {
   audioQueue: [],
   audioPlaying: false,
   lastTranscript: '',
+  modelSettings: null,
+  modelFormId: 'local',
 }
 
 const labels = {
@@ -195,6 +197,9 @@ function handleEvent(event) {
     case 'sense.capture':
       showCapture(data)
       break
+    case 'model.changed':
+      void refreshStatus()
+      break
     case 'runtime.ready':
       state.voice = data.voice || state.voice
       applyStatus(data)
@@ -224,7 +229,8 @@ function applyStatus(status = {}) {
   state.focus = Boolean(state.status.focus)
   $('#focus-btn').setAttribute('aria-pressed', String(state.focus))
   const model = state.status.model || '本地模型'
-  $('#model-pill').textContent = state.status.modelReady ? `${model} · 本地` : '模型未就绪'
+  const provider = state.status.provider === 'remote' ? '远端' : '本地'
+  $('#model-pill').textContent = state.status.modelReady ? `${model} · ${provider}` : '模型未就绪'
   $('#model-pill').style.opacity = state.status.modelReady ? '1' : '0.6'
   $('#memory-count').textContent = String(state.memory.length)
   $('#reminder-count').textContent = String(state.reminders.length)
@@ -552,6 +558,7 @@ function renderRuntime() {
   grid.textContent = ''
   const rows = [
     ['模型', state.status.model || '—'],
+    ['模型来源', state.status.provider === 'remote' ? '远端' : '本地'],
     ['模型就绪', state.status.modelReady ? '是' : '否'],
     ['语音识别', state.voice.asr ? '就绪' : '未就绪'],
     ['语音合成', state.voice.tts ? '就绪' : '未就绪'],
@@ -758,11 +765,70 @@ function closeModal() {
   state.tokenPrompted = false
 }
 
-function showSettings() {
+async function showSettings() {
+  let model = null
+  try {
+    model = await api('/api/model')
+    state.modelSettings = model.settings
+    if (!state.modelSettings.profiles?.some(item => item.id === state.modelFormId)) {
+      state.modelFormId = state.modelSettings.active
+    }
+  } catch (error) {
+    model = { error: error.message, settings: { active: 'local', profiles: [] } }
+  }
+  const settings = model.settings
+  const selected = settings.profiles.find(item => item.id === state.modelFormId) || settings.profiles[0] || {
+    id: 'local', label: '本地 Ollama', kind: 'ollama', baseUrl: '', model: '', hasKey: false, embedModel: '', visionModel: '', keepAlive: '24h',
+  }
   const status = state.status
+  const cards = settings.profiles.map(profile => {
+    const current = profile.id === settings.active
+    const reachable = profile.kind !== 'openai' || profile.hasKey
+    return `
+      <div class="model-card${current ? ' active' : ''}" data-model-card="${escapeHtml(profile.id)}">
+        <button type="button" class="model-card-main" data-model-select="${escapeHtml(profile.id)}">
+          <span class="model-card-top"><strong>${escapeHtml(profile.label)}</strong><span class="model-card-badge">${current ? '当前' : reachable ? '可切换' : '待配置'}</span></span>
+          <span class="model-card-name">${escapeHtml(profile.model || '未配置模型')}</span>
+          <span class="model-card-meta">${profile.kind === 'openai' ? '远端 OpenAI 兼容' : '本地 Ollama'}${profile.baseUrl ? ` · ${escapeHtml(profile.baseUrl)}` : ''}</span>
+        </button>
+        <div class="model-card-actions">
+          <button type="button" class="model-action${current ? ' quiet' : ''}" data-model-activate="${escapeHtml(profile.id)}" ${current || !reachable ? 'disabled' : ''}>${current ? '已启用' : '切换'}</button>
+        </div>
+      </div>`
+  }).join('')
+  const keyHint = selected.hasKey ? '已保存；留空保持不变' : '粘贴 API Key'
   openModal(`
+    <h3>模型来源 <span class="model-section-note">点卡片编辑，点“切换”立即生效</span></h3>
+    <div class="model-grid">${cards}</div>
+    ${model.error ? `<p class="model-error">模型状态读取失败：${escapeHtml(model.error)}</p>` : ''}
+    <div class="model-form" data-model-form="${escapeHtml(selected.id)}">
+      <div class="model-form-head"><strong>${escapeHtml(selected.label)}</strong><span>${selected.kind === 'openai' ? '远端 / OpenAI 兼容' : '本机 / Ollama'}</span></div>
+      <label>Base URL
+        <input id="model-base" type="url" autocomplete="off" spellcheck="false" value="${escapeHtml(selected.baseUrl || '')}" placeholder="${selected.kind === 'openai' ? 'https://api.deepseek.com/v1' : 'http://127.0.0.1:11434'}">
+      </label>
+      <label>模型名称
+        <input id="model-name" type="text" autocomplete="off" spellcheck="false" value="${escapeHtml(selected.model || '')}" placeholder="${selected.kind === 'openai' ? 'deepseek-chat' : 'qwen2.5:3b'}">
+      </label>
+      ${selected.kind === 'openai' ? `<label>API Key
+        <input id="model-key" type="password" autocomplete="new-password" value="" placeholder="${escapeHtml(keyHint)}">
+      </label>` : ''}
+      <div class="model-form-row">
+        <label>记忆向量模型（可选）
+          <input id="model-embed" type="text" autocomplete="off" spellcheck="false" value="${escapeHtml(selected.embedModel || '')}" placeholder="nomic-embed-text">
+        </label>
+        <label>视觉模型（可选）
+          <input id="model-vision" type="text" autocomplete="off" spellcheck="false" value="${escapeHtml(selected.visionModel || '')}" placeholder="qwen2.5vl:3b">
+        </label>
+      </div>
+      <p class="model-form-note">远端模型必须使用 HTTPS；只有本机 localhost 可用 HTTP。Key 只保存在本机 <code>data/model-config.json</code>（0600），不会回显到页面。</p>
+      <div class="model-form-actions">
+        <button type="button" class="model-action" id="model-test">测试连接</button>
+        <button type="button" class="model-action primary" id="model-apply">保存并切换</button>
+      </div>
+      <p class="model-result" id="model-result" role="status"></p>
+    </div>
     <h3>本地运行时</h3>
-    <div class="setting-row"><span>模型</span><span>${escapeHtml(status.model || '—')}</span></div>
+    <div class="setting-row"><span>当前模型</span><span>${escapeHtml(status.model || selected.model || '—')} · ${status.provider === 'remote' ? '远端' : '本地'}</span></div>
     <div class="setting-row"><span>模型就绪</span><span>${status.modelReady ? '是' : '否'}</span></div>
     <div class="setting-row"><span>语音识别</span><span>${state.voice.asr ? '就绪' : '未就绪'}</span></div>
     <div class="setting-row"><span>语音合成</span><span>${state.voice.tts ? '就绪' : '未就绪'}</span></div>
@@ -770,10 +836,95 @@ function showSettings() {
     <div class="setting-row"><span>专注模式</span><span>${state.focus ? '开' : '关'}</span></div>
     <h3>隐私</h3>
     <p>屏幕走系统门户，按次授权；摄像头只取单帧；记忆默认只在本机 SQLite。模型上下文不包含标记为 sensitive / secret 的记忆。</p>
-    <p>如果远端访问已开启，必须同时启用 TLS 和至少 24 字符的令牌。</p>
+    <p>远端模型会把当前对话与检索到的记忆上下文发送到你填写的服务商；切换前请确认其隐私政策。远端访问必须同时启用 TLS 和至少 24 字符的令牌。</p>
     <h3>诊断</h3>
     <p>终端运行 <code>npm run doctor</code> 可以检查模型、Whisper、Piper、屏幕门户和摄像头。</p>
   `)
+  bindModelSettings(selected, settings)
+}
+
+function bindModelSettings(selected, settings) {
+  $$('[data-model-select]').forEach(button => {
+    button.addEventListener('click', () => {
+      state.modelFormId = button.dataset.modelSelect
+      void showSettings()
+    })
+  })
+  $$('[data-model-activate]').forEach(button => {
+    button.addEventListener('click', async () => {
+      button.disabled = true
+      try {
+        const data = await api('/api/model/activate', { method: 'POST', body: JSON.stringify({ id: button.dataset.modelActivate }) })
+        state.modelSettings = data.settings
+        state.modelFormId = data.settings.active
+        await refreshStatus()
+        await showSettings()
+        appendMessage('system', `模型已切换：${data.active?.label || ''} · ${data.active?.model || ''}`)
+      } catch (error) {
+        button.disabled = false
+        appendMessage('system', `切换失败：${error.message}`)
+      }
+    })
+  })
+  $('#model-test')?.addEventListener('click', async () => {
+    const button = $('#model-test')
+    const result = $('#model-result')
+    button.disabled = true
+    result.textContent = '正在测试…'
+    try {
+      const payload = modelPayload(selected)
+      const data = await api('/api/model/test', { method: 'POST', body: JSON.stringify(payload) })
+      result.textContent = `${data.ok ? '连接成功' : '连接失败'} · ${data.latencyMs} ms · ${data.message || ''}`
+      result.className = `model-result ${data.ok ? 'ok' : 'bad'}`
+    } catch (error) {
+      result.textContent = `连接失败：${error.message}`
+      result.className = 'model-result bad'
+    } finally {
+      button.disabled = false
+    }
+  })
+  $('#model-apply')?.addEventListener('click', async () => {
+    const button = $('#model-apply')
+    const result = $('#model-result')
+    button.disabled = true
+    result.textContent = '正在验证并切换…'
+    try {
+      const payload = modelPayload(selected)
+      const data = await api('/api/model/apply', { method: 'POST', body: JSON.stringify(payload) })
+      state.modelSettings = data.settings
+      state.modelFormId = data.settings.active
+      await refreshStatus()
+      await showSettings()
+      appendMessage('system', `模型已保存并切换：${data.active?.label || ''} · ${data.active?.model || ''}`)
+    } catch (error) {
+      result.textContent = `切换失败：${error.message}`
+      result.className = 'model-result bad'
+      button.disabled = false
+    }
+  })
+}
+
+function modelPayload(selected) {
+  return {
+    id: selected.id,
+    label: selected.label,
+    kind: selected.kind,
+    baseUrl: $('#model-base')?.value.trim() || '',
+    model: $('#model-name')?.value.trim() || '',
+    apiKey: $('#model-key')?.value.trim() || '',
+    embedModel: $('#model-embed')?.value.trim() || '',
+    visionModel: $('#model-vision')?.value.trim() || '',
+    keepAlive: selected.keepAlive || '24h',
+  }
+}
+
+async function refreshStatus() {
+  try {
+    const data = await api('/api/health')
+    applyStatus(data.status)
+  } catch {
+    // Keep the last known status.
+  }
 }
 
 function escapeHtml(value) {
@@ -827,7 +978,8 @@ function bind() {
       renderRuntime()
     } catch (error) { appendMessage('system', error.message) }
   })
-  $('#settings-btn').addEventListener('click', showSettings)
+  $('#settings-btn').addEventListener('click', () => { void showSettings() })
+  $('#model-pill').addEventListener('click', () => { void showSettings() })
   $('#modal-close').addEventListener('click', closeModal)
   $('#modal').addEventListener('click', event => { if (event.target === $('#modal')) closeModal() })
   document.addEventListener('keydown', event => { if (event.key === 'Escape') { closeModal(); $('#lightbox').hidden = true } })

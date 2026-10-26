@@ -1,27 +1,7 @@
 import type { Embedder } from '../memory/types.ts'
+import type { ChatMessage, ChatOptions, ModelClient, ModelHealth, ModelInfo, ModelStatus } from './types.ts'
 
-export type ChatRole = 'system' | 'user' | 'assistant'
-
-export interface ChatMessage {
-  role: ChatRole
-  content: string
-  images?: string[]
-}
-
-export interface ChatOptions {
-  model?: string
-  temperature?: number
-  numCtx?: number
-  signal?: AbortSignal
-  timeoutMs?: number
-  keepAlive?: string
-}
-
-export interface OllamaModel {
-  name: string
-  size: number
-  modified_at: string
-}
+export type { ChatMessage, ChatOptions, ModelClient, ModelInfo, ModelHealth, ModelStatus } from './types.ts'
 
 export class OllamaError extends Error {
   constructor(message: string, readonly status?: number) {
@@ -36,23 +16,31 @@ interface OllamaChatChunk {
   error?: string
 }
 
-export class OllamaClient implements Embedder {
+export class OllamaClient implements ModelClient, Embedder {
   readonly model: string
   readonly visionModel: string
   readonly embedModel: string
   readonly keepAlive: string
+  private readonly id: string
+  private readonly label: string
 
   constructor(
     private readonly baseUrl: string,
-    options: { model: string; visionModel: string; embedModel: string; keepAlive?: string },
+    options: { model: string; visionModel: string; embedModel: string; keepAlive?: string; id?: string; label?: string },
   ) {
     this.model = options.model
     this.visionModel = options.visionModel
     this.embedModel = options.embedModel
     this.keepAlive = options.keepAlive ?? '24h'
+    this.id = options.id ?? 'local'
+    this.label = options.label ?? '本地 Ollama'
   }
 
-  async health(timeoutMs = 3000): Promise<{ ok: boolean; models: OllamaModel[]; error?: string }> {
+  status(): ModelStatus {
+    return { id: this.id, label: this.label, kind: 'ollama', model: this.model, baseUrl: this.baseUrl, hasKey: false }
+  }
+
+  async health(timeoutMs = 3000): Promise<ModelHealth> {
     try {
       const response = await fetch(`${this.baseUrl}/api/tags`, {
         signal: AbortSignal.timeout(timeoutMs),
@@ -60,7 +48,7 @@ export class OllamaClient implements Embedder {
       if (!response.ok) {
         return { ok: false, models: [], error: `HTTP ${response.status}` }
       }
-      const data = (await response.json()) as { models?: OllamaModel[] }
+      const data = (await response.json()) as { models?: ModelInfo[] }
       return { ok: true, models: data.models ?? [] }
     } catch (error) {
       return { ok: false, models: [], error: error instanceof Error ? error.message : String(error) }

@@ -2,6 +2,8 @@
 
 ![Jarvis v2 桌面界面](screenshots/jarvis-home.png)
 
+![模型来源：本地 / 远端一键切换](screenshots/model-sources.png)
+
 - Status: **v2 baseline accepted; a working vertical slice is implemented under `v2/`**
 - Branch: `feat/jarvis-v2`
 - Date: 2026-10-26
@@ -49,7 +51,7 @@ v2 不再从“给 agent 加一个聊天窗口”出发，而是从下面这个�
 - 按需摄像头上下文：单帧或短 burst，本地先做检测。
 - 注意力管理器：决定何时看、看哪一路、何时说、用什么通道说。
 - 记忆 v2：分层存储、时间有效性、混合召回、离线巩固、可解释召回。
-- 本地/远端模型路由：本地能做的本地做，复杂的按策略上云。
+- 本地/远端模型路由：Web 设置里编辑本地 Ollama / 远端 OpenAI-compatible，测试通过后点一下切换，下一轮立即生效。
 - 工具执行：文件、浏览器、日历、提醒；高风险动作走审批和审计。
 - 桌面浮窗/托盘 + 手机 PWA/WebRTC 远程入口（手机后置）。
 

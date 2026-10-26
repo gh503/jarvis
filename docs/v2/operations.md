@@ -74,7 +74,49 @@ OLLAMA_MODELS=$HOME/.local/share/jarvis/ollama-models \
 
 如果希望开机自启 Ollama，可把它做成另一个 user service；Jarvis 的 service 不负责拉起 Ollama，避免两个进程互相重启。
 
-## 4. 远程访问（手机 / 另一台电脑）
+## 4. 模型来源：本地 / 远端，一键切换
+
+设置入口有两个：右上角的模型徽标，或“设置 → 模型来源”。不需要改 `.env`、不需要重启服务。
+
+- **本地 Ollama**：默认 `http://127.0.0.1:11434` + `qwen2.5:3b`。适合隐私优先、离线、低延迟。
+- **远端 OpenAI 兼容**：支持 `POST /v1/chat/completions` 和 `GET /v1/models` 的服务，例如 DeepSeek、OpenAI、OpenRouter、vLLM、LM Studio、Ollama 的 `/v1` 兼容层。Base URL 要包含 `/v1`（只填域名时客户端会补 `/v1`）。
+
+操作：
+
+1. 点模型卡片，编辑 Base URL、模型名和 API Key。
+2. 点 **测试连接**，确认返回的延迟和模型列表。
+3. 点 **保存并切换**：先测试，成功后才原子写入并切换；失败不会破坏当前配置。
+4. 已经配置过的卡片可以直接点 **切换**，下一轮对话立即使用，不用重启。
+
+安全与存储：
+
+- 远端地址非 loopback 时强制 HTTPS；只有 `localhost` / `127.0.0.1` 可以用 HTTP。
+- API Key 只写入 `~/.local/share/jarvis/data/model-config.json`，权限 `0600`；`GET /api/model` 永远不返回 Key，只返回 `hasKey`。
+- 页面留空 Key 表示保留已保存的 Key；如果更换 Base URL 而留空，服务端会拒绝，避免把旧密钥发给新地址。
+- 远端模型会收到当前对话和按需检索到的记忆上下文；敏感记忆仍按本机策略过滤。切换前请确认服务商隐私政策。
+- 远端配置没有填 `embedModel` / `visionModel` 时，记忆向量和摄像头视觉自动复用本地 Ollama；本地不可用时记忆退化为词法召回，视觉路径会明确报错。
+- 启动时使用上次激活的配置；远端不可达时服务仍会启动，打开设置切回本地即可。
+
+同样的操作也可以用 API：
+
+```bash
+curl -s http://127.0.0.1:3081/api/model
+
+curl -s -X POST http://127.0.0.1:3081/api/model/test \
+  -H 'content-type: application/json' \
+  -d '{"id":"remote","baseUrl":"https://api.deepseek.com/v1","model":"deepseek-chat","apiKey":"sk-..."}'
+
+curl -s -X POST http://127.0.0.1:3081/api/model/apply \
+  -H 'content-type: application/json' \
+  -d '{"id":"remote","baseUrl":"https://api.deepseek.com/v1","model":"deepseek-chat","apiKey":"sk-..."}'
+
+curl -s -X POST http://127.0.0.1:3081/api/model/activate \
+  -H 'content-type: application/json' -d '{"id":"local"}'
+```
+
+`test` 只测试不保存；`apply` 测试成功后保存并切换；`activate` 切换已保存配置。
+
+## 5. 远程访问（手机 / 另一台电脑）
 
 默认 loopback 是安全边界，不要为了省事监听 `0.0.0.0` 且不上 TLS。
 
@@ -97,7 +139,7 @@ JARVIS_TLS_KEY=/home/you/.config/jarvis/key.pem
 PWA 可以安装到手机主屏；第一版远程只支持 HTTP/WS + PWA，不包含 WebRTC
 把手机摄像头当远端输入。
 
-## 5. 隐私边界
+## 6. 隐私边界
 
 - **屏幕**：只通过 `org.freedesktop.portal.Screenshot` 单次授权；Jarvis 不读
   Wayland framebuffer。Portal 拒绝时不会退回 X11 截屏。只有 portal 不可用
@@ -117,7 +159,7 @@ Wayland 下拿不到活动窗口标题（`xdotool` 对原生 Wayland 失败，
 X11/XWayland 场景生效；真正的强制点是 portal 的按次授权。不要把“黑名单”
 当成比 portal 更强的保证。
 
-## 6. 性能事实（这台 i5-7300HQ / 4 GB VRAM）
+## 7. 性能事实（这台 i5-7300HQ / 4 GB VRAM）
 
 | 路径 | 实测 |
 |---|---|
@@ -138,7 +180,7 @@ Piper 每次启动的模型加载。v2 现在在启动时预热 LLM/nomic，并�
 “用视觉看屏幕”或摄像头没有文字时才调用视觉模型。视觉模型是可选能力，
 不是实时对话路径。
 
-## 7. 验收命令
+## 8. 验收命令
 
 ```bash
 cd ~/jarvis/v2
@@ -167,7 +209,7 @@ curl -s http://127.0.0.1:3081/api/reminders
 屏幕验收需要人在场：第一次点击“看屏幕”时 GNOME 会弹出共享确认；
 允许后 OCR 才能读到真实窗口。这是产品设计，不是 bug。
 
-## 8. 故障排查
+## 9. 故障排查
 
 | 现象 | 处理 |
 |---|---|
@@ -181,7 +223,7 @@ curl -s http://127.0.0.1:3081/api/reminders
 | 远程 401 | 用 `/?token=...` 设置 cookie；确认 TLS 与令牌同时配置 |
 | 端口占用 | `JARVIS_PORT=3082 npm start`；桌面脚本读同一个变量 |
 
-## 9. 已知缺口
+## 10. 已知缺口
 
 - 没有唤醒词常听；第一版是按住说话。音频只在按住期间采集。
 - 没有 WebRTC；远程是 PWA + WebSocket。

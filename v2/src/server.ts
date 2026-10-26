@@ -5,6 +5,8 @@ import { readFile, stat } from 'node:fs/promises'
 import { extname, join, resolve, sep } from 'node:path'
 import { WebSocket, WebSocketServer } from 'ws'
 import type { ActionManager } from './actions.ts'
+import type { ModelRouter } from './model/router.ts'
+import type { ModelProfile, ModelSettingsStore } from './model/settings.ts'
 import type { AttentionManager } from './attention.ts'
 import type { JarvisConfig } from './config.ts'
 import type { Conversation } from './conversation.ts'
@@ -19,6 +21,8 @@ export interface ServerDeps {
   bus: EventBus
   attention: AttentionManager
   conversation: Conversation
+  models: ModelRouter
+  modelSettings: ModelSettingsStore
   actions: ActionManager
   memory: MemoryStore
   reminders: ReminderStore
@@ -302,10 +306,12 @@ export class JarvisServer {
         memory: this.deps.conversation.memoryItems(),
         reminders: this.deps.reminders.list(),
         models: {
-          llm: this.deps.config.ollama.model,
-          vision: this.deps.config.ollama.visionModel,
-          embedding: this.deps.config.ollama.embedModel,
+          llm: this.deps.models.model,
+          vision: this.deps.models.visionModel,
+          embedding: this.deps.models.embedModel,
+          provider: this.deps.models.status(),
         },
+        modelSettings: this.deps.modelSettings.publicView(await this.deps.modelSettings.load()),
         config: {
           host: this.deps.config.host,
           quiet: this.deps.config.quiet,
@@ -317,6 +323,68 @@ export class JarvisServer {
 
     if (request.method === 'GET' && path === '/api/models') {
       sendJson(response, 200, await this.deps.conversation.status())
+      return
+    }
+
+    if (request.method === 'GET' && path === '/api/model') {
+      const settings = await this.deps.modelSettings.load()
+      sendJson(response, 200, {
+        settings: this.deps.modelSettings.publicView(settings),
+        active: this.deps.models.status(),
+        health: await this.deps.models.health(2000),
+      })
+      return
+    }
+
+    if (request.method === 'POST' && path === '/api/model/test') {
+      try {
+        const body = await readJson<Partial<ModelProfile>>(request)
+        const profile = await this.profileFromBody(body)
+        const result = await this.deps.models.test(profile)
+        sendJson(response, result.ok ? 200 : 502, { ...result, error: result.ok ? undefined : result.message })
+      } catch (error) {
+        sendJson(response, 400, { error: error instanceof Error ? error.message : String(error) })
+      }
+      return
+    }
+
+    if (request.method === 'POST' && path === '/api/model/apply') {
+      try {
+        const body = await readJson<Partial<ModelProfile>>(request)
+        const profile = await this.profileFromBody(body)
+        const switched = await this.deps.models.switchTo(profile)
+        const settings = await this.deps.modelSettings.upsert(profile, true)
+        await this.deps.conversation.refreshModel()
+        const active = this.deps.models.status()
+        this.deps.bus.emit('model.changed', { active, test: switched.test })
+        sendJson(response, 200, {
+          settings: this.deps.modelSettings.publicView(settings),
+          active,
+          test: switched.test,
+        })
+      } catch (error) {
+        sendJson(response, 409, { error: error instanceof Error ? error.message : String(error) })
+      }
+      return
+    }
+
+    if (request.method === 'POST' && path === '/api/model/activate') {
+      try {
+        const body = await readJson<{ id?: string }>(request)
+        const id = body.id === 'remote' ? 'remote' : body.id === 'local' ? 'local' : ''
+        if (!id) throw new Error('只能切换 local 或 remote')
+        const loaded = await this.deps.modelSettings.load()
+        const profile = loaded.profiles.find(item => item.id === id)
+        if (!profile) throw new Error('没有这个模型配置')
+        const switched = await this.deps.models.switchTo(profile)
+        const { settings } = await this.deps.modelSettings.activate(id)
+        await this.deps.conversation.refreshModel()
+        const active = this.deps.models.status()
+        this.deps.bus.emit('model.changed', { active, test: switched.test })
+        sendJson(response, 200, { settings: this.deps.modelSettings.publicView(settings), active, test: switched.test })
+      } catch (error) {
+        sendJson(response, 409, { error: error instanceof Error ? error.message : String(error) })
+      }
       return
     }
 
@@ -492,6 +560,25 @@ export class JarvisServer {
     }
 
     sendJson(response, 405, { error: 'method not allowed' })
+  }
+
+  private async profileFromBody(body: Partial<ModelProfile>): Promise<ModelProfile> {
+    const settings = await this.deps.modelSettings.load()
+    const id = body.id === 'remote' ? 'remote' : body.id === 'local' ? 'local' : 'local'
+    const existing = settings.profiles.find(item => item.id === id)
+    if (!existing) throw new Error('只能配置 local / remote')
+    const nextBase = String(body.baseUrl ?? existing.baseUrl).trim().replace(/\/+$/, '')
+    if (existing.kind === 'openai' && nextBase !== existing.baseUrl.replace(/\/+$/, '') && !body.apiKey?.trim()) {
+      throw new Error('更换远端地址时请重新输入 API Key，避免把旧密钥发给新地址')
+    }
+    const merged: ModelProfile = {
+      ...existing,
+      ...body,
+      id,
+      kind: body.kind === 'openai' ? 'openai' : body.kind === 'ollama' ? 'ollama' : existing.kind,
+      apiKey: body.apiKey?.trim() ? body.apiKey.trim() : existing.apiKey,
+    }
+    return merged
   }
 
   private async serveDataFile(response: ServerResponse, root: string, requested: string): Promise<void> {

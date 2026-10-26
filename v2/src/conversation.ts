@@ -5,7 +5,7 @@ import type { AttentionManager } from './attention.ts'
 import type { JarvisConfig } from './config.ts'
 import type { EventBus } from './events.ts'
 import type { Logger } from './logger.ts'
-import type { ChatMessage, OllamaClient } from './model/ollama.ts'
+import type { ChatMessage, ModelClient } from './model/ollama.ts'
 import type { MemoryItem, RecallResult } from './memory/types.ts'
 import type { MemoryStore } from './memory/store.ts'
 import { MemoryExtractor } from './memory/extract.ts'
@@ -25,7 +25,7 @@ export interface ConversationDeps {
   bus: EventBus
   attention: AttentionManager
   memory: MemoryStore
-  model: OllamaClient
+  model: ModelClient
   transcriber: Transcriber
   synthesizer: PiperSynthesizer
   screen: ScreenCapture
@@ -113,14 +113,12 @@ export class Conversation {
   }
 
   async initialize(): Promise<void> {
-    const health = await this.deps.model.health(5000)
-    this.modelReady = health.ok && health.models.some(model => model.name === this.deps.model.model || model.name.startsWith(`${this.deps.model.model}:`))
-    this.lastHealth = { ok: health.ok, models: health.models.map(model => model.name), error: health.error }
+    await this.refreshModel()
     this.deps.logger.info('model health', {
-      ok: health.ok,
+      ok: this.lastHealth.ok,
       model: this.deps.model.model,
       ready: this.modelReady,
-      error: health.error ?? null,
+      error: this.lastHealth.error ?? null,
     })
     await this.cleanupAudio()
     this.voiceReady = {
@@ -138,7 +136,7 @@ export class Conversation {
     // turns the first user turn from a cold model load into a warm reply.
     const warmStart = Date.now()
     try {
-      const warm = await this.deps.model.warmup()
+      const warm = this.deps.model.warmup ? await this.deps.model.warmup() : { chatMs: 0, embedMs: 0 }
       this.deps.logger.info('model warmed', { totalMs: Date.now() - warmStart, ...warm })
     } catch (error) {
       this.deps.logger.warn('model warm-up failed', { error: String(error), ms: Date.now() - warmStart })
@@ -150,9 +148,14 @@ export class Conversation {
   }
 
   status(): Record<string, unknown> {
+    const modelStatus = this.deps.model.status?.()
     return {
       modelReady: this.modelReady,
       model: this.deps.model.model,
+      provider: modelStatus?.kind === 'openai' ? 'remote' : 'local',
+      providerId: modelStatus?.id ?? 'local',
+      providerLabel: modelStatus?.label ?? '本地 Ollama',
+      baseUrl: modelStatus?.baseUrl ?? '',
       models: this.lastHealth.models,
       voice: this.voiceReady,
       ollamaOk: this.lastHealth.ok,
@@ -162,6 +165,18 @@ export class Conversation {
       quiet: this.deps.policy.isQuiet(),
       attention: this.deps.attention.snapshot(),
     }
+  }
+
+  async refreshModel(): Promise<boolean> {
+    const health = await this.deps.model.health(5000)
+    // A remote OpenAI-compatible endpoint may not expose /models; a successful
+    // health check with an empty list is still usable for chat.
+    this.modelReady = health.ok && (health.models.length === 0 || health.models.some(model => {
+      const name = typeof model.name === 'string' ? model.name : ''
+      return name === this.deps.model.model || name.startsWith(`${this.deps.model.model}:`)
+    }))
+    this.lastHealth = { ok: health.ok, models: health.models.map(model => String(model.name ?? '')).filter(Boolean), error: health.error }
+    return this.modelReady
   }
 
   private async prepareUnderstanding(): Promise<void> {
@@ -346,7 +361,7 @@ export class Conversation {
   private async chat(text: string, options: TurnOptions): Promise<TurnResult> {
     if (!this.modelReady) {
       return {
-        reply: `本地模型还没准备好。先运行 v2 的 setup/doctor，确认 Ollama 里已有 ${this.deps.model.model}。`,
+        reply: `模型还没准备好（${this.deps.model.status?.().label ?? '本地'} / ${this.deps.model.model}）。请打开设置里的“模型来源”测试连接或切换模型。`,
         contextUsed: [],
       }
     }

@@ -15,6 +15,7 @@
 | 记忆召回评分 / 上下文渲染 | `v2/src/memory/recall.ts` | 短中文查询、敏感过滤、弃权、历史 |
 | 后台记忆抽取（proposed） | `v2/src/memory/extract.ts` | 显式“记住”不重复抽取；候选不自动确认 |
 | 本地 LLM / embedding / 视觉 adapter | `v2/src/model/ollama.ts` | `qwen2.5:3b`, `nomic-embed-text` 实测 |
+| 本地/远端模型切换（UI 一键） | `v2/src/model/{router,openai,settings}.ts`, `v2/web/app.js` | `test/{openai,model-settings}.test.ts`；mock 远端 + UI 实测 |
 | 实时语音：PTT → ASR → LLM → TTS | `v2/src/voice/*`, `v2/src/conversation.ts` | `/api/voice` 实测 6 s 热路径 |
 | faster-whisper 持久 worker | `v2/scripts/asr_worker.py` | `tiny` 中文转写；模型只加载一次 |
 | Piper 中文合成 | `v2/src/voice/tts.ts` | 生成 22.05 kHz WAV，`/api/audio` 可播 |
@@ -38,6 +39,7 @@
 | M3.5 记忆增强 | 后台 proposed 抽取、混合向量召回 | 评测集未建；冲突链接/衰减未完整 |
 | M4 主动性 | 提醒、预算、专注、静默时段 | 无日历/任务触发；无会议检测 |
 | M5 远程 | 令牌 + TLS + PWA + WS | 无 WebRTC；无设备配对/撤销 UI |
+| 模型来源 | 本地 Ollama / 远端 OpenAI-compatible 运行时切换 | 远端协议未覆盖 Anthropic/Azure 专有头；向量模型切换需重建索引 |
 | 工具执行 | 打开网页/文件管理器（一次性确认 + 审计） | 无任意文件写入/终端/日历 |
 
 ## 3. 明确不做（本版）

@@ -6,7 +6,8 @@ import { Conversation } from './conversation.ts'
 import { EventBus } from './events.ts'
 import { createLogger, defaultLogFile } from './logger.ts'
 import { MemoryStore } from './memory/store.ts'
-import { OllamaClient } from './model/ollama.ts'
+import { ModelRouter, createModelClient } from './model/router.ts'
+import { ModelSettingsStore } from './model/settings.ts'
 import { ProactivePolicy } from './proactive/policy.ts'
 import { ReminderScheduler, ReminderStore } from './proactive/reminders.ts'
 import { CameraCapture } from './senses/camera.ts'
@@ -23,12 +24,25 @@ async function main(): Promise<void> {
   const logger = createLogger((process.env.JARVIS_LOG_LEVEL as 'debug' | 'info' | 'warn' | 'error' | undefined) ?? 'info', defaultLogFile(config.dataDir))
   const bus = new EventBus(300)
   const attention = new AttentionManager(bus)
-  const model = new OllamaClient(config.ollama.url, {
-    model: config.ollama.model,
-    visionModel: config.ollama.visionModel,
-    embedModel: config.ollama.embedModel,
-    keepAlive: config.ollama.keepAlive,
+  const modelSettings = new ModelSettingsStore(join(config.dataDir, 'model-config.json'), {
+    local: {
+      baseUrl: config.ollama.url,
+      model: config.ollama.model,
+      visionModel: config.ollama.visionModel,
+      embedModel: config.ollama.embedModel,
+      keepAlive: config.ollama.keepAlive,
+    },
   })
+  const savedModels = await modelSettings.load()
+  const activeProfile = savedModels.profiles.find(item => item.id === savedModels.active) ?? savedModels.profiles[0]
+  const localProfile = savedModels.profiles.find(item => item.id === 'local') ?? activeProfile
+  const localModel = createModelClient(localProfile)
+  const model = new ModelRouter(
+    activeProfile.id === 'local' ? localModel : createModelClient(activeProfile),
+    activeProfile,
+    logger.child('model'),
+    { embedding: localModel, vision: localModel },
+  )
   const memory = new MemoryStore({
     file: join(config.dataDir, 'jarvis.db'),
     embedder: model,
@@ -100,6 +114,8 @@ async function main(): Promise<void> {
     bus,
     attention,
     conversation,
+    models: model,
+    modelSettings,
     actions,
     memory,
     reminders,
@@ -109,7 +125,7 @@ async function main(): Promise<void> {
   const { url } = await server.start()
   logger.info(`Jarvis v${config.version} listening`, {
     url,
-    model: config.ollama.model,
+    model: model.model,
     asr: config.voice.asrEngine,
     mode: config.host === '127.0.0.1' ? 'local-only' : 'network',
   })

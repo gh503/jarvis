@@ -1,5 +1,5 @@
 import type { Logger } from '../logger.ts'
-import type { OllamaClient } from '../model/ollama.ts'
+import type { ModelClient } from '../model/ollama.ts'
 import type { MemoryStore } from './store.ts'
 import type { MemoryImportance, MemoryKind, MemorySensitivity } from './types.ts'
 
@@ -60,7 +60,7 @@ export function parseExtraction(text: string): Candidate[] {
 
 export class MemoryExtractor {
   constructor(
-    private readonly model: OllamaClient,
+    private readonly model: ModelClient,
     private readonly store: MemoryStore,
     private readonly logger?: Logger,
   ) {}

@@ -11,6 +11,8 @@ import { EventBus } from '../src/events.ts'
 import type { Logger } from '../src/logger.ts'
 import { NullEmbedder } from '../src/memory/embedding.ts'
 import { MemoryStore } from '../src/memory/store.ts'
+import { ModelRouter, createModelClient } from '../src/model/router.ts'
+import { ModelSettingsStore } from '../src/model/settings.ts'
 import { ProactivePolicy } from '../src/proactive/policy.ts'
 import { ReminderStore } from '../src/proactive/reminders.ts'
 import { JarvisServer } from '../src/server.ts'
@@ -55,13 +57,26 @@ test('server enforces proxy auth, CSRF and serves the shell', async () => {
     memoryItems: () => [],
     cancel: () => {},
     cleanupAudio: async () => {},
+    cleanupCaptures: async () => {},
     handleReminder: async () => {},
+    refreshModel: async () => true,
   } as unknown as Conversation
+  const localProfile = {
+    id: 'local', label: '本地 Ollama', kind: 'ollama' as const,
+    baseUrl: config.ollama.url, model: config.ollama.model, apiKey: '',
+    visionModel: config.ollama.visionModel, embedModel: config.ollama.embedModel, keepAlive: '24h',
+  }
+  const models = new ModelRouter(createModelClient(localProfile), localProfile)
+  const modelSettings = new ModelSettingsStore(join(dir, 'model-config.json'), {
+    local: { baseUrl: config.ollama.url, model: config.ollama.model, visionModel: config.ollama.visionModel, embedModel: config.ollama.embedModel, keepAlive: '24h' },
+  })
   const server = new JarvisServer({
     config,
     bus,
     attention: new AttentionManager(bus),
     conversation,
+    models,
+    modelSettings,
     actions,
     memory,
     reminders,
@@ -89,6 +104,17 @@ test('server enforces proxy auth, CSRF and serves the shell', async () => {
 
     const local = await fetch(`${url}/api/health`)
     assert.equal(local.status, 200)
+
+    const model = await fetch(`${url}/api/model`)
+    assert.equal(model.status, 200)
+    assert.doesNotMatch(await model.text(), /apiKey|sk-secret/)
+
+    const noKeyRemote = await fetch(`${url}/api/model/activate`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ id: 'remote' }),
+    })
+    assert.equal(noKeyRemote.status, 409)
 
     const ws = new WebSocket(`${url.replace('http', 'ws')}/ws?token=${config.authToken}`)
     const hello = await new Promise<{ kind: string }>((resolve, reject) => {
