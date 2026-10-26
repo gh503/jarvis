@@ -19,7 +19,8 @@
     "acceptance": "bash scripts/acceptance.sh",
     "memory:eval": "node --experimental-transform-types scripts/memory-eval.ts",
     "backup": "node --experimental-transform-types scripts/backup.ts",
-    "restore": "node --experimental-transform-types scripts/restore.ts"
+    "restore": "node --experimental-transform-types scripts/restore.ts",
+    "ui:smoke": "node --experimental-transform-types scripts/ui-smoke.ts"
   },
   "dependencies": {
     "ws": "8.21.3"

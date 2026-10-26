@@ -26,6 +26,7 @@ npm run typecheck
 npm test
 npm run acceptance   # unattended API/voice/OCR checks
 npm run memory:eval  # 11-case recall/abstention/privacy regression suite
+JARVIS_CDP_URL=http://127.0.0.1:9223 npm run ui:smoke  # browser smoke, Chrome CDP
 npm run backup -- ~/jarvis-backup.tar.gz
 npm run restore -- ~/jarvis-backup.tar.gz --yes   # stop Jarvis first
 npm run memory -- list

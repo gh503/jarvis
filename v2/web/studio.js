@@ -81,6 +81,7 @@ const state = {
   eventSearch: '',
   tuningSearch: '',
   showAdvanced: true,
+  tuningCompare: false,
   searchTimer: 0,
   tuningSearchTimer: 0,
   eventSearchTimer: 0,
@@ -826,6 +827,7 @@ function renderInspector(node = null) {
       <div><span>敏感级</span><b>${esc(selected.sensitivity)}</b></div>
       <div><span>创建</span><b>${esc(fmtAgo(selected.createdAt))}</b></div>
       <div><span>更新</span><b>${esc(fmtAgo(selected.updatedAt))}</b></div>
+      <div><span>有效期</span><b>${esc((selected.validTo ? '至 ' + fmtDate(selected.validTo) : '至今'))}</b></div>
     </div>
     <div class="inspector-importance"><div class="inspector-subhead"><span>重要度分解</span><b>${selected.importance.toFixed(2)}</b></div>${bars}</div>
     <div class="inspector-source"><span>SOURCE REF</span><code>${esc(selected.sourceRef || '—')}</code></div>
@@ -1083,6 +1085,14 @@ function tuningDirtyCount() {
   return Object.keys(state.tuningDraft).filter(key => state.tuningDraft[key] !== state.tuningSaved[key]).length
 }
 
+function tuningCompareHtml(groups) {
+  const changed = groups.flatMap(group => (group.params || []))
+    .filter(param => String(state.tuningDraft[param.key] ?? param.default) !== String(param.default))
+    .slice(0, 10)
+  if (!changed.length) return `<div class="tuning-impact"><p class="s-eyebrow">DEFAULT VS DRAFT</p><div><span class="apply-tag ui">一致</span><p>当前草稿与默认值一致；拖动控件后再看这里。</p></div></div>`
+  return `<div class="tuning-impact"><p class="s-eyebrow">DEFAULT VS DRAFT · ${changed.length}</p>${changed.map(param => `<div><span class="apply-tag ui">${esc(param.label)}</span><p><del>${esc(param.default)}</del> → <b>${esc(state.tuningDraft[param.key] ?? param.default)}</b></p></div>`).join('')}</div>`
+}
+
 function renderTuning() {
   if (!state.tuning) return
   const dirty = tuningDirtyCount()
@@ -1102,7 +1112,7 @@ function renderTuning() {
     </div>
     <div class="tuning-layout">
       <div class="tuning-main">
-        <div class="tuning-tools"><input type="search" id="tuning-search" placeholder="搜索参数名、说明或 key…" value="${esc(state.tuningSearch)}"><button class="s-btn ghost ${state.showAdvanced ? 'active' : ''}" id="tuning-advanced">${state.showAdvanced ? '隐藏高级' : '显示高级'}</button></div>
+        <div class="tuning-tools"><input type="search" id="tuning-search" placeholder="搜索参数名、说明或 key…" value="${esc(state.tuningSearch)}"><button class="s-btn ghost ${state.showAdvanced ? 'active' : ''}" id="tuning-advanced">${state.showAdvanced ? '隐藏高级' : '显示高级'}</button><button class="s-btn ghost ${state.tuningCompare ? 'active' : ''}" id="tuning-compare">A/B 对照</button></div>
         ${groups.map(tuningGroupHtml).join('') || '<div class="s-error"><strong>没有匹配的参数</strong><p>换一个关键词，或显示高级参数。</p></div>'}
       </div>
       <aside class="tuning-side">
@@ -1122,6 +1132,7 @@ function renderTuning() {
           <div><span class="apply-tag live">立即</span><p>声音参数会重启 Piper worker；正在播放的音频不受影响。</p></div>
           <div><span class="apply-tag restart">重启</span><p>当前版本没有必须重启的参数；端口、TLS 与密钥仍由环境变量控制。</p></div>
         </div>
+        ${state.tuningCompare ? tuningCompareHtml(groups) : ''}
         <div class="tuning-file"><span>PERSISTED AT</span><code>data/tuning.json</code><small>权限 0600 · 原子写入 · 不含密钥</small></div>
       </aside>
     </div>`
@@ -1142,6 +1153,7 @@ function bindTuningControls() {
     state.tuningSearchTimer = setTimeout(() => renderTuning(), 180)
   })
   $('#tuning-advanced')?.addEventListener('click', () => { state.showAdvanced = !state.showAdvanced; renderTuning() })
+  $('#tuning-compare')?.addEventListener('click', () => { state.tuningCompare = !state.tuningCompare; renderTuning() })
   $('#tuning-save')?.addEventListener('click', () => void saveTuning())
   $('#tuning-revert')?.addEventListener('click', () => {
     state.tuningDraft = { ...state.tuningSaved }

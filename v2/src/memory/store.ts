@@ -745,7 +745,7 @@ export class MemoryStore {
       id: string; gist: string; content: string; kind: MemoryKind; status: MemoryStatus;
       sensitivity: MemorySensitivity; trust: string; confidence: number; importance: number;
       importanceDetail: { goal: number; novelty: number; social: number; repetition: number; explicit: number; deadline: number };
-      score: number; pinned: boolean; createdAt: string; updatedAt: string; useCount: number;
+      score: number; pinned: boolean; createdAt: string; updatedAt: string; validFrom: string; validTo: string | null; useCount: number;
       sourceKind: string; sourceRef: string; supersedesId: string | null; embedded: boolean;
       degree: number;
     }>
@@ -775,6 +775,8 @@ export class MemoryStore {
       pinned: item.pinned,
       createdAt: item.createdAt,
       updatedAt: item.updatedAt,
+      validFrom: item.validFrom,
+      validTo: item.validTo,
       useCount: item.useCount,
       sourceKind: item.sourceKind,
       sourceRef: item.sourceRef,

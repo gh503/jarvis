@@ -24,6 +24,7 @@
 | faster-whisper 持久 worker + 预热/状态/重启 | `v2/scripts/asr_worker.py`, `v2/src/voice/faster-whisper.ts` | 启动 `ready` 带 `loadMs/warmupMs`；`asrState` 反映加载/异常；超时自动重启 |
 | Piper 中文合成 | `v2/src/voice/tts.ts` | 生成 22.05 kHz WAV，`/api/audio` 可播 |
 | 按需屏幕捕获 | `v2/scripts/screen_capture.py`, `v2/src/senses/screen.ts` | Portal 授权/拒绝路径；X11 仅回退；记录窗口标题是否可知 |
+| 浏览器 E2E | `v2/scripts/ui-smoke.ts` | Chrome CDP；主界面/设置/简报/Studio/390px；无 Playwright 依赖 |
 | 可选托盘 | `v2/scripts/tray.py` | GTK3 StatusIcon；打开/在线状态；GNOME Wayland 可能隐藏 |
 | 首次使用引导 | `v2/web/app.js` | 模型/麦克风/感官三件事；可跳过；只显示一次 |
 | 感官同意与画面删除 | `v2/web/app.js`, `v2/src/server.ts` | 首次看屏幕/摄像头前说明；画面卡片显示留存策略并支持单张删除 |
@@ -58,7 +59,7 @@
 | M4 主动性 | 提醒、预算、专注、静默时段、每日简报、只读 ICS | 无双向日历写入；无会议检测 |
 | M5 远程 | 令牌 + TLS + PWA + WS + 设备配对/撤销 | 无 WebRTC；无逐设备权限范围（设备令牌等价主令牌） |
 | 模型来源 | 本地 Ollama / 远端 OpenAI-compatible 运行时切换 | 远端协议未覆盖 Anthropic/Azure 专有头；向量模型切换需重建索引 |
-| 可视化 | 总览、记忆星座、事件流、调参、脱敏配置、持久化回合 | 无时间回放、无手动连线 UI、无 A/B 对照 |
+| 可视化 | 总览、记忆星座、事件流、调参、A/B 默认对照、脱敏配置、持久化回合 | 无时间回放、无手动连线 UI |
 | 工具执行 | 打开网页/文件管理器（一次性确认 + 审计） | 无任意文件写入/终端/日历 |
 
 ## 3. 明确不做（本版）
@@ -74,6 +75,6 @@
 1. PWA 按住说话在手机上的真机验收；iOS Safari MediaRecorder 兼容。
 2. 记忆评测扩展到 150 题并接入真实 embedding 基线；LLM 摘要式巩固。
 3. 双向日历/任务写入与审批；当前只有只读 ICS 和本地提醒。
-4. A/B 调参、回合时间回放和记忆手动连线 UI。
+4. 回合时间回放、记忆手动连线 UI、调参的并行 A/B 运行。
 5. 唤醒词与 VAD（Silero）需要重新评估 CPU/隐私预算。
 6. 视觉模型替换评估（更小、支持中文、能在 4 GB 内全 GPU）。

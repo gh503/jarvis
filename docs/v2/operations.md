@@ -253,6 +253,9 @@ curl -s http://127.0.0.1:3081/api/health
 # 记忆回归评测（11 条；弃权/隐私/候选/更新）
 npm run memory:eval
 
+# 浏览器 smoke（Chrome 开 --remote-debugging-port；无 Playwright 依赖）
+JARVIS_CDP_URL=http://127.0.0.1:9223 npm run ui:smoke
+
 # 每日简报 / 持久化回合 / 设备 / 隐私
 curl -s http://127.0.0.1:3081/api/brief
 curl -s 'http://127.0.0.1:3081/api/traces?limit=20'
