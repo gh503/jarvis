@@ -1,8 +1,10 @@
 import type { Logger } from '../logger.ts'
 import { AnthropicClient } from './anthropic.ts'
+import { classifyModelError, cooldownActive, cooldownMs, shouldFailover, type FailureKind } from './failover.ts'
 import { OllamaClient } from './ollama.ts'
 import { OpenAICompatibleClient } from './openai.ts'
-import type { ModelProfile } from './settings.ts'
+import { isLoopbackHost } from './settings.ts'
+import type { ModelProfile, ModelSettings } from './settings.ts'
 import type { ChatMessage, ChatOptions, ModelClient, ModelHealth, ModelStatus } from './types.ts'
 
 export function createModelClient(profile: ModelProfile): ModelClient {
@@ -45,18 +47,43 @@ export interface ModelTestResult {
   models: string[]
 }
 
+/** What the failover layer needs from persistence and the event bus. */
+export interface FailoverDeps {
+  loadSettings(): Promise<ModelSettings>
+  persistCooldown(id: string, entry: { until: number; kind: string; reason: string } | null): Promise<void>
+  emit?(event: 'model.failover', payload: Record<string, unknown>): void
+}
+
+function profileActivatable(profile: ModelProfile): boolean {
+  if (profile.kind !== 'openai') return true
+  if (profile.apiKey) return true
+  try { return isLoopbackHost(new URL(profile.baseUrl).hostname) } catch { return false }
+}
+
+/**
+ * Model router with priority-chain failover. Every request walks the chain
+ * (scenario chain when provided, otherwise the global priority), skipping
+ * providers in cooldown. Quota/auth/rate-limit/network/5xx failures park the
+ * provider and retry the same request on the next one; a failure that
+ * happens after streamed output has started is not retried (the partial
+ * reply is already visible).
+ */
 export class ModelRouter implements ModelClient {
   private client: ModelClient
   private current: ModelProfile
+  private clients = new Map<string, ModelClient>()
+  private lastCooldowns: Record<string, { until: number; kind: string; reason: string }> = {}
 
   constructor(
     initial: ModelClient,
     profile: ModelProfile,
     private readonly logger?: Logger,
     private readonly fallback?: { embedding?: ModelClient; vision?: ModelClient },
+    private readonly failover?: FailoverDeps,
   ) {
     this.client = initial
     this.current = profile
+    this.clients.set(profile.id, initial)
   }
 
   get model(): string {
@@ -76,7 +103,7 @@ export class ModelRouter implements ModelClient {
   }
 
   status(): ModelStatus {
-    return this.client.status?.() ?? {
+    const base = this.client.status?.() ?? {
       id: this.current.id,
       label: this.current.label,
       kind: this.current.kind,
@@ -85,6 +112,7 @@ export class ModelRouter implements ModelClient {
       baseUrl: this.current.baseUrl,
       hasKey: Boolean(this.current.apiKey),
     }
+    return { ...base, cooldowns: this.lastCooldowns }
   }
 
   async health(timeoutMs = 5000): Promise<ModelHealth> {
@@ -95,12 +123,109 @@ export class ModelRouter implements ModelClient {
     return this.client.warmup ? await this.client.warmup() : { chatMs: 0, embedMs: 0 }
   }
 
-  chatStream(messages: ChatMessage[], options: ChatOptions = {}): AsyncGenerator<string> {
-    return this.client.chatStream(messages, options)
+  private clientFor(profile: ModelProfile): ModelClient {
+    if (profile.id === this.current.id) return this.client
+    let client = this.clients.get(profile.id)
+    if (!client) {
+      client = createModelClient(profile)
+      this.clients.set(profile.id, client)
+    }
+    return client
+  }
+
+  /**
+   * Ordered candidate chain. Providers in cooldown are skipped; when every
+   * candidate is parked the chain falls back to the raw order so we still
+   * try (the cooldown may be stale, e.g. quota refilled).
+   */
+  private async chain(profileIds?: string[]): Promise<ModelProfile[]> {
+    if (!this.failover) return [this.current]
+    const settings = await this.failover.loadSettings()
+    this.lastCooldowns = { ...settings.cooldowns }
+    const order = profileIds?.length ? profileIds : settings.priority
+    const byId = new Map(settings.profiles.map(item => [item.id, item]))
+    const ordered: ModelProfile[] = []
+    for (const id of order) {
+      const profile = byId.get(id)
+      if (profile && !ordered.some(item => item.id === id)) ordered.push(profile)
+    }
+    if (!ordered.some(item => item.id === this.current.id)) ordered.push(this.current)
+    if (ordered.length === 0) return [this.current]
+    const usable = ordered.filter(profileActivatable)
+    const candidates = usable.length > 0 ? usable : ordered
+    const now = Date.now()
+    const ready = candidates.filter(item => !cooldownActive(settings.cooldowns[item.id], now))
+    return ready.length > 0 ? ready : candidates
+  }
+
+  private noteSuccess(profile: ModelProfile, client: ModelClient): void {
+    if (profile.id === this.current.id) return
+    this.current = profile
+    this.client = client
+    this.logger?.info('model now served by provider', { id: profile.id, label: profile.label, model: profile.model })
+  }
+
+  private async parkProvider(profile: ModelProfile, kind: FailureKind, error: unknown, chainIds: string[]): Promise<void> {
+    const until = Date.now() + cooldownMs(kind)
+    const reason = (error instanceof Error ? error.message : String(error)).slice(0, 200)
+    this.lastCooldowns = { ...this.lastCooldowns, [profile.id]: { until, kind, reason } }
+    this.logger?.warn('model provider parked', { id: profile.id, label: profile.label, kind, minutes: Math.max(1, Math.round((until - Date.now()) / 60000)), reason })
+    const next = chainIds.filter(id => id !== profile.id)[0]
+    this.failover?.emit?.('model.failover', {
+      from: profile.id,
+      fromLabel: profile.label,
+      to: next ?? null,
+      kind,
+      reason,
+      cooldownUntil: new Date(until).toISOString(),
+    })
+    try {
+      await this.failover?.persistCooldown(profile.id, { until, kind, reason })
+    } catch (persistError) {
+      this.logger?.warn('cooldown persist failed', { error: persistError instanceof Error ? persistError.message : String(persistError) })
+    }
+  }
+
+  async *chatStream(messages: ChatMessage[], options: ChatOptions = {}): AsyncGenerator<string> {
+    const chain = await this.chain(options.profileIds)
+    let lastError: unknown = new Error('没有可用的模型供应商')
+    for (const profile of chain) {
+      const client = this.clientFor(profile)
+      let produced = false
+      try {
+        for await (const delta of client.chatStream(messages, options)) {
+          produced = true
+          yield delta
+        }
+        this.noteSuccess(profile, client)
+        return
+      } catch (error) {
+        const kind = classifyModelError(error)
+        if (produced || !shouldFailover(kind)) throw error
+        lastError = error
+        await this.parkProvider(profile, kind, error, chain.map(item => item.id))
+      }
+    }
+    throw lastError
   }
 
   async chatOnce(messages: ChatMessage[], options: ChatOptions = {}): Promise<string> {
-    return await this.client.chatOnce(messages, options)
+    const chain = await this.chain(options.profileIds)
+    let lastError: unknown = new Error('没有可用的模型供应商')
+    for (const profile of chain) {
+      const client = this.clientFor(profile)
+      try {
+        const reply = await client.chatOnce(messages, options)
+        this.noteSuccess(profile, client)
+        return reply
+      } catch (error) {
+        const kind = classifyModelError(error)
+        if (!shouldFailover(kind)) throw error
+        lastError = error
+        await this.parkProvider(profile, kind, error, chain.map(item => item.id))
+      }
+    }
+    throw lastError
   }
 
   async vision(image: Buffer, prompt: string, options: ChatOptions = {}): Promise<string> {
@@ -145,11 +270,25 @@ export class ModelRouter implements ModelClient {
     }
   }
 
+  /**
+   * Manual switch from the settings UI: test first, then pin the profile and
+   * clear its cooldown so it serves immediately.
+   */
   async switchTo(profile: ModelProfile): Promise<{ status: ModelStatus; test: ModelTestResult }> {
     const test = await this.test(profile)
     if (!test.ok) throw new Error(test.message)
     this.client = createModelClient(profile)
+    this.clients.set(profile.id, this.client)
     this.current = profile
+    if (this.failover) {
+      try {
+        const settings = await this.failover.loadSettings()
+        this.lastCooldowns = { ...settings.cooldowns }
+        if (settings.cooldowns[profile.id]) await this.failover.persistCooldown(profile.id, null)
+      } catch {
+        // A cooldown that cannot be cleared is cosmetic; the switch succeeded.
+      }
+    }
     this.logger?.info('model switched', { id: profile.id, kind: profile.kind, model: profile.model })
     return { status: this.status(), test }
   }

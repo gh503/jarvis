@@ -273,7 +273,7 @@ test('server enforces proxy auth, CSRF and serves the shell', async () => {
       method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ id: 'foo' }),
     })
     assert.equal(unknownProfile.status, 400)
-    assert.match(await unknownProfile.text(), /local \/ remote/)
+    assert.match(await unknownProfile.text(), /没有这个模型配置/)
 
     const malformedUri = await fetch(`${url}/%E0%A4%A`)
     assert.equal(malformedUri.status, 400)

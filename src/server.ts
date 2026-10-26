@@ -271,9 +271,9 @@ export class JarvisServer {
   }
 
   private async onMessage(ws: WebSocket, raw: string): Promise<void> {
-    let message: { kind?: string; text?: string }
+    let message: { kind?: string; text?: string; scenario?: string }
     try {
-      message = JSON.parse(raw) as { kind?: string; text?: string }
+      message = JSON.parse(raw) as { kind?: string; text?: string; scenario?: string }
     } catch {
       this.send(ws, { kind: 'error', error: 'invalid JSON' })
       return
@@ -293,7 +293,8 @@ export class JarvisServer {
         this.send(ws, { kind: 'error', error: `消息太长（上限 ${MAX_CHAT_CHARS} 字）` })
         return
       }
-      await this.deps.conversation.handleText(text, { source: 'text' })
+      const scenario = typeof message.scenario === 'string' && /^[a-z0-9-]{1,32}$/.test(message.scenario) ? message.scenario : undefined
+      await this.deps.conversation.handleText(text, { source: 'text', scenario })
       return
     }
     this.send(ws, { kind: 'error', error: `unknown message kind: ${message.kind ?? 'undefined'}` })
@@ -660,8 +661,8 @@ export class JarvisServer {
     if (request.method === 'POST' && path === '/api/model/activate') {
       try {
         const body = await readJson<{ id?: string }>(request)
-        const id = body.id === 'remote' ? 'remote' : body.id === 'local' ? 'local' : ''
-        if (!id) throw new Error('只能切换 local 或 remote')
+        const id = typeof body.id === 'string' && /^[a-z0-9-]{1,32}$/.test(body.id) ? body.id : ''
+        if (!id) throw new Error('模型配置 id 不合法')
         const loaded = await this.deps.modelSettings.load()
         const found = loaded.profiles.find(item => item.id === id)
         if (!found) throw new Error('没有这个模型配置')
@@ -686,8 +687,71 @@ export class JarvisServer {
       return
     }
 
+    if (request.method === 'POST' && path === '/api/model/profile/add') {
+      try {
+        const body = await readJson<Partial<ModelProfile>>(request)
+        const settings = await this.deps.modelSettings.addProfile(body)
+        sendJson(response, 200, { settings: this.deps.modelSettings.publicView(settings) })
+      } catch (error) {
+        sendJson(response, errorStatus(error, 400), { error: error instanceof Error ? error.message : String(error) })
+      }
+      return
+    }
+
+    if (request.method === 'POST' && path === '/api/model/profile/update') {
+      try {
+        const body = await readJson<Partial<ModelProfile>>(request)
+        const profile = await this.profileFromBody(body)
+        const settings = await this.deps.modelSettings.load()
+        if (settings.active === profile.id) {
+          sendJson(response, 409, { error: '当前使用的供应商请用「保存并切换」，会先测试再生效' })
+          return
+        }
+        const saved = await this.deps.modelSettings.upsert(profile, false)
+        sendJson(response, 200, { settings: this.deps.modelSettings.publicView(saved) })
+      } catch (error) {
+        sendJson(response, errorStatus(error, 400), { error: error instanceof Error ? error.message : String(error) })
+      }
+      return
+    }
+
+    if (request.method === 'POST' && path === '/api/model/profile/delete') {
+      try {
+        const body = await readJson<{ id?: string }>(request)
+        if (!body.id) throw new Error('缺少供应商 id')
+        const settings = await this.deps.modelSettings.removeProfile(String(body.id))
+        sendJson(response, 200, { settings: this.deps.modelSettings.publicView(settings) })
+      } catch (error) {
+        sendJson(response, errorStatus(error, 400), { error: error instanceof Error ? error.message : String(error) })
+      }
+      return
+    }
+
+    if (request.method === 'POST' && path === '/api/model/priority') {
+      try {
+        const body = await readJson<{ priority?: string[] }>(request)
+        if (!Array.isArray(body.priority)) throw new Error('priority 需要是字符串数组')
+        const settings = await this.deps.modelSettings.setPriority(body.priority)
+        sendJson(response, 200, { settings: this.deps.modelSettings.publicView(settings) })
+      } catch (error) {
+        sendJson(response, errorStatus(error, 400), { error: error instanceof Error ? error.message : String(error) })
+      }
+      return
+    }
+
+    if (request.method === 'POST' && path === '/api/model/scenarios') {
+      try {
+        const body = await readJson<{ scenarios?: unknown[]; scenarioAuto?: boolean; defaultScenario?: string }>(request)
+        const settings = await this.deps.modelSettings.setScenarios(body)
+        sendJson(response, 200, { settings: this.deps.modelSettings.publicView(settings) })
+      } catch (error) {
+        sendJson(response, errorStatus(error, 400), { error: error instanceof Error ? error.message : String(error) })
+      }
+      return
+    }
+
     if (request.method === 'POST' && path === '/api/chat') {
-      const body = await readJson<{ text?: string }>(request)
+      const body = await readJson<{ text?: string; scenario?: string }>(request)
       if (typeof body.text !== 'string' || !body.text.trim()) {
         sendJson(response, 400, { error: 'text is required' })
         return
@@ -696,7 +760,8 @@ export class JarvisServer {
         sendJson(response, 400, { error: `消息太长（上限 ${MAX_CHAT_CHARS} 字）` })
         return
       }
-      const result = await this.deps.conversation.handleText(body.text, { source: 'text' })
+      const scenario = typeof body.scenario === 'string' && /^[a-z0-9-]{1,32}$/.test(body.scenario) ? body.scenario : undefined
+      const result = await this.deps.conversation.handleText(body.text, { source: 'text', scenario })
       sendJson(response, 200, result)
       return
     }
@@ -1028,10 +1093,10 @@ export class JarvisServer {
 
   private async profileFromBody(body: Partial<ModelProfile>): Promise<ModelProfile> {
     const settings = await this.deps.modelSettings.load()
-    if (body.id !== undefined && body.id !== 'local' && body.id !== 'remote') throw new Error('只能配置 local / remote')
-    const id = body.id === 'remote' ? 'remote' : body.id === 'local' ? 'local' : 'local'
+    if (body.id !== undefined && !/^[a-z0-9-]{1,32}$/.test(String(body.id))) throw new Error('供应商 id 不合法')
+    const id = body.id ? String(body.id) : 'local'
     const existing = settings.profiles.find(item => item.id === id)
-    if (!existing) throw new Error('只能配置 local / remote')
+    if (!existing) throw new Error('没有这个模型配置')
     const nextBase = String(body.baseUrl ?? existing.baseUrl).trim().replace(/\/+$/, '')
     if (existing.kind === 'openai' && nextBase !== existing.baseUrl.replace(/\/+$/, '') && !body.apiKey?.trim()) {
       let loopback = false

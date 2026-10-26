@@ -16,6 +16,8 @@ export interface ChatOptions {
   signal?: AbortSignal
   timeoutMs?: number
   keepAlive?: string
+  /** Failover chain for this request (scenario override); profile ids in order. */
+  profileIds?: string[]
 }
 
 export interface ModelInfo {
@@ -38,6 +40,8 @@ export interface ModelStatus {
   model: string
   baseUrl: string
   hasKey: boolean
+  /** Providers currently parked by failover (id -> cooldown state). */
+  cooldowns?: Record<string, { until: number; kind: string; reason: string }>
 }
 
 export interface ModelClient {

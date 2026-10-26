@@ -98,8 +98,51 @@ Cloudflare Workers AI 是例外：它没有 OpenAI `/models`，但有账号级�
 - 不实现任意自定义 header / Azure `api-key` 专有头；需要时加协议适配器，
   不在 UI 里开放任意 header（那会把密钥泄漏面扩大）。
 
-## 5. 已知缺口
+## 5. 供应商池、优先级与自动切换（failover）
 
+模型配置不再限于 local/remote 两个槽位：`POST /api/model/profile/add` 可添加任意多个
+远端供应商（id 为小写字母/数字/连字符）。每个供应商有独立的 Base URL、协议、Key 和
+模型；Key 之间完全隔离，互不可见。
+
+### 优先级链
+
+`priority` 是按顺序的供应商 id 列表（设置页卡片上的 ↑↓ 调整）。每次请求从链头开始
+尝试，跳过处于冷却中的供应商；全部冷却时仍按原顺序重试（冷却可能已过时，例如免费
+额度已重置）。手动「保存并切换」会把该供应商置顶并清除它的冷却。
+
+### 错误分类与冷却
+
+只有「供应商当前不可用」类错误才会切换；请求本身有问题（4xx client）不会静默转移：
+
+| 分类 | 判定 | 冷却时长 |
+|---|---|---|
+| quota | HTTP 402 / insufficient balance / 额度不足 | 30 分钟 |
+| rate-limit | HTTP 429 / rate limit | 1 分钟 |
+| auth | HTTP 401/403 / invalid api key | 24 小时 |
+| network | fetch failed / 超时 / 连接拒绝 | 2 分钟 |
+| server | HTTP 5xx | 5 分钟 |
+
+冷却持久化在 `model-config.json` 的 `cooldowns` 字段，重启不失效；切换事件
+`model.failover` 通过 SSE 推送到 UI（系统消息提示「已自动切换到 …」）。
+流式回复一旦已经产出内容就**不再重试**（避免重复输出），整段未产出时才转移到
+下一家。 embedding 和视觉不做跨供应商 failover——向量维度不同，画面默认不出网。
+
+### 工作场景
+
+内置场景：日常对话 / 编程开发 / 写作翻译 / 深度分析。每个场景可配置：
+
+- 供应商链（不配置 = 跟随全局优先级）
+- 模型覆盖（该场景下用这个模型名）
+- 温度、注入系统提示的场景指令、参与自动识别的关键词
+
+`scenarioAuto` 开启时按消息内容确定性识别（代码围栏/语言后缀/报错堆栈 → 编程；
+翻译/润色 → 写作；分析/推理 → 深度分析），识别不到就回默认场景。输入框旁的
+「场景」下拉可手动指定本轮场景；`POST /api/chat` 与 WS chat 都接受 `scenario` 字段。
+场景识别结果通过 `assistant.scenario` 事件显示在输入框下方。
+
+## 6. 已知缺口
+
+- failover 只在一次请求内部转移；已产出部分内容后失败会把半成品交给用户，不换下一家重跑。
 - 不支持 OpenAI Responses 的 tools/structured outputs；当前只用文本 + 图片。
 - 不支持 Anthropic prompt caching / extended thinking 参数。
 - 模型发现没有分页；超过 200 个模型会截断。

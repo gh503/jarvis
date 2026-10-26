@@ -261,6 +261,18 @@ function handleEvent(event) {
     case 'model.changed':
       void refreshStatus()
       break
+    case 'model.failover': {
+      const kindLabel = { quota: '额度不足', 'rate-limit': '触发限流', auth: 'Key 被拒', network: '网络异常', server: '服务异常' }[data.kind] || '不可用'
+      const to = data.to && state.modelSettings?.profiles?.find(item => item.id === data.to)?.label
+      appendMessage('system', `⚡ ${data.fromLabel || data.from} ${kindLabel}，已自动切换${to ? `到 ${to}` : '到下一个可用供应商'}（冷却至 ${new Date(data.cooldownUntil).toLocaleTimeString('zh-CN', { hour12: false })}）`)
+      void refreshStatus()
+      break
+    }
+    case 'assistant.scenario': {
+      const hint = $('#hint')
+      if (hint && data.label) hint.textContent = `场景：${data.label}${data.pinned ? '（手动）' : '（自动）'}`
+      break
+    }
     case 'runtime.ready':
       state.voice = data.voice || state.voice
       applyStatus(data)
@@ -487,11 +499,12 @@ function sendText(text, options = {}) {
   state.pendingUserEcho = clean
   appendMessage('user', clean)
   setBusy(true)
-  const sent = sendWs({ kind: 'chat', text: clean })
+  const scenario = currentScenarioPin()
+  const sent = sendWs({ kind: 'chat', text: clean, scenario })
   state.turnViaWs = sent
   if (!sent) {
     state.pendingUserEcho = ''
-    api('/api/chat', { method: 'POST', body: JSON.stringify({ text: clean }) })
+    api('/api/chat', { method: 'POST', body: JSON.stringify({ text: clean, scenario }) })
       .then(result => handleHttpResult(result))
       .catch(error => {
         finishStreaming(error.message, true)
@@ -1119,26 +1132,129 @@ function settingsTabsHtml() {
 }
 
 function providerCardsHtml(settings, selectedId) {
-  return (settings.profiles || []).map(profile => {
+  const profiles = settings.profiles || []
+  const priority = Array.isArray(settings.priority) && settings.priority.length ? settings.priority : profiles.map(item => item.id)
+  const ordered = [...profiles].sort((a, b) => {
+    const ia = priority.indexOf(a.id)
+    const ib = priority.indexOf(b.id)
+    return (ia < 0 ? 999 : ia) - (ib < 0 ? 999 : ib)
+  })
+  const cooldowns = settings.cooldowns || {}
+  const now = Date.now()
+  return ordered.map((profile, index) => {
     const current = profile.id === settings.active
     const selected = profile.id === selectedId
     const reachable = profileReachable(profile)
     const kind = profile.kind === 'openai' ? protocolLabel(profile.protocol) : 'OLLAMA · 本机'
+    const cooldown = cooldowns[profile.id]
+    const parked = cooldown && cooldown.until > now
+    const parkedUntil = parked ? new Date(cooldown.until).toLocaleTimeString('zh-CN', { hour12: false }) : ''
+    const deletable = profile.id !== 'local' && !current
     return `<div class="provider-card${selected ? ' selected' : ''}${current ? ' active' : ''}" data-model-card="${escapeHtml(profile.id)}">
       <button type="button" class="provider-main" data-model-select="${escapeHtml(profile.id)}" aria-pressed="${selected}" title="编辑 ${escapeHtml(profile.label)}">
         <span class="provider-top">
-          <span class="provider-title">${escapeHtml(profile.label)}</span>
-          <span class="provider-badge ${current ? 'current' : reachable ? 'ready' : 'muted'}">${current ? '使用中' : reachable ? '可启用' : '待配置'}</span>
+          <span class="provider-title"><small class="provider-rank" title="故障转移优先级">#${index + 1}</small> ${escapeHtml(profile.label)}</span>
+          <span class="provider-badge ${parked ? 'muted' : current ? 'current' : reachable ? 'ready' : 'muted'}">${parked ? `冷却至 ${parkedUntil}` : current ? '使用中' : reachable ? '可启用' : '待配置'}</span>
         </span>
         <span class="provider-model">${escapeHtml(profile.model || '未配置模型')}</span>
         <span class="provider-meta">${escapeHtml(kind)}${profile.baseUrl ? ` · ${escapeHtml(profile.baseUrl)}` : ''}</span>
+        ${parked ? `<span class="provider-meta cooldown" title="${escapeHtml(cooldown.reason || '')}">自动切换原因：${escapeHtml(cooldown.kind || '')}</span>` : ''}
       </button>
       <div class="provider-foot">
-        <span>${selected ? '正在编辑' : '点击编辑'}</span>
+        <span class="provider-tools">
+          <button type="button" class="model-action quiet" data-model-up="${escapeHtml(profile.id)}" ${index === 0 ? 'disabled' : ''} title="提高优先级">↑</button>
+          <button type="button" class="model-action quiet" data-model-down="${escapeHtml(profile.id)}" ${index === ordered.length - 1 ? 'disabled' : ''} title="降低优先级">↓</button>
+        </span>
         <button type="button" class="model-action${current ? ' quiet' : ''}" data-model-activate="${escapeHtml(profile.id)}" ${current || !reachable ? 'disabled' : ''}>${current ? '已启用' : reachable ? '启用' : '先填 Key'}</button>
+        ${deletable ? `<button type="button" class="model-action quiet danger" data-model-delete="${escapeHtml(profile.id)}" title="删除该供应商">删除</button>` : ''}
       </div>
     </div>`
   }).join('')
+}
+
+function scenarioCardHtml(settings) {
+  const scenarios = settings.scenarios || []
+  const profiles = settings.profiles || []
+  const priority = Array.isArray(settings.priority) && settings.priority.length ? settings.priority : profiles.map(item => item.id)
+  const orderedProfiles = [...profiles].sort((a, b) => {
+    const ia = priority.indexOf(a.id)
+    const ib = priority.indexOf(b.id)
+    return (ia < 0 ? 999 : ia) - (ib < 0 ? 999 : ib)
+  })
+  const rows = scenarios.map(scenario => {
+    const chain = scenario.profileIds && scenario.profileIds.length ? scenario.profileIds : []
+    const chainText = chain.length
+      ? chain.map(id => profiles.find(item => item.id === id)?.label || id).join(' → ')
+      : '跟随全局优先级'
+    return `<details class="scenario-row" data-scenario="${escapeHtml(scenario.id)}">
+      <summary>
+        <span class="scenario-title">${escapeHtml(scenario.label)}</span>
+        <span class="scenario-meta">${escapeHtml(chainText)}${scenario.model ? ` · ${escapeHtml(scenario.model)}` : ''}${scenario.temperature !== null && scenario.temperature !== undefined ? ` · T=${scenario.temperature}` : ''}</span>
+      </summary>
+      <div class="scenario-body">
+        <label class="settings-field"><span>启用（参与自动识别）</span>
+          <input type="checkbox" class="scenario-enabled" ${scenario.enabled ? 'checked' : ''}>
+        </label>
+        <div class="settings-field"><span>供应商链（按全局优先级勾排；不勾 = 跟随全局）</span>
+          <div class="scenario-chain">
+            ${orderedProfiles.map(profile => `<label class="scenario-chain-item"><input type="checkbox" class="scenario-profile" value="${escapeHtml(profile.id)}" ${chain.includes(profile.id) ? 'checked' : ''}> ${escapeHtml(profile.label)}</label>`).join('')}
+          </div>
+        </div>
+        <div class="settings-form-grid">
+          <label class="settings-field"><span>模型覆盖 <em>可选</em></span>
+            <input type="text" class="scenario-model" value="${escapeHtml(scenario.model || '')}" placeholder="留空用供应商默认模型" autocomplete="off" spellcheck="false">
+          </label>
+          <label class="settings-field"><span>温度 <em>可选</em></span>
+            <input type="number" class="scenario-temperature" min="0" max="2" step="0.1" value="${scenario.temperature ?? ''}" placeholder="默认">
+          </label>
+        </div>
+        <label class="settings-field"><span>场景提示词（注入系统提示）</span>
+          <textarea class="scenario-extra" rows="2" maxlength="2000">${escapeHtml(scenario.systemExtra || '')}</textarea>
+        </label>
+      </div>
+    </details>`
+  }).join('')
+  return `<div class="settings-card" id="scenario-card">
+    <div class="settings-card-head">
+      <div><h4>工作场景</h4><p>不同场景走不同的供应商链和提示词；自动识别按消息内容判断，也可以在输入框旁手动指定。</p></div>
+    </div>
+    <div class="scenario-toolbar">
+      <label class="scenario-auto"><input type="checkbox" id="scenario-auto" ${settings.scenarioAuto !== false ? 'checked' : ''}> 自动识别场景</label>
+      <label class="scenario-default">默认场景
+        <select id="scenario-default">
+          ${scenarios.map(item => `<option value="${escapeHtml(item.id)}" ${item.id === settings.defaultScenario ? 'selected' : ''}>${escapeHtml(item.label)}</option>`).join('')}
+        </select>
+      </label>
+      <button type="button" class="model-action primary" id="scenario-save">保存场景</button>
+      <span class="settings-feedback" id="scenario-result" role="status"></span>
+    </div>
+    ${rows}
+  </div>`
+}
+
+function addProviderCardHtml() {
+  return `<div class="settings-card" id="provider-add-card">
+    <div class="settings-card-head">
+      <div><h4>添加供应商</h4><p>保存后进入优先级列表，参与额度/故障自动切换。</p></div>
+    </div>
+    <div class="settings-form-grid">
+      <label class="settings-field"><span>名称</span><input id="add-label" type="text" maxlength="32" placeholder="例如 Groq 免费层" autocomplete="off"></label>
+      <label class="settings-field"><span>接口协议</span>
+        <select id="add-protocol">
+          <option value="chat-completions">OpenAI Chat Completions</option>
+          <option value="responses">OpenAI Responses</option>
+          <option value="anthropic">Anthropic Messages</option>
+        </select>
+      </label>
+      <label class="settings-field wide"><span>Base URL</span><input id="add-base" type="url" placeholder="https://api.groq.com/openai/v1" autocomplete="off" spellcheck="false"></label>
+      <label class="settings-field"><span>模型</span><input id="add-model" type="text" placeholder="先测试连接从列表选择" autocomplete="off" spellcheck="false"></label>
+      <label class="settings-field"><span>API Key</span><input id="add-key" type="password" autocomplete="new-password" placeholder="sk-..."></label>
+    </div>
+    <div class="settings-actions">
+      <button type="button" class="model-action primary" id="provider-add">添加</button>
+      <span class="settings-feedback" id="provider-add-result" role="status"></span>
+    </div>
+  </div>`
 }
 
 function modelFormHtml(selected) {
@@ -1290,6 +1406,8 @@ function settingsPanelsHtml(selected, settings) {
       ${state.settingsError ? `<p class="settings-error">模型配置读取失败：${escapeHtml(state.settingsError)}。下面是可用的本地默认项，保存前请确认服务已恢复。</p>` : ''}
       <div class="provider-grid" id="provider-grid"></div>
       <div id="model-form-host"></div>
+      ${addProviderCardHtml()}
+      ${state.modelSettings ? scenarioCardHtml(state.modelSettings) : ''}
       <p class="settings-notice" id="settings-model-notice" role="status"></p>
     </section>
     <section class="settings-panel" id="settings-panel-voice" data-settings-panel="voice" role="tabpanel" aria-labelledby="settings-tab-voice" hidden>
@@ -1464,6 +1582,48 @@ function renderProviderCards() {
   $$('[data-model-select]').forEach(button => {
     button.addEventListener('click', () => switchModelProfile(button.dataset.modelSelect))
   })
+  const movePriority = async (id, direction) => {
+    const settings = state.modelSettings
+    if (!settings) return
+    const order = [...(settings.priority?.length ? settings.priority : settings.profiles.map(item => item.id))]
+    const index = order.indexOf(id)
+    const target = index + direction
+    if (index < 0 || target < 0 || target >= order.length) return
+    ;[order[index], order[target]] = [order[target], order[index]]
+    try {
+      const data = await api('/api/model/priority', { method: 'POST', body: JSON.stringify({ priority: order }) })
+      state.modelSettings = data.settings
+      renderProviderCards()
+      renderScenarioCard()
+      showModelNotice(`优先级已更新：${order.map((pid, i) => `${i + 1}.${settings.profiles.find(item => item.id === pid)?.label || pid}`).join(' → ')}`, 'ok')
+    } catch (error) {
+      showModelNotice(`优先级保存失败：${error.message}`, 'bad')
+    }
+  }
+  $$('[data-model-up]').forEach(button => {
+    button.addEventListener('click', () => movePriority(button.dataset.modelUp, -1))
+  })
+  $$('[data-model-down]').forEach(button => {
+    button.addEventListener('click', () => movePriority(button.dataset.modelDown, 1))
+  })
+  $$('[data-model-delete]').forEach(button => {
+    button.addEventListener('click', async () => {
+      const id = button.dataset.modelDelete
+      const profile = state.modelSettings?.profiles.find(item => item.id === id)
+      if (!window.confirm(`删除供应商「${profile?.label || id}」？它的 API Key 会一并移除。`)) return
+      try {
+        const data = await api('/api/model/profile/delete', { method: 'POST', body: JSON.stringify({ id }) })
+        state.modelSettings = data.settings
+        if (state.modelFormId === id) state.modelFormId = data.settings.active
+        renderProviderCards()
+        renderModelForm()
+        renderScenarioCard()
+        showModelNotice('已删除', 'ok')
+      } catch (error) {
+        showModelNotice(`删除失败：${error.message}`, 'bad')
+      }
+    })
+  })
   $$('[data-model-activate]').forEach(button => {
     button.addEventListener('click', async () => {
       const id = button.dataset.modelActivate
@@ -1491,6 +1651,115 @@ function renderProviderCards() {
   })
 }
 
+function renderScenarioCard() {
+  const host = $('#scenario-card')
+  if (!host || !state.modelSettings) return
+  const wrapper = host.parentElement
+  if (!wrapper) return
+  const template = document.createElement('template')
+  template.innerHTML = scenarioCardHtml(state.modelSettings).trim()
+  host.replaceWith(template.content.firstElementChild)
+  bindScenarioCard()
+}
+
+function bindScenarioCard() {
+  const save = $('#scenario-save')
+  if (!save || save.dataset.bound) return
+  save.dataset.bound = '1'
+  save.addEventListener('click', async () => {
+    const scenarios = (state.modelSettings?.scenarios || []).map(scenario => {
+      const row = document.querySelector(`[data-scenario="${scenario.id}"]`)
+      if (!row) return { id: scenario.id }
+      const profileIds = [...row.querySelectorAll('.scenario-profile:checked')].map(input => input.value)
+      const temperatureRaw = row.querySelector('.scenario-temperature')?.value
+      return {
+        id: scenario.id,
+        enabled: Boolean(row.querySelector('.scenario-enabled')?.checked),
+        profileIds,
+        model: row.querySelector('.scenario-model')?.value.trim() || '',
+        temperature: temperatureRaw === '' ? null : Number(temperatureRaw),
+        systemExtra: row.querySelector('.scenario-extra')?.value || '',
+      }
+    })
+    const result = $('#scenario-result')
+    save.disabled = true
+    try {
+      const data = await api('/api/model/scenarios', {
+        method: 'POST',
+        body: JSON.stringify({
+          scenarios,
+          scenarioAuto: Boolean($('#scenario-auto')?.checked),
+          defaultScenario: $('#scenario-default')?.value,
+        }),
+      })
+      state.modelSettings = data.settings
+      renderScenarioCard()
+      renderScenarioSelect()
+      if (result) { result.textContent = '场景已保存'; result.className = 'settings-feedback ok' }
+    } catch (error) {
+      if (result) { result.textContent = `保存失败：${error.message}`; result.className = 'settings-feedback bad' }
+    } finally {
+      save.disabled = false
+    }
+  })
+}
+
+function bindAddProvider() {
+  const button = $('#provider-add')
+  if (!button || button.dataset.bound) return
+  button.dataset.bound = '1'
+  button.addEventListener('click', async () => {
+    const result = $('#provider-add-result')
+    const label = $('#add-label')?.value.trim()
+    const baseUrl = $('#add-base')?.value.trim()
+    const model = $('#add-model')?.value.trim()
+    const apiKey = $('#add-key')?.value.trim()
+    const protocol = $('#add-protocol')?.value
+    if (!label || !baseUrl || !model) {
+      if (result) { result.textContent = '名称、Base URL、模型都要填'; result.className = 'settings-feedback bad' }
+      return
+    }
+    const id = label.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 24) || `p${Date.now().toString(36)}`
+    button.disabled = true
+    try {
+      const data = await api('/api/model/profile/add', {
+        method: 'POST',
+        body: JSON.stringify({ id, label, kind: 'openai', protocol, baseUrl, model, apiKey }),
+      })
+      state.modelSettings = data.settings
+      state.modelFormId = id
+      renderProviderCards()
+      renderModelForm()
+      renderScenarioCard()
+      showModelNotice(`已添加 ${label}，建议点「测试连接」确认可用`, 'ok')
+      if (result) { result.textContent = ''; }
+      $('#add-label').value = ''
+      $('#add-base').value = ''
+      $('#add-model').value = ''
+      $('#add-key').value = ''
+    } catch (error) {
+      if (result) { result.textContent = `添加失败：${error.message}`; result.className = 'settings-feedback bad' }
+    } finally {
+      button.disabled = false
+    }
+  })
+}
+
+function renderScenarioSelect() {
+  const select = $('#scenario-select')
+  if (!select) return
+  const scenarios = state.modelSettings?.scenarios || []
+  const current = select.value || 'auto'
+  select.innerHTML = '<option value="auto">场景 · 自动</option>'
+    + scenarios.filter(item => item.enabled).map(item => `<option value="${escapeHtml(item.id)}">${escapeHtml(item.label)}</option>`).join('')
+  select.value = [...select.options].some(option => option.value === current) ? current : 'auto'
+}
+
+function currentScenarioPin() {
+  const value = $('#scenario-select')?.value
+  return value && value !== 'auto' ? value : undefined
+}
+
 function renderModelForm() {
   const host = $('#model-form-host')
   if (!host || !state.modelSettings) return
@@ -1504,6 +1773,8 @@ function renderModelForm() {
     status.textContent = '填写 API Key 后，会从服务地址自动读取模型列表。'
     status.className = 'settings-hint'
   }
+  bindScenarioCard()
+  bindAddProvider()
   updateDirtyUi()
 }
 
@@ -1694,6 +1965,7 @@ async function showSettings(options = {}) {
   if (modelResult.status === 'fulfilled') {
     state.modelSettings = modelResult.value.settings
     state.settingsError = ''
+    renderScenarioSelect()
   } else {
     state.settingsError = modelResult.reason?.message || '模型状态读取失败'
     state.modelSettings = {

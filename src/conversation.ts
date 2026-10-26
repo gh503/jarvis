@@ -6,6 +6,8 @@ import type { JarvisConfig } from './config.ts'
 import type { EventBus } from './events.ts'
 import type { Logger } from './logger.ts'
 import type { ChatMessage, ModelClient } from './model/ollama.ts'
+import { detectScenario, SCENARIO_CHAT, type ScenarioConfig } from './model/scenarios.ts'
+import type { ModelSettings } from './model/settings.ts'
 import type { MemoryItem, RecallResult } from './memory/types.ts'
 import type { MemoryStore } from './memory/store.ts'
 import { MemoryExtractor } from './memory/extract.ts'
@@ -41,6 +43,7 @@ export interface ConversationDeps {
   tuning: TuningStore
   secure: SecureFiles
   voice?: { status(): VoiceRuntimeStatus }
+  modelSettings?: { load(): Promise<ModelSettings> }
   logger: Logger
 }
 
@@ -50,6 +53,8 @@ export interface TurnOptions {
   skipAttention?: boolean
   signal?: AbortSignal
   turnId?: string
+  /** Pin a work scenario for this turn; omit to use auto-detect/default. */
+  scenario?: string
 }
 
 export interface TurnResult {
@@ -489,11 +494,25 @@ export class Conversation {
         contextUsed: [],
       }
     }
+    const modelSettings = this.deps.modelSettings ? await this.deps.modelSettings.load().catch(() => null) : null
+    const scenarios: ScenarioConfig[] = modelSettings?.scenarios ?? []
+    const pinned = options.scenario && scenarios.some(item => item.id === options.scenario && item.enabled) ? options.scenario : null
+    const scenarioId = pinned
+      ?? (modelSettings?.scenarioAuto === false ? (modelSettings?.defaultScenario ?? SCENARIO_CHAT) : detectScenario(text, scenarios))
+    const scenario = scenarios.find(item => item.id === scenarioId && item.enabled)
+    if (scenario && scenario.id !== SCENARIO_CHAT) {
+      this.deps.bus.emit('assistant.scenario', { turnId: this.turnId, scenario: scenario.id, label: scenario.label, pinned: Boolean(pinned) })
+    }
+
     const recall = await this.deps.memory.recall(text, { limit: Math.round(this.deps.tuning.number('conversation.recallLimit')) })
     const memoryBlock = this.deps.memory.contextFor(recall.items, Math.round(this.deps.tuning.number('conversation.contextChars')))
     const contextUsed = recall.items.map(item => item.gist)
+    const systemContent = [
+      `${SYSTEM_PROMPT}\n\n当前本地时间：${new Date().toLocaleString('zh-CN', { hour12: false })}`,
+      scenario?.systemExtra?.trim() || '',
+    ].filter(Boolean).join('\n\n')
     const messages: ChatMessage[] = [
-      { role: 'system', content: `${SYSTEM_PROMPT}\n\n当前本地时间：${new Date().toLocaleString('zh-CN', { hour12: false })}` },
+      { role: 'system', content: systemContent },
     ]
     if (memoryBlock) messages.push({ role: 'system', content: memoryBlock })
     const maxContext = Math.max(0, Math.round(this.deps.tuning.number('conversation.maxContextMessages')))
@@ -524,8 +543,10 @@ export class Conversation {
     try {
       for await (const delta of this.deps.model.chatStream(messages, {
         signal: options.signal ?? this.abort?.signal,
-        temperature: this.deps.tuning.number('conversation.temperature'),
+        temperature: scenario?.temperature ?? this.deps.tuning.number('conversation.temperature'),
         timeoutMs: Math.round(this.deps.tuning.number('conversation.streamTimeoutMs')),
+        model: scenario?.model || undefined,
+        profileIds: scenario && scenario.profileIds.length > 0 ? scenario.profileIds : undefined,
       })) {
         reply += delta
         emitted = true
@@ -551,7 +572,7 @@ export class Conversation {
     // pixels are the most sensitive context Jarvis has. Keep them local unless
     // the operator explicitly opts in.
     const activeModel = this.deps.model.status?.()
-    if (activeModel?.id === 'remote' && process.env.JARVIS_ALLOW_REMOTE_VISION !== '1') {
+    if (activeModel?.kind === 'openai' && process.env.JARVIS_ALLOW_REMOTE_VISION !== '1') {
       this.deps.attention.send({ type: 'context_denied', reason: 'remote_vision_blocked' })
       return {
         reply: '当前使用的是远端模型。为了不把屏幕或摄像头画面发到服务商，我先不采集；切回本地模型后再看。',

@@ -111,7 +111,7 @@ async function main(): Promise<void> {
 
     await cdp.evaluate("document.querySelector('#settings-btn').click()")
     await sleep(900)
-    const settings = await cdp.evaluate<{ open: boolean; privacy: boolean; devices: boolean; onboarding: boolean; modelSelect: boolean; protocols: boolean; voice: boolean; adapters: boolean; tabs: number; tabbed: boolean }>(`({
+    const settings = await cdp.evaluate<{ open: boolean; privacy: boolean; devices: boolean; onboarding: boolean; modelSelect: boolean; protocols: boolean; voice: boolean; adapters: boolean; pool: boolean; scenarioSelect: boolean; tabs: number; tabbed: boolean }>(`({
       open: !document.querySelector('#modal').hidden,
       privacy: Boolean(document.querySelector('#privacy-export') && document.querySelector('#privacy-erase')),
       devices: Boolean(document.querySelector('#device-list')),
@@ -120,6 +120,8 @@ async function main(): Promise<void> {
       protocols: Boolean(document.querySelector('#model-protocol') || document.querySelector('[data-model-select=remote]')),
       voice: Boolean(document.querySelector('#asr-source') && document.querySelector('#tts-source') && document.querySelector('#voice-save')),
       adapters: Boolean(document.querySelector('#asr-adapter') && document.querySelector('#tts-adapter') && document.querySelectorAll('#tts-adapter option').length === 5),
+      pool: Boolean(document.querySelector('#provider-add-card') && document.querySelector('#scenario-card') && document.querySelector('#scenario-save')),
+      scenarioSelect: Boolean(document.querySelector('#scenario-select')),
       tabs: document.querySelectorAll('[data-settings-tab]').length,
       tabbed: Boolean(document.querySelector('#settings-panel-model') && document.querySelector('.settings-modal'))
     })`)
@@ -131,6 +133,8 @@ async function main(): Promise<void> {
     check(settings.protocols, 'settings: three LLM protocols')
     check(settings.voice, 'settings: ASR/TTS source controls')
     check(settings.adapters, 'settings: provider adapters (OpenAI/Gemini/Cloudflare/Edge)')
+    check(settings.pool, 'settings: provider pool + scenario card')
+    check(settings.scenarioSelect, 'composer: scenario selector')
     check(settings.tabs === 4 && settings.tabbed, 'settings: four-section tabbed layout')
     await cdp.evaluate("document.querySelector('[data-settings-tab=voice]').click()")
     await sleep(200)

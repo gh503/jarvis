@@ -57,6 +57,11 @@ async function main(): Promise<void> {
     activeProfile,
     logger.child('model'),
     { embedding: localModel, vision: localModel },
+    {
+      loadSettings: () => modelSettings.load(),
+      persistCooldown: (id, entry) => modelSettings.setCooldown(id, entry),
+      emit: (event, payload) => bus.emit(event, payload),
+    },
   )
   const memory = new MemoryStore({
     file: join(config.dataDir, 'jarvis.db'),
@@ -133,6 +138,7 @@ async function main(): Promise<void> {
     policy,
     tuning,
     secure,
+    modelSettings,
     logger: logger.child('conversation'),
   })
 

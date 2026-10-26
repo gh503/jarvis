@@ -6,7 +6,11 @@ a regression eval, reminders/daily brief, optional read-only ICS calendar,
 confirmation-gated actions, revocable device pairing, backup/restore, and a
 browser/PWA UI with a Studio observability surface. LLM providers support
 OpenAI Chat Completions, OpenAI Responses and Anthropic Messages with automatic
-model discovery; ASR/TTS can switch between local and remote independently.
+model discovery, plus a provider pool with priority-chain failover (quota,
+rate-limit, auth and network failures switch to the next provider with a
+persisted cooldown) and work scenarios (chat/coding/writing/reasoning) with
+per-scenario chains, models, temperatures and system prompts. ASR/TTS can
+switch between local and remote independently.
 
 ## Quick start
 
