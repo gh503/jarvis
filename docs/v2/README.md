@@ -2,7 +2,7 @@
 
 ![Jarvis v2 桌面界面](screenshots/jarvis-home.png)
 
-![模型来源：本地 / 远端一键切换](screenshots/model-sources.png)
+![设置：模型、语音与运行时状态](screenshots/model-sources.png)
 
 ### Jarvis Studio：一屏看清注意力、延迟、记忆与参数
 

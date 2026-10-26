@@ -111,14 +111,16 @@ async function main(): Promise<void> {
 
     await cdp.evaluate("document.querySelector('#settings-btn').click()")
     await sleep(900)
-    const settings = await cdp.evaluate<{ open: boolean; privacy: boolean; devices: boolean; onboarding: boolean; modelSelect: boolean; protocols: boolean; voice: boolean }>(`({
+    const settings = await cdp.evaluate<{ open: boolean; privacy: boolean; devices: boolean; onboarding: boolean; modelSelect: boolean; protocols: boolean; voice: boolean; tabs: number; tabbed: boolean }>(`({
       open: !document.querySelector('#modal').hidden,
       privacy: Boolean(document.querySelector('#privacy-export') && document.querySelector('#privacy-erase')),
       devices: Boolean(document.querySelector('#device-list')),
       onboarding: Boolean(document.querySelector('#onboard-again')),
       modelSelect: document.querySelector('#model-name')?.tagName === 'SELECT',
       protocols: Boolean(document.querySelector('#model-protocol') || document.querySelector('[data-model-select=remote]')),
-      voice: Boolean(document.querySelector('#asr-source') && document.querySelector('#tts-source') && document.querySelector('#voice-save'))
+      voice: Boolean(document.querySelector('#asr-source') && document.querySelector('#tts-source') && document.querySelector('#voice-save')),
+      tabs: document.querySelectorAll('[data-settings-tab]').length,
+      tabbed: Boolean(document.querySelector('#settings-panel-model') && document.querySelector('.settings-modal'))
     })`)
     check(settings.open, 'settings: modal opens')
     check(settings.privacy, 'settings: privacy controls')
@@ -127,9 +129,19 @@ async function main(): Promise<void> {
     check(settings.modelSelect, 'settings: model list is a selector')
     check(settings.protocols, 'settings: three LLM protocols')
     check(settings.voice, 'settings: ASR/TTS source controls')
+    check(settings.tabs === 4 && settings.tabbed, 'settings: four-section tabbed layout')
+    await cdp.evaluate("document.querySelector('[data-settings-tab=voice]').click()")
+    await sleep(200)
+    check(await cdp.evaluate<boolean>("!document.querySelector('#settings-panel-voice').hidden && document.querySelector('#settings-panel-model').hidden"), 'settings: voice tab switches panel')
+    await cdp.evaluate("document.querySelector('[data-settings-tab=system]').click()")
+    await sleep(200)
+    check(await cdp.evaluate<boolean>("document.querySelector('#settings-panel-system').offsetParent !== null && document.querySelector('#settings-panel-system').getBoundingClientRect().height > 0"), 'settings: system panel visible')
+    await cdp.evaluate("document.querySelector('[data-settings-tab=model]').click()")
+    await sleep(200)
     await cdp.evaluate("document.querySelector('[data-model-select=remote]').click()")
     await sleep(700)
     check(await cdp.evaluate<boolean>("document.querySelectorAll('#model-protocol option').length === 3"), 'settings: three LLM protocols')
+    check(await cdp.evaluate<boolean>("getComputedStyle(document.querySelector('.settings-modal .modal-body')).overflowY === 'auto'"), 'settings: modal owns scrolling')
     await cdp.evaluate("document.querySelector('#modal-close').click()")
     await sleep(250)
 
@@ -159,6 +171,17 @@ async function main(): Promise<void> {
     await sleep(2400)
     check(await cdp.evaluate<boolean>('document.documentElement.scrollWidth <= window.innerWidth + 1'), 'mobile: no horizontal overflow')
     check(await cdp.evaluate<boolean>("Boolean(document.querySelector('#mic-btn'))"), 'mobile: mic present')
+    await cdp.evaluate("document.querySelector('#settings-btn').click()")
+    await sleep(900)
+    const mobileSettings = await cdp.evaluate<{ fits: boolean; full: boolean; tabs: number; overflow: boolean }>(`({
+      fits: document.querySelector('.modal').getBoundingClientRect().width <= window.innerWidth + 1,
+      full: document.querySelector('.settings-modal')?.getBoundingClientRect().height >= window.innerHeight - 2,
+      tabs: document.querySelectorAll('[data-settings-tab]').length,
+      overflow: document.querySelector('.modal-body').scrollWidth > document.querySelector('.modal-body').clientWidth + 1
+    })`)
+    check(mobileSettings.fits && mobileSettings.full && mobileSettings.tabs === 4 && !mobileSettings.overflow, 'mobile: settings sheet fits viewport')
+    await cdp.evaluate("document.querySelector('#modal-close').click()")
+    await sleep(200)
   } finally {
     if (cdp.errors.length) failures.push(...cdp.errors.map(error => `browser error: ${error.split('\n')[0]}`))
     cdp.close()
