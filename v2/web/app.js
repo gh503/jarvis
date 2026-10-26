@@ -986,6 +986,7 @@ async function showSettings() {
     <p class="small muted">删除会清空记忆、提醒、动作审计、语音与画面，并重置观察台历史；不可撤销。建议先导出。</p>
     <h3>诊断</h3>
     <p>终端运行 <code>npm run doctor</code> 可以检查模型、Whisper、Piper、屏幕门户和摄像头。</p>
+    <div class="privacy-actions"><button class="model-action" id="onboard-again" type="button">重新查看首次引导</button></div>
   `)
   bindModelSettings(selected, settings)
   void refreshDevices()
@@ -1091,6 +1092,7 @@ function bindModelSettings(selected, settings) {
     }
   })
   $('#sense-explain')?.addEventListener('click', () => showSenseConsent())
+  $('#onboard-again')?.addEventListener('click', () => { closeModal(); localStorage.removeItem('jarvis_onboarded'); showOnboarding() })
   $('#model-test')?.addEventListener('click', async () => {
     const button = $('#model-test')
     const result = $('#model-result')
@@ -1274,6 +1276,63 @@ function bind() {
   $('#lightbox').addEventListener('click', event => { if (event.target === $('#lightbox')) $('#lightbox').hidden = true })
 }
 
+
+function showOnboarding() {
+  localStorage.setItem('jarvis_onboarded', '1')
+  const modelReady = Boolean(state.status.modelReady)
+  openModal(`
+    <p class="eyebrow">FIRST RUN / LOCAL FIRST</p>
+    <h3>先确认三件事。</h3>
+    <p>Jarvis 默认只在本机运行。麦克风只在按住时采集，屏幕和摄像头按次授权；没有账号，也没有默认上传。</p>
+    <div class="onboard-grid">
+      <div><b>1 · 本地模型</b><span class="${modelReady ? 'ok-text' : 'warn-text'}">${modelReady ? '已就绪，可以直接对话。' : '未就绪；先运行 npm run doctor，或到设置里配置模型。'}</span></div>
+      <div><b>2 · 麦克风</b><span id="onboard-mic-result">按一次测试，确认浏览器权限。</span><button class="model-action" id="onboard-mic" type="button" style="width:auto">测试麦克风</button></div>
+      <div><b>3 · 感官</b><span>看屏幕/摄像头前会再问你一次。</span><button class="model-action" id="onboard-senses" type="button" style="width:auto">查看权限说明</button></div>
+    </div>
+    <div class="modal-actions">
+      <button class="primary" id="onboard-start" type="button">开始使用</button>
+      <button id="onboard-skip" type="button">稍后</button>
+    </div>
+  `, '第一次使用')
+  const finish = () => {
+    localStorage.setItem('jarvis_onboarded', '1')
+    closeModal()
+    $('#input')?.focus()
+  }
+  $('#onboard-start').addEventListener('click', finish)
+  $('#onboard-skip').addEventListener('click', finish)
+  $('#onboard-mic').addEventListener('click', async event => {
+    const button = event.currentTarget
+    const result = $('#onboard-mic-result')
+    button.disabled = true
+    result.textContent = '正在请求麦克风…'
+    try {
+      if (!navigator.mediaDevices?.getUserMedia) throw new Error('这个浏览器不支持录音')
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true })
+      stream.getTracks().forEach(track => track.stop())
+      result.textContent = '麦克风可用。按住主界面的麦克风说话即可。'
+      result.className = 'ok-text'
+    } catch (error) {
+      result.textContent = `麦克风不可用：${error.message}`
+      result.className = 'warn-text'
+    } finally {
+      button.disabled = false
+    }
+  })
+  $('#onboard-senses').addEventListener('click', () => showSenseConsent())
+}
+
+function maybeOnboarding() {
+  if (localStorage.getItem('jarvis_onboarded') === '1') return
+  if (state.memory.length > 0 || state.reminders.length > 0) {
+    localStorage.setItem('jarvis_onboarded', '1')
+    return
+  }
+  setTimeout(() => {
+    if ($('#modal').hidden && !state.busy) showOnboarding()
+  }, 900)
+}
+
 function tickClock() {
   const now = new Date()
   $('#clock').textContent = now.toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit', hour12: false })
@@ -1286,6 +1345,7 @@ async function main() {
   tickClock()
   setInterval(tickClock, 15000)
   await bootstrap()
+  maybeOnboarding()
   // The Whisper worker warms up in the background. Poll a few times so the
   // "加载中" state clears promptly instead of waiting for the 30 s status poll.
   setTimeout(() => void refreshStatus(), 2500)

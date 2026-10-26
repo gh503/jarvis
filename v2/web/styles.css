@@ -710,3 +710,9 @@ kbd { font-family: var(--mono); font-size: 9px; border: 1px solid var(--line); b
 .pair-result { display: grid; gap: 5px; padding: 12px; border: 1px solid rgba(126,231,213,.25); background: rgba(126,231,213,.05); border-radius: 10px; margin: 8px 0 4px; }
 .pair-result strong { color: var(--cyan); font-size: 26px; letter-spacing: .2em; font-variant-numeric: tabular-nums; }
 .pair-result span { color: var(--muted); font-size: 10.5px; }
+.onboard-grid { display: grid; gap: 9px; margin: 14px 0; }
+.onboard-grid > div { display: grid; gap: 5px; padding: 10px 12px; border: 1px solid var(--line); border-radius: 10px; background: rgba(255,255,255,.02); }
+.onboard-grid b { font-size: 11.5px; font-weight: 550; }
+.onboard-grid span { color: var(--muted); font-size: 10.5px; }
+.onboard-grid .ok-text { color: var(--cyan); }
+.onboard-grid .warn-text { color: var(--amber); }

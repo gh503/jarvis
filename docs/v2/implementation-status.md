@@ -24,6 +24,7 @@
 | faster-whisper 持久 worker + 预热/状态/重启 | `v2/scripts/asr_worker.py`, `v2/src/voice/faster-whisper.ts` | 启动 `ready` 带 `loadMs/warmupMs`；`asrState` 反映加载/异常；超时自动重启 |
 | Piper 中文合成 | `v2/src/voice/tts.ts` | 生成 22.05 kHz WAV，`/api/audio` 可播 |
 | 按需屏幕捕获 | `v2/scripts/screen_capture.py`, `v2/src/senses/screen.ts` | Portal 授权/拒绝路径；X11 仅回退；记录窗口标题是否可知 |
+| 首次使用引导 | `v2/web/app.js` | 模型/麦克风/感官三件事；可跳过；只显示一次 |
 | 感官同意与画面删除 | `v2/web/app.js`, `v2/src/server.ts` | 首次看屏幕/摄像头前说明；画面卡片显示留存策略并支持单张删除 |
 | 按需摄像头单帧 | `v2/src/senses/camera.ts` | `/dev/video0` 实测 94 KB JPEG |
 | 屏幕 OCR（中文/英文） | `v2/scripts/ocr_worker.py`, `v2/src/senses/ocr.ts` | 固定文本图实测逐字正确 |

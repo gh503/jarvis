@@ -82,3 +82,5 @@ scripts/              setup, workers, desktop/systemd installers, acceptance
 - `npm run backup` excludes auth tokens, API keys, audio and captures by default.
 - Settings → 隐私 can export all memory or erase local data with an explicit
   confirmation phrase.
+- First launch shows a one-time model/microphone/senses checklist; Skip never
+  repeats the prompt.
