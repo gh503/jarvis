@@ -1,6 +1,0 @@
-node_modules/
-data/
-.runtime/
-.env
-*.log__pycache__/
-*.pyc

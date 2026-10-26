@@ -1,10 +1,12 @@
 node_modules/
 dist/
 data/
+.runtime/
 .dsh/
-.jarvis-runtime/
 backups/
 release/
 .env
 *.log
+__pycache__/
+*.pyc
 .DS_Store

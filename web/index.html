@@ -1,268 +1,265 @@
 <!doctype html>
 <html lang="zh-CN">
-  <head>
-    <meta charset="utf-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-    <meta name="theme-color" content="#161b1a">
-    <meta name="apple-mobile-web-app-capable" content="yes">
-    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
-    <meta name="apple-mobile-web-app-title" content="Jarvis">
-    <title>Jarvis</title>
-    <link rel="manifest" href="./manifest.webmanifest">
-    <link rel="icon" href="./icon.svg" type="image/svg+xml">
-    <link rel="apple-touch-icon" sizes="180x180" href="./apple-touch-icon.png">
-    <link rel="stylesheet" href="./app.css">
-    <script src="./app.js?v=19" type="module"></script>
-  </head>
-  <body data-connection="checking">
-    <a class="skip-link" href="#main-content">跳到主要内容</a>
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#0b0f14">
+  <meta name="description" content="Jarvis — 本地优先的私人 AI 助手">
+  <title>Jarvis</title>
+  <link rel="manifest" href="/manifest.webmanifest">
+  <link rel="apple-touch-icon" href="/icons/apple-touch-icon.png">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <meta name="theme-color" content="#080b0f">
+  <link rel="icon" href="/icons/jarvis.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="/styles.css">
+  <link rel="stylesheet" href="/studio.css">
+</head>
+<body>
+  <canvas class="particle-field" id="particle-field" aria-hidden="true"></canvas>
+  <div class="ambient ambient-a" aria-hidden="true"></div>
+  <div class="ambient ambient-b" aria-hidden="true"></div>
+
+  <div class="app-shell">
     <header class="topbar">
       <div class="brand">
-        <img src="./icon.svg" width="32" height="32" alt="">
-        <strong>Jarvis</strong>
+        <span class="brand-mark" aria-hidden="true">J</span>
+        <div class="brand-copy">
+          <strong>JARVIS</strong>
+          <span>local-first assistant</span>
+        </div>
+      </div>
+      <div class="topbar-center">
+        <span class="connection-pill" id="connection-pill">
+          <i class="dot" id="connection-dot"></i>
+          <span id="connection-label">连接中</span>
+        </span>
+        <span class="model-pill" id="model-pill">本地模型</span>
       </div>
       <div class="topbar-actions">
-        <div class="connection-state" role="status" aria-live="polite">
-          <span class="status-dot" aria-hidden="true"></span>
-          <span id="connection-label">正在检查</span>
-        </div>
-        <button id="refresh-button" class="icon-button" type="button" title="刷新连接状态" aria-label="刷新连接状态">↻</button>
+        <span class="clock" id="clock">--:--</span>
+        <button class="icon-btn studio-trigger" id="studio-btn" type="button" title="观察台与调参" aria-label="打开观察台">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 13h3l2.2-7 3.6 13L15 9l1.8 4H21v2h-5.4l-3.2-7-3.6 13L7.6 15H3v-2Z"/></svg>
+        </button>
+        <button class="icon-btn" id="focus-btn" type="button" title="专注模式" aria-label="切换专注模式" aria-pressed="false">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3a9 9 0 1 0 9 9h-2a7 7 0 1 1-7-7V3Zm1 2v6l4 2-1 1.7-5-2.7V5h2Z"/></svg>
+        </button>
+        <button class="icon-btn" id="settings-btn" type="button" title="设置" aria-label="打开设置">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M19.4 13a7.6 7.6 0 0 0 .05-1 7.6 7.6 0 0 0-.05-1l2.1-1.6-2-3.4-2.5 1a7.5 7.5 0 0 0-1.7-1L15 3h-4l-.3 2.9a7.5 7.5 0 0 0-1.7 1l-2.5-1-2 3.4L6.6 11a7.6 7.6 0 0 0 0 2l-2.1 1.6 2 3.4 2.5-1a7.5 7.5 0 0 0 1.7 1L11 21h4l.3-2.9a7.5 7.5 0 0 0 1.7-1l2.5 1 2-3.4-2.1-1.7ZM13 15.5a3.5 3.5 0 1 1 0-7 3.5 3.5 0 0 1 0 7Z"/></svg>
+        </button>
       </div>
     </header>
 
-    <div class="workspace">
-      <aside class="sidebar" aria-label="主导航">
-        <nav class="primary-nav">
-          <button class="nav-button is-active" type="button" data-view-target="chat" aria-current="page">
-            <span aria-hidden="true">◫</span><span>对话</span>
+    <main class="layout">
+      <aside class="presence-panel">
+        <div class="orb-wrap">
+          <div class="orb-ring" aria-hidden="true"></div>
+          <button class="orb" id="orb" type="button" aria-label="按下说话">
+            <span class="orb-core"></span>
+            <span class="orb-scan"></span>
           </button>
-          <button class="nav-button" type="button" data-view-target="activity">
-            <span aria-hidden="true">✓</span><span>审批</span><span class="approval-count" data-approval-count hidden>0</span>
-          </button>
-          <button class="nav-button" type="button" data-view-target="notifications">
-            <span aria-hidden="true">•</span><span>通知</span><span class="approval-count" data-notification-count hidden>0</span>
-          </button>
-          <button class="nav-button" type="button" data-view-target="settings">
-            <span aria-hidden="true">⚙</span><span>设置</span>
-          </button>
-        </nav>
-        <div class="conversation-list">
-          <div class="section-heading">
-            <span>最近对话</span>
-            <button id="new-conversation-button" class="icon-button" type="button" aria-label="新建对话" title="新建对话" disabled>＋</button>
-          </div>
-          <div id="conversation-list-items" class="conversation-list-items">
-            <p class="empty-list">配对后显示对话</p>
-          </div>
+          <span class="orb-level" id="orb-level" aria-hidden="true"></span>
         </div>
-        <div class="sidebar-footer">
-          <span id="sidebar-device-state" class="freshness-label">未配对</span>
-          <small id="sidebar-status">无同步数据</small>
+        <p class="state-label" id="state-label">待命</p>
+        <p class="state-hint" id="state-hint">说“看下这个”，或按住下方麦克风。</p>
+
+        <div class="quick-actions" role="group" aria-label="快捷动作">
+          <button class="quick" data-action="screen" type="button">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 5h18v12H3V5Zm2 2v8h14V7H5Zm4 12h6v2H9v-2Z"/></svg>
+            <span>看屏幕</span>
+          </button>
+          <button class="quick" data-action="camera" type="button">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h3l1.5-2h7L17 7h3v12H4V7Zm8 3.2A3.8 3.8 0 1 0 12 18a3.8 3.8 0 0 0 0-7.6Zm0 2a1.8 1.8 0 1 1 0 3.6 1.8 1.8 0 0 1 0-3.6Z"/></svg>
+            <span>看摄像头</span>
+          </button>
+          <button class="quick" data-action="remember" type="button">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3a7 7 0 0 0-7 7c0 2.2 1 4.1 2.6 5.4V19h2.2v2h4.4v-2h2.2v-3.6A7 7 0 0 0 12 3Zm-2 6h4v2h-4V9Z"/></svg>
+            <span>记住</span>
+          </button>
+          <button class="quick" data-action="brief" type="button">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 2v3M12 19v3M2 12h3M19 12h3M4.9 4.9 7 7M17 17l2.1 2.1M19.1 4.9 17 7M7 17l-2.1 2.1"/><circle cx="12" cy="12" r="4"/></svg>
+            <span>今日</span>
+          </button>
+        </div>
+
+        <div class="mini-stats">
+          <div><strong id="memory-count">0</strong><span>条记忆</span></div>
+          <div><strong id="reminder-count">0</strong><span>个提醒</span></div>
+          <div><strong id="latency">--</strong><span>延迟</span></div>
+        </div>
+
+        <div class="privacy-note">
+          <span class="privacy-dot" aria-hidden="true"></span>
+          <p>默认只在本机处理。摄像头和屏幕按需开启，采集前会显示状态。</p>
         </div>
       </aside>
 
-      <main id="main-content" class="main-content">
-        <section class="view-panel chat-view is-active" data-view-panel="chat" aria-labelledby="chat-title">
-          <header class="view-header">
+      <section class="conversation-panel" aria-label="对话">
+        <div class="transcript" id="transcript" aria-live="polite">
+          <div class="empty-state" id="empty-state">
+            <p class="eyebrow">PERSONAL CONTEXT ENGINE</p>
+            <h1>不用解释太多。<br>我在看，也在记。</h1>
+            <p class="empty-copy">直接说话，或打字。需要看屏幕 / 摄像头时，我会先让你知道。</p>
+            <div class="prompt-chips">
+              <button type="button" data-prompt="帮我看看当前屏幕，告诉我最值得注意的一件事。">看下屏幕</button>
+              <button type="button" data-prompt="记住：我每周三晚上要整理项目进度。">记住一件事</button>
+              <button type="button" data-prompt="提醒我明天上午 9 点开周会。">设个提醒</button>
+              <button type="button" data-prompt="根据你记得的，帮我安排今天最重要的一件事。">帮我安排</button>
+            </div>
+          </div>
+        </div>
+
+        <div class="capture-strip" id="capture-strip" hidden>
+          <div class="capture-preview">
+            <img id="capture-image" alt="刚捕获的画面">
+            <div class="capture-meta">
+              <strong id="capture-title">刚看了一眼</strong>
+              <span id="capture-detail"></span>
+              <small id="capture-note">只在本机 · 1 小时后自动删除</small>
+            </div>
+            <button class="icon-btn small" id="capture-delete" type="button" aria-label="删除这张画面" title="删除这张画面">
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h16M9 7V4h6v3m-8 0 1 13h8l1-13M10 11v5M14 11v5"/></svg>
+            </button>
+            <button class="icon-btn small" id="capture-close" type="button" aria-label="关闭画面">
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6 6 12 12M18 6 6 18"/></svg>
+            </button>
+          </div>
+        </div>
+
+        <div class="composer-wrap">
+          <div class="composer" id="composer">
+            <textarea id="input" rows="1" maxlength="8000" placeholder="说点什么…  Enter 发送，Shift+Enter 换行" aria-label="输入消息"></textarea>
+            <div class="composer-actions">
+              <button class="icon-btn" id="stop-btn" type="button" title="停止" aria-label="停止当前回答" hidden>
+                <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="7" y="7" width="10" height="10" rx="1"/></svg>
+              </button>
+              <button class="icon-btn" id="mute-btn" type="button" title="语音播报" aria-label="切换语音播报" aria-pressed="false">
+                <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 9v6h4l5 4V5L8 9H4Zm12.5 3a4.5 4.5 0 0 0-2.2-3.9v7.8a4.5 4.5 0 0 0 2.2-3.9Z"/></svg>
+              </button>
+              <button class="send-btn" id="send-btn" type="button" aria-label="发送">
+                <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m3 11 18-8-8 18-2.5-7.5L3 11Z"/></svg>
+              </button>
+            </div>
+          </div>
+          <div class="composer-meta">
+            <button class="mic-btn" id="mic-btn" type="button" aria-label="按住说话">
+              <span class="mic-ring" aria-hidden="true"></span>
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3a3 3 0 0 0-3 3v6a3 3 0 0 0 6 0V6a3 3 0 0 0-3-3Zm-6 9a6 6 0 0 0 5 5.9V21h2v-3.1A6 6 0 0 0 18 12h-2a4 4 0 0 1-8 0H6Z"/></svg>
+              <span id="mic-label">按住说话</span>
+            </button>
+            <span class="hint" id="hint">本地推理 · 默认不录屏</span>
+          </div>
+        </div>
+      </section>
+
+      <aside class="side-panel" aria-label="记忆与提醒">
+        <div class="side-tabs" role="tablist">
+          <button class="side-tab active" data-tab="memory" role="tab" aria-selected="true" type="button">记忆</button>
+          <button class="side-tab" data-tab="reminders" role="tab" aria-selected="false" type="button">提醒</button>
+          <button class="side-tab" data-tab="runtime" role="tab" aria-selected="false" type="button">运行</button>
+        </div>
+
+        <section class="side-content active" data-panel="memory">
+          <div class="side-head">
             <div>
-              <p class="eyebrow">移动工作区</p>
-              <h1 id="chat-title">新对话</h1>
+              <h2>长期记忆</h2>
+              <p>只有确认过的才会进入回答上下文。</p>
             </div>
-            <div class="chat-header-actions">
-              <select id="mobile-conversation-select" aria-label="选择对话" disabled>
-                <option>无对话</option>
-              </select>
-              <button id="cancel-turn-button" class="icon-button cancel-turn-button" type="button" title="停止回复" aria-label="停止回复" hidden disabled>■</button>
-              <span id="chat-freshness" class="freshness-label">未同步</span>
-            </div>
-          </header>
-          <div id="conversation-empty" class="conversation-empty">
-            <div class="empty-symbol" aria-hidden="true">J</div>
-            <h2 id="chat-state-title">连接到 Jarvis</h2>
-            <p id="chat-state-detail">此设备完成配对后，对话会安全地显示在这里。</p>
-            <button id="open-settings-button" class="primary-button" type="button">查看连接状态</button>
-            <button id="empty-new-conversation-button" class="primary-button" type="button" hidden>新建对话</button>
+            <button class="text-btn" id="memory-refresh" type="button">刷新</button>
           </div>
-          <ol id="message-list" class="message-list" aria-live="polite" hidden></ol>
-          <p id="conversation-notice" class="conversation-notice" role="status" aria-live="polite" hidden></p>
-          <div class="composer-area">
-            <p id="voice-feedback" class="voice-feedback" role="status" aria-live="polite" hidden>
-              <span id="voice-state"></span><span id="voice-transcript"></span>
-            </p>
-            <form id="message-form" class="composer" aria-label="消息输入">
-              <button id="voice-button" class="voice-button" type="button" aria-label="按住说话" title="按住说话" aria-pressed="false" disabled>按住说话</button>
-              <textarea id="message-input" rows="1" placeholder="配对后即可发送消息" aria-label="消息" disabled></textarea>
-              <button id="send-button" class="send-button" type="submit" aria-label="发送消息" title="发送消息" disabled>↑</button>
-            </form>
+          <div class="search-row">
+            <input id="memory-search" type="search" placeholder="搜索记忆…" aria-label="搜索记忆">
           </div>
+          <div class="memory-list" id="memory-list"></div>
         </section>
 
-        <section class="view-panel" data-view-panel="activity" aria-labelledby="activity-title" hidden>
-          <header class="view-header">
+        <section class="side-content" data-panel="reminders" hidden>
+          <div class="side-head">
             <div>
-              <p class="eyebrow">安全操作</p>
-              <h1 id="activity-title">审批</h1>
+              <h2>提醒</h2>
+              <p>到点先判断是否适合打断你。</p>
             </div>
-            <span id="activity-freshness" class="freshness-label">未同步</span>
-          </header>
-          <p id="approval-notice" class="approval-notice" role="status" aria-live="polite" hidden></p>
-          <div id="approval-empty" class="plain-empty">
-            <h2>没有待审批操作</h2>
-            <p>当前没有等待处理的操作。</p>
+            <button class="text-btn" id="reminder-refresh" type="button">刷新</button>
           </div>
-          <ol id="approval-list" class="approval-list" aria-live="polite" hidden></ol>
-          <section class="activity-history" aria-labelledby="activity-history-title">
-            <h2 id="activity-history-title">近期动态</h2>
-            <div id="activity-empty" class="activity-empty">暂无动态</div>
-            <ol id="activity-list" class="activity-list" hidden></ol>
-          </section>
+          <div class="memory-list" id="reminder-list"></div>
         </section>
 
-        <section class="view-panel" data-view-panel="notifications" aria-labelledby="notifications-title" hidden>
-          <header class="view-header">
+        <section class="side-content" data-panel="runtime" hidden>
+          <div class="side-head">
             <div>
-              <p class="eyebrow">隐私优先</p>
-              <h1 id="notifications-title">通知</h1>
+              <h2>运行状态</h2>
+              <p>数据留在本机；远端访问必须显式开启。</p>
             </div>
-            <div class="notification-actions">
-              <button id="mark-notifications-read-button" class="secondary-button" type="button" disabled>全部已读</button>
-              <button id="clear-notifications-button" class="secondary-button" type="button" disabled>清空</button>
-            </div>
-          </header>
-          <div id="notification-empty" class="plain-empty">
-            <h2>暂无通知</h2>
-            <p>新的审批、对话完成和连接状态会显示在这里。</p>
           </div>
-          <ol id="notification-list" class="notification-list" aria-live="polite" hidden></ol>
+          <dl class="runtime-grid" id="runtime-grid"></dl>
+          <div class="runtime-block">
+            <h3>隐私边界</h3>
+            <p>屏幕通过系统门户按次授权；摄像头单帧读取；敏感记忆不会进入模型上下文。你可以随时删除任何一条记忆。</p>
+          </div>
+          <div class="runtime-block">
+            <h3>快捷键</h3>
+            <p><kbd>Enter</kbd> 发送 · <kbd>Shift</kbd>+<kbd>Enter</kbd> 换行 · 按住麦克风说话</p>
+          </div>
         </section>
+      </aside>
+    </main>
+  </div>
 
-        <section class="view-panel" data-view-panel="settings" aria-labelledby="settings-title" hidden>
-          <header class="view-header">
-            <div>
-              <p class="eyebrow">此设备</p>
-              <h1 id="settings-title">连接与安装</h1>
-            </div>
-          </header>
-          <div class="settings-list">
-            <section class="settings-row" aria-labelledby="gateway-heading">
-              <div>
-                <h2 id="gateway-heading">Jarvis Gateway</h2>
-                <p id="gateway-detail">正在检查本地连接</p>
-              </div>
-              <span id="gateway-value" class="value-label">检查中</span>
-            </section>
-            <section class="settings-row" aria-labelledby="device-heading">
-              <div>
-                <h2 id="device-heading">设备身份</h2>
-                <p id="device-detail">尚未向此浏览器签发凭据</p>
-                <dl id="device-metadata" class="device-metadata" hidden>
-                  <div><dt>类型</dt><dd id="device-platform">PWA</dd></div>
-                  <div><dt>凭据代次</dt><dd id="device-generation">-</dd></div>
-                  <div><dt>配对时间</dt><dd id="device-issued-at">-</dd></div>
-                  <div><dt>会话到期</dt><dd id="device-session-expiry">-</dd></div>
-                </dl>
-              </div>
-              <div class="settings-actions">
-                <span id="device-value" class="value-label is-muted">未配对</span>
-                <button id="rotate-device-credential-button" class="secondary-button" type="button" hidden disabled>轮换凭证</button>
-                <button id="disconnect-device-button" class="danger-button" type="button" hidden disabled>断开此设备</button>
-              </div>
-            </section>
-            <section id="pairing-setup" class="pairing-setup" aria-labelledby="pairing-setup-heading">
-              <div>
-                <h2 id="pairing-setup-heading">配对此设备</h2>
-                <p id="pairing-message" role="status" aria-live="polite">创建此浏览器的私有设备身份</p>
-              </div>
-              <div id="pairing-form" class="pairing-form">
-                <label for="device-name">设备名称</label>
-                <div class="pairing-form-controls">
-                  <input id="device-name" name="device-name" maxlength="64" value="我的手机" autocomplete="off">
-                  <button id="pair-button" class="primary-button" type="button" disabled>开始配对</button>
-                </div>
-              </div>
-              <div id="pairing-challenge" class="pairing-challenge" hidden>
-                <span>Mac 确认码</span>
-                <output id="pairing-code" aria-live="polite">------</output>
-                <small id="pairing-expiry">等待确认</small>
-                <button id="cancel-pairing-button" class="secondary-button" type="button">取消</button>
-              </div>
-            </section>
-            <section class="settings-row" aria-labelledby="sync-heading">
-              <div>
-                <h2 id="sync-heading">数据状态</h2>
-                <p id="last-check">尚未成功连接</p>
-              </div>
-              <span id="sync-value" class="value-label is-warning">不可用</span>
-            </section>
-            <section class="settings-row" aria-labelledby="install-heading">
-              <div>
-                <h2 id="install-heading">安装 Jarvis</h2>
-                <p id="install-detail">可从浏览器菜单添加到主屏幕</p>
-              </div>
-              <button id="install-button" class="secondary-button" type="button" hidden>安装</button>
-            </section>
-            <section class="settings-row notification-settings" aria-labelledby="notification-settings-heading">
-              <div>
-                <h2 id="notification-settings-heading">通知偏好</h2>
-                <p>默认只保存固定的摘要文案，不保存消息正文或操作参数。</p>
-                <div class="notification-options">
-                  <label><input type="checkbox" data-notification-category="approval" checked> 审批</label>
-                  <label><input type="checkbox" data-notification-category="conversation" checked> 对话完成</label>
-                  <label><input type="checkbox" data-notification-category="connection" checked> 连接</label>
-                  <label><input id="notification-quiet-hours-enabled" type="checkbox"> 静默时段</label>
-                  <label>开始 <input id="notification-quiet-hours-start" type="time" value="22:00"></label>
-                  <label>结束 <input id="notification-quiet-hours-end" type="time" value="07:00"></label>
-                </div>
-                <div class="notification-rates" aria-label="每小时系统通知上限">
-                  <label>审批 <input data-notification-rate="approval" type="number" min="0" max="20" value="5"></label>
-                  <label>对话 <input data-notification-rate="conversation" type="number" min="0" max="20" value="5"></label>
-                  <label>连接 <input data-notification-rate="connection" type="number" min="0" max="20" value="3"></label>
-                </div>
-              </div>
-              <div class="settings-actions">
-                <button id="notification-permission-button" class="secondary-button" type="button">允许系统通知</button>
-                <span id="notification-permission-detail" class="value-label">尚未请求系统通知权限</span>
-              </div>
-            </section>
-            <section class="settings-row" aria-labelledby="voice-settings-heading">
-              <div>
-                <h2 id="voice-settings-heading">语音输入</h2>
-                <p id="voice-support-detail">正在检查浏览器语音能力</p>
-              </div>
-              <label class="toggle-control"><input id="voice-enabled" type="checkbox"><span>启用</span></label>
-            </section>
+
+  <div class="studio" id="studio" hidden aria-hidden="true">
+    <div class="studio-shell">
+      <aside class="studio-rail">
+        <div class="studio-brand">
+          <span class="studio-mark">J</span>
+          <div><strong>JARVIS</strong><span>STUDIO</span></div>
+        </div>
+        <nav class="studio-nav" aria-label="观察台导航">
+          <button class="studio-nav-item active" data-studio-tab="overview" type="button"><span class="studio-nav-glyph">◈</span><span><strong>总览</strong><small>Observatory</small></span></button>
+          <button class="studio-nav-item" data-studio-tab="memory" type="button"><span class="studio-nav-glyph">✦</span><span><strong>记忆</strong><small>Constellation</small></span></button>
+          <button class="studio-nav-item" data-studio-tab="tuning" type="button"><span class="studio-nav-glyph">◌</span><span><strong>调参</strong><small>Tuning lab</small></span></button>
+          <button class="studio-nav-item" data-studio-tab="config" type="button"><span class="studio-nav-glyph">⌘</span><span><strong>配置</strong><small>Raw config</small></span></button>
+          <button class="studio-nav-item" data-studio-tab="events" type="button"><span class="studio-nav-glyph">≋</span><span><strong>事件</strong><small>Live stream</small></span></button>
+        </nav>
+        <div class="studio-rail-foot">
+          <div class="studio-healthline"><i id="studio-health-dot"></i><span id="studio-health-label">连接中</span></div>
+          <span id="studio-version">v2.0.0</span>
+          <button class="studio-close-link" id="studio-close" type="button">关闭观察台 <kbd>Esc</kbd></button>
+        </div>
+      </aside>
+      <main class="studio-main">
+        <header class="studio-header">
+          <div>
+            <p class="studio-eyebrow" id="studio-eyebrow">OBSERVATORY / LIVE</p>
+            <h1 id="studio-title">总览</h1>
+            <p class="studio-subtitle" id="studio-subtitle">Jarvis 的注意力、延迟、感官与记忆，一屏可见。</p>
           </div>
-        </section>
+          <div class="studio-header-actions">
+            <span class="studio-live"><i></i> LIVE</span>
+            <button class="studio-icon-btn" id="studio-refresh" type="button" title="立即刷新" aria-label="刷新">↻</button>
+          </div>
+        </header>
+        <div class="studio-content" id="studio-content"></div>
       </main>
     </div>
+  </div>
+  <div class="modal-backdrop" id="modal" hidden>
+    <div class="modal" role="dialog" aria-modal="true" aria-labelledby="modal-title" tabindex="-1">
+      <div class="modal-head">
+        <h2 id="modal-title">设置</h2>
+        <button class="icon-btn" id="modal-close" type="button" aria-label="关闭">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6 6 12 12M18 6 6 18"/></svg>
+        </button>
+      </div>
+      <div class="modal-body" id="modal-body"></div>
+    </div>
+  </div>
 
-    <nav class="mobile-nav" aria-label="主导航">
-      <button class="mobile-nav-button is-active" type="button" data-view-target="chat" aria-current="page"><span aria-hidden="true">◫</span><span>对话</span></button>
-      <button class="mobile-nav-button" type="button" data-view-target="activity"><span aria-hidden="true">✓</span><span>审批</span><span class="approval-count" data-approval-count hidden>0</span></button>
-      <button class="mobile-nav-button" type="button" data-view-target="notifications"><span aria-hidden="true">•</span><span>通知</span><span class="approval-count" data-notification-count hidden>0</span></button>
-      <button class="mobile-nav-button" type="button" data-view-target="settings"><span aria-hidden="true">⚙</span><span>设置</span></button>
-    </nav>
-    <dialog id="disconnect-device-dialog" class="confirmation-dialog" aria-labelledby="disconnect-device-title">
-      <form method="dialog">
-        <h2 id="disconnect-device-title">断开此设备？</h2>
-        <p>此设备的凭据和全部会话将立即撤销，本地对话快照也会清除。再次使用需要由 Mac 重新批准配对。</p>
-        <p id="disconnect-device-error" class="dialog-error" role="alert" hidden></p>
-        <div class="dialog-actions">
-          <button class="secondary-button" type="submit" value="cancel">取消</button>
-          <button id="confirm-disconnect-device-button" class="danger-button" type="button">断开设备</button>
-        </div>
-      </form>
-    </dialog>
-    <dialog id="rotate-device-credential-dialog" class="confirmation-dialog" aria-labelledby="rotate-device-credential-title">
-      <form method="dialog">
-        <h2 id="rotate-device-credential-title">轮换设备凭证？</h2>
-        <p>Gateway 将撤销当前设备凭证并启用新凭证。对话和本地数据不会删除，当前会话会继续使用。</p>
-        <p id="rotate-device-credential-error" class="dialog-error" role="alert" hidden></p>
-        <div class="dialog-actions">
-          <button class="secondary-button" type="submit" value="cancel">取消</button>
-          <button id="confirm-rotate-device-credential-button" class="primary-button" type="button">轮换凭证</button>
-        </div>
-      </form>
-    </dialog>
-  </body>
+  <div class="lightbox" id="lightbox" hidden>
+    <button class="lightbox-close" id="lightbox-close" type="button" aria-label="关闭大图">×</button>
+    <img id="lightbox-image" alt="捕获画面大图">
+  </div>
+
+  <audio id="player" preload="none"></audio>
+  <script type="module" src="/app.js"></script>
+</body>
 </html>
