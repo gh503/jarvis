@@ -208,6 +208,9 @@ test('server enforces proxy auth, CSRF and serves the shell', async () => {
     const revokedHealth = await fetch(`${url}/api/health`, { headers: { 'x-forwarded-for': '203.0.113.9', authorization: `Bearer ${claimBody.token}` } })
     assert.equal(revokedHealth.status, 401)
 
+    const queryToken = await fetch(`${url}/api/bootstrap?token=${config.authToken}`, { headers: { 'x-forwarded-for': '203.0.113.9' } })
+    assert.equal(queryToken.status, 401)
+
     const noKeyRemote = await fetch(`${url}/api/model/activate`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },

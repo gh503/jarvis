@@ -178,7 +178,7 @@ export class JarvisServer {
         socket.destroy()
         return
       }
-      if (!sameOrigin(request) || !this.authorized(request, url)) {
+      if (!sameOrigin(request) || !this.authorized(request, url, true)) {
         socket.write('HTTP/1.1 401 Unauthorized\r\nConnection: close\r\n\r\n')
         socket.destroy()
         return
@@ -207,7 +207,7 @@ export class JarvisServer {
     return { url: `${scheme}://${host}:${this.listeningPort}` }
   }
 
-  private authorized(request: IncomingMessage, url: URL): boolean {
+  private authorized(request: IncomingMessage, url: URL, allowQueryToken = false): boolean {
     if (!this.deps.config.authToken) return true
     // A loopback socket is not proof of a local user when a reverse proxy is
     // in front of us. Proxy headers force token authentication.
@@ -216,7 +216,7 @@ export class JarvisServer {
     const header = request.headers.authorization
     const bearer = header?.startsWith('Bearer ') ? header.slice(7) : ''
     const cookies = parseCookies(request.headers.cookie)
-    const query = url.searchParams.get('token') ?? ''
+    const query = allowQueryToken ? (url.searchParams.get('token') ?? '') : ''
     return [bearer, cookies.jarvis_token ?? '', query].some(candidate =>
       Boolean(candidate) && (safeEqual(candidate, this.deps.config.authToken) || this.devices.verify(candidate)))
   }
