@@ -115,6 +115,7 @@ async function main(): Promise<void> {
 
   const cleanup = setInterval(() => {
     void conversation.cleanupAudio().catch(() => undefined)
+    void conversation.cleanupCaptures().catch(() => undefined)
   }, 30 * 60 * 1000)
   cleanup.unref()
 

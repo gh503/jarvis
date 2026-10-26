@@ -505,6 +505,20 @@ export class Conversation {
     }
   }
 
+  async cleanupCaptures(maxAgeMs = 60 * 60 * 1000): Promise<void> {
+    const dir = join(this.deps.config.dataDir, 'captures')
+    const cutoff = Date.now() - maxAgeMs
+    try {
+      for (const name of await readdir(dir)) {
+        const path = join(dir, name)
+        const info = await stat(path)
+        if (info.mtimeMs < cutoff) await rm(path, { force: true })
+      }
+    } catch {
+      // No captures yet.
+    }
+  }
+
   memoryItems(): MemoryItem[] {
     return this.deps.memory.list({ includeSensitive: true, limit: 60 })
   }

@@ -101,3 +101,4 @@ Start it with:
 Then open http://127.0.0.1:3081
 For a desktop app window:
   bash scripts/install-desktop.sh
+EOF
