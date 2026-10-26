@@ -1,7 +1,11 @@
 import { createServer as createHttpServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http'
 import { createServer as createHttpsServer } from 'node:https'
-import { createHash, timingSafeEqual } from 'node:crypto'
-import { readFile, stat } from 'node:fs/promises'
+import { createHash, randomInt, timingSafeEqual } from 'node:crypto'
+import { buildDailyBrief } from './brief.ts'
+import { DeviceStore } from './devices.ts'
+import type { SecureFiles } from './secure-files.ts'
+import { readCalendar } from './proactive/calendar.ts'
+import { mkdir, readFile, rm, stat } from 'node:fs/promises'
 import { extname, join, resolve, sep } from 'node:path'
 import { WebSocket, WebSocketServer } from 'ws'
 import type { ActionManager } from './actions.ts'
@@ -32,6 +36,7 @@ export interface ServerDeps {
   memory: MemoryStore
   reminders: ReminderStore
   policy: ProactivePolicy
+  secure: SecureFiles
   logger: Logger
 }
 
@@ -60,11 +65,12 @@ function securityHeaders(response: ServerResponse): void {
   )
 }
 
-function sendJson(response: ServerResponse, status: number, data: unknown): void {
+function sendJson(response: ServerResponse, status: number, data: unknown, headers: Record<string, string> = {}): void {
   const body = JSON.stringify(data)
   response.statusCode = status
   response.setHeader('content-type', 'application/json; charset=utf-8')
   response.setHeader('cache-control', 'no-store')
+  for (const [key, value] of Object.entries(headers)) response.setHeader(key, value)
   response.end(body)
 }
 
@@ -137,9 +143,14 @@ export class JarvisServer {
   private wss: WebSocketServer | null = null
   private readonly clients = new Set<WebSocket>()
   private readonly startedAt = Date.now()
+  private readonly devices: DeviceStore
+  private readonly pairing = new Map<string, { expiresAt: number }>()
+  private claimFailures: number[] = []
   private listeningPort = 0
 
-  constructor(private readonly deps: ServerDeps) {}
+  constructor(private readonly deps: ServerDeps) {
+    this.devices = new DeviceStore(join(deps.config.dataDir, 'devices.json'))
+  }
 
   async start(): Promise<{ url: string }> {
     const handler = (request: IncomingMessage, response: ServerResponse): void => {
@@ -206,7 +217,8 @@ export class JarvisServer {
     const bearer = header?.startsWith('Bearer ') ? header.slice(7) : ''
     const cookies = parseCookies(request.headers.cookie)
     const query = url.searchParams.get('token') ?? ''
-    return [bearer, cookies.jarvis_token ?? '', query].some(candidate => candidate && safeEqual(candidate, this.deps.config.authToken))
+    return [bearer, cookies.jarvis_token ?? '', query].some(candidate =>
+      Boolean(candidate) && (safeEqual(candidate, this.deps.config.authToken) || this.devices.verify(candidate)))
   }
 
   private onConnection(ws: WebSocket): void {
@@ -270,7 +282,7 @@ export class JarvisServer {
 
     if (path === '/' && url.searchParams.has('token')) {
       const token = url.searchParams.get('token') ?? ''
-      if (this.deps.config.authToken && safeEqual(token, this.deps.config.authToken)) {
+      if (this.deps.config.authToken && (safeEqual(token, this.deps.config.authToken) || this.devices.verify(token))) {
         response.setHeader(
           'set-cookie',
           `jarvis_token=${encodeURIComponent(token)}; HttpOnly; SameSite=Strict; Path=/; Max-Age=2592000${this.deps.config.tlsCert ? '; Secure' : ''}`,
@@ -280,6 +292,37 @@ export class JarvisServer {
         response.end()
         return
       }
+    }
+
+    if (request.method === 'POST' && path === '/api/devices/claim') {
+      if (!sameOrigin(request)) {
+        sendJson(response, 403, { error: 'cross-origin request rejected' })
+        return
+      }
+      const now = Date.now()
+      this.claimFailures = this.claimFailures.filter(at => at > now - 60_000)
+      if (this.claimFailures.length >= 30) {
+        sendJson(response, 429, { error: '尝试过于频繁，稍后再试' })
+        return
+      }
+      const body = await readJson<{ code?: string; name?: string }>(request)
+      const code = String(body.code ?? '').trim()
+      const pending = this.pairing.get(code)
+      if (!pending || pending.expiresAt < now) {
+        this.claimFailures.push(now)
+        this.pairing.delete(code)
+        sendJson(response, 401, { error: '配对码无效或已过期' })
+        return
+      }
+      const issued = this.devices.issue(String(body.name ?? '已配对设备'))
+      this.deps.logger.info('device paired', { deviceId: issued.device.id, name: issued.device.name })
+      this.pairing.delete(code)
+      response.setHeader(
+        'set-cookie',
+        `jarvis_token=${encodeURIComponent(issued.token)}; HttpOnly; SameSite=Strict; Path=/; Max-Age=2592000${this.deps.config.tlsCert ? '; Secure' : ''}`,
+      )
+      sendJson(response, 200, { ok: true, token: issued.token, device: issued.device })
+      return
     }
 
     if (path.startsWith('/api/')) {
@@ -300,6 +343,38 @@ export class JarvisServer {
         uptimeMs: Date.now() - this.startedAt,
         status: this.deps.conversation.status(),
       })
+      return
+    }
+
+    if (request.method === 'POST' && path === '/api/devices/pair') {
+      const body = await readJson<{ name?: string }>(request).catch((): { name?: string } => ({}))
+      const code = String(randomInt(100000, 1000000))
+      this.pairing.set(code, { expiresAt: Date.now() + 5 * 60 * 1000 })
+      for (const [key, value] of this.pairing) {
+        if (value.expiresAt < Date.now()) this.pairing.delete(key)
+      }
+      sendJson(response, 200, { code, expiresAt: new Date(Date.now() + 5 * 60 * 1000).toISOString(), name: body.name ?? '' })
+      return
+    }
+
+    if (request.method === 'GET' && path === '/api/devices') {
+      sendJson(response, 200, { devices: this.devices.list() })
+      return
+    }
+
+    if (request.method === 'DELETE' && path.startsWith('/api/devices/')) {
+      const id = path.slice('/api/devices/'.length)
+      if (!/^[0-9a-f-]{36}$/.test(id) || !this.devices.revoke(id)) {
+        sendJson(response, 404, { error: 'device not found' })
+        return
+      }
+      this.deps.logger.info('device revoked', { deviceId: id })
+      sendJson(response, 200, { ok: true })
+      return
+    }
+
+    if (request.method === 'GET' && path === '/pair') {
+      await this.serveStatic(response, '/pair.html')
       return
     }
 
@@ -454,6 +529,18 @@ export class JarvisServer {
       return
     }
 
+    if (request.method === 'POST' && path === '/api/memory/consolidate') {
+      const stats = await this.deps.memory.consolidate()
+      sendJson(response, 200, { ok: true, stats })
+      return
+    }
+
+    if (request.method === 'GET' && path === '/api/traces') {
+      const limit = Math.max(1, Math.min(200, Number(url.searchParams.get('limit') ?? 50) || 50))
+      sendJson(response, 200, { traces: this.deps.telemetry.historyTraces(limit) })
+      return
+    }
+
     if (request.method === 'GET' && path === '/api/memory/graph') {
       const limit = Number(url.searchParams.get('limit') ?? 140)
       sendJson(response, 200, this.deps.memory.graph(Number.isFinite(limit) ? limit : 140))
@@ -552,6 +639,47 @@ export class JarvisServer {
       const text = body.vision ? '用视觉看屏幕' : target === 'camera' ? '看下摄像头' : '看下屏幕'
       const result = await this.deps.conversation.handleText(text, { source: 'text' })
       sendJson(response, 200, result)
+      return
+    }
+
+    if (request.method === 'GET' && path === '/api/privacy/export') {
+      const exported = this.deps.memory.exportAll()
+      sendJson(response, 200, exported, { 'content-disposition': `attachment; filename="jarvis-export-${new Date().toISOString().slice(0, 10)}.json"` })
+      return
+    }
+
+    if (request.method === 'POST' && path === '/api/privacy/erase') {
+      const body = await readJson<{ confirm?: string }>(request)
+      if (body.confirm !== 'ERASE ALL') {
+        sendJson(response, 400, { error: 'confirmation phrase is required' })
+        return
+      }
+      const counts = this.deps.memory.eraseAll()
+      this.pairing.clear()
+      this.devices.clear()
+      this.deps.actions.clear()
+      this.deps.telemetry.clearAll()
+      for (const name of ['audio', 'captures']) {
+        await rm(join(this.deps.config.dataDir, name), { recursive: true, force: true })
+        await mkdir(join(this.deps.config.dataDir, name), { recursive: true, mode: 0o700 })
+      }
+      await rm(join(this.deps.config.dataDir, 'audit', 'actions.jsonl'), { force: true })
+      await rm(join(this.deps.config.dataDir, 'telemetry.jsonl'), { force: true })
+      // Rotate only after the files that used the old key are gone.
+      this.deps.secure.rotate()
+      sendJson(response, 200, { ok: true, erased: counts })
+      return
+    }
+
+    if (request.method === 'GET' && path === '/api/brief') {
+      sendJson(response, 200, buildDailyBrief(this.deps.memory, this.deps.reminders, new Date(), await readCalendar(process.env.JARVIS_CALENDAR_ICS)))
+      return
+    }
+
+    if (request.method === 'POST' && path === '/api/brief/read') {
+      const brief = buildDailyBrief(this.deps.memory, this.deps.reminders, new Date(), await readCalendar(process.env.JARVIS_CALENDAR_ICS))
+      const audioUrl = await this.deps.conversation.speakText(brief.text)
+      sendJson(response, 200, { ...brief, audioUrl })
       return
     }
 
@@ -679,8 +807,18 @@ export class JarvisServer {
       return
     }
 
-    if (request.method === 'GET' && path.startsWith('/api/captures/')) {
-      await this.serveDataFile(response, join(this.deps.config.dataDir, 'captures'), path.slice('/api/captures/'.length))
+    if ((request.method === 'GET' || request.method === 'DELETE') && path.startsWith('/api/captures/')) {
+      const name = decodeURIComponent(path.slice('/api/captures/'.length))
+      if (!/^[A-Za-z0-9._-]+$/.test(name) || name.includes('..')) {
+        sendJson(response, 400, { error: 'invalid capture name' })
+        return
+      }
+      if (request.method === 'DELETE') {
+        await rm(join(this.deps.config.dataDir, 'captures', name), { force: true })
+        sendJson(response, 200, { ok: true, deleted: name })
+        return
+      }
+      await this.serveDataFile(response, join(this.deps.config.dataDir, 'captures'), name)
       return
     }
 
@@ -765,7 +903,7 @@ export class JarvisServer {
       response.statusCode = 200
       response.setHeader('content-type', MIME[extname(path).toLowerCase()] ?? 'application/octet-stream')
       response.setHeader('cache-control', 'private, max-age=3600')
-      response.end(await readFile(path))
+      response.end(this.deps.secure.decryptFile(path))
     } catch {
       sendText(response, 404, 'not found')
     }

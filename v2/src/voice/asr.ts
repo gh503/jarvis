@@ -8,11 +8,18 @@ export interface Transcription {
   text: string
   language: string
   durationMs: number
+  audioMs?: number
+}
+
+export interface TranscriberState {
+  state: 'idle' | 'starting' | 'ready' | 'error'
+  error?: string
 }
 
 export interface Transcriber {
   available(): Promise<boolean>
   transcribe(input: string | Buffer, extension?: string): Promise<Transcription>
+  state?(): TranscriberState
   close?(): Promise<void>
 }
 

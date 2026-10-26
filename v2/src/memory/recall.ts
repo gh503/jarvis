@@ -125,7 +125,7 @@ export function filterActive(items: MemoryItem[], options: RecallOptions, now: D
     if (!options.includeProposed && item.status !== 'confirmed') return false
     if (options.includeProposed && item.status !== 'confirmed' && item.status !== 'proposed') return false
     if (!options.includeSensitive && item.sensitivity !== 'standard') return false
-    if (!isActive(item, now) && !item.validTo) return false
+    if (!isActive(item, now) && !item.validTo && item.status !== 'proposed') return false
     if (options.kinds && !options.kinds.includes(item.kind)) return false
     if (item.retention === 'expires-at' && item.expiresAt && Date.parse(item.expiresAt) <= now.getTime()) return false
     return true

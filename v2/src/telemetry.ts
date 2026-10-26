@@ -1,5 +1,8 @@
+import { appendFileSync, mkdirSync, readFileSync, renameSync, statSync } from 'node:fs'
+import { dirname } from 'node:path'
 import { loadavg, totalmem, freemem, cpus } from 'node:os'
 import type { EventBus, JarvisEvent } from './events.ts'
+import type { SecureFiles } from './secure-files.ts'
 
 export interface TurnTrace {
   id: string
@@ -12,10 +15,19 @@ export interface TurnTrace {
   firstAudioMs: number | null
   totalMs: number | null
   asrMs: number | null
+  asrAudioMs: number | null
   audioSegments: number
   contextCount: number
   memoryCount: number
   error?: string
+}
+
+export interface TelemetryOptions {
+  /** JSONL file for completed traces; 0600 and append-only in production. */
+  file?: string
+  maxFileBytes?: number
+  /** Encrypt each persisted trace line at rest. */
+  secure?: SecureFiles
 }
 
 export interface TelemetrySnapshot {
@@ -93,9 +105,75 @@ export class TelemetryCollector {
     events: 0,
   }
   private readonly unsubscribe: () => void
+  private readonly history: TurnTrace[] = []
+  private readonly maxFileBytes: number
 
-  constructor(private readonly bus: EventBus) {
+  constructor(private readonly bus: EventBus, private readonly options: TelemetryOptions = {}) {
+    this.maxFileBytes = options.maxFileBytes ?? 5 * 1024 * 1024
+    this.loadHistory()
     this.unsubscribe = bus.onAny(event => this.record(event))
+  }
+
+  private loadHistory(): void {
+    const file = this.options.file
+    if (!file) return
+    try {
+      const lines = readFileSync(file, 'utf8').trim().split('\n').slice(-MAX_TRACES * 3)
+      for (const line of lines) {
+        if (!line.trim()) continue
+        try {
+          const payload = line.startsWith('J1:') && this.options.secure
+            ? this.options.secure.decryptBuffer(Buffer.from(line.slice(3), 'base64')).toString('utf8')
+            : line
+          const trace = JSON.parse(payload) as TurnTrace
+          if (trace.id && trace.status !== 'running') this.history.push(trace)
+        } catch { /* skip a torn line */ }
+      }
+      this.history.sort((a, b) => a.startedAt.localeCompare(b.startedAt))
+      if (this.history.length > MAX_TRACES * 2) this.history.splice(0, this.history.length - MAX_TRACES * 2)
+    } catch {
+      // First run or unreadable history must never stop the app.
+    }
+  }
+
+  private persist(trace: TurnTrace): void {
+    const file = this.options.file
+    if (!file) return
+    try {
+      mkdirSync(dirname(file), { recursive: true, mode: 0o700 })
+      let size = 0
+      try { size = statSync(file).size } catch { /* first write */ }
+      if (size > this.maxFileBytes) renameSync(file, `${file}.1`)
+      const line = this.options.secure
+        ? `J1:${this.options.secure.encryptBuffer(Buffer.from(JSON.stringify(trace))).toString('base64')}`
+        : JSON.stringify(trace)
+      appendFileSync(file, `${line}\n`, { mode: 0o600 })
+    } catch {
+      // Observability is best-effort; it must not break a conversation.
+    }
+  }
+
+  clearAll(): void {
+    this.traces.clear()
+    this.order.length = 0
+    this.series.length = 0
+    this.recalls.length = 0
+    this.eventRing.length = 0
+    this.history.length = 0
+    for (const key of Object.keys(this.eventCounts)) delete this.eventCounts[key]
+    this.counters = {
+      turns: 0, textTurns: 0, voiceTurns: 0, errors: 0, audioSegments: 0, recalls: 0,
+      memoryAdded: 0, memoryProposed: 0, captures: 0, actions: 0, modelSwitches: 0, events: 0,
+    }
+  }
+
+  historyTraces(limit = 50): TurnTrace[] {
+    const live = this.order
+      .map(id => this.traces.get(id))
+      .filter((trace): trace is TurnTrace => Boolean(trace) && trace?.status !== 'running')
+    const byId = new Map<string, TurnTrace>()
+    for (const trace of [...this.history, ...live]) byId.set(trace.id, trace)
+    return [...byId.values()].sort((a, b) => b.startedAt.localeCompare(a.startedAt)).slice(0, Math.max(1, Math.min(200, limit)))
   }
 
   close(): void {
@@ -132,6 +210,7 @@ export class TelemetryCollector {
         if (!turnId) break
         const trace = this.ensure(turnId, 'voice', '', event.at)
         trace.asrMs = num(data.asrMs, trace.asrMs ?? 0)
+        trace.asrAudioMs = num(data.audioMs, trace.asrAudioMs ?? 0)
         if (!trace.text) trace.text = str(data.text)
         break
       }
@@ -141,6 +220,7 @@ export class TelemetryCollector {
         if (trace.firstTokenMs === null) {
           const base = Date.parse(trace.modelStartedAt ?? trace.startedAt)
           trace.firstTokenMs = Math.max(0, Date.parse(event.at) - base)
+          this.clampTimings(trace)
         }
         break
       }
@@ -151,6 +231,7 @@ export class TelemetryCollector {
         trace.audioSegments += 1
         if (trace.firstAudioMs === null) {
           trace.firstAudioMs = Math.max(0, Date.parse(event.at) - Date.parse(trace.startedAt))
+          this.clampTimings(trace)
         }
         break
       }
@@ -158,6 +239,7 @@ export class TelemetryCollector {
         if (!turnId) break
         const trace = this.ensure(turnId, str(data.source, 'text'), str(data.text), event.at)
         trace.totalMs = num(data.durationMs, Date.parse(event.at) - Date.parse(trace.startedAt))
+        this.clampTimings(trace)
         trace.contextCount = Array.isArray(data.contextUsed) ? data.contextUsed.length : trace.contextCount
         trace.memoryCount = Array.isArray(data.memoryIds) ? data.memoryIds.length : trace.memoryCount
         if (data.error) {
@@ -213,6 +295,13 @@ export class TelemetryCollector {
     }
   }
 
+  private clampTimings(trace: TurnTrace): void {
+    if (trace.totalMs === null) return
+    if (trace.firstTokenMs !== null) trace.firstTokenMs = Math.min(trace.firstTokenMs, trace.totalMs)
+    if (trace.firstAudioMs !== null) trace.firstAudioMs = Math.min(trace.firstAudioMs, trace.totalMs)
+    if (trace.asrMs !== null) trace.asrMs = Math.min(trace.asrMs, trace.totalMs)
+  }
+
   private ensure(id: string, source: string, text: string, at: string): TurnTrace {
     let trace = this.traces.get(id)
     if (!trace) {
@@ -226,6 +315,7 @@ export class TelemetryCollector {
         firstAudioMs: null,
         totalMs: null,
         asrMs: null,
+        asrAudioMs: null,
         audioSegments: 0,
         contextCount: 0,
         memoryCount: 0,
@@ -241,6 +331,7 @@ export class TelemetryCollector {
   }
 
   private pushSeries(trace: TurnTrace): void {
+    this.persist(trace)
     this.series.push({
       at: new Date().toISOString(),
       source: trace.source,

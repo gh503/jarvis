@@ -1,0 +1,164 @@
+[
+  {
+    "id": "home-current",
+    "query": "杭州 住址",
+    "items": [
+      {
+        "id": "home-old",
+        "content": "我住在上海浦东。",
+        "status": "superseded",
+        "validTo": "2025-01-01T00:00:00.000Z"
+      },
+      {
+        "id": "home-now",
+        "content": "我住在杭州西湖区，靠近黄龙。",
+        "status": "confirmed"
+      }
+    ],
+    "expect": [
+      "home-now"
+    ]
+  },
+  {
+    "id": "coffee-preference",
+    "query": "咖啡 加糖",
+    "items": [
+      {
+        "id": "coffee",
+        "content": "我习惯早上喝手冲咖啡，不加糖。",
+        "kind": "semantic",
+        "status": "confirmed"
+      }
+    ],
+    "expect": [
+      "coffee"
+    ]
+  },
+  {
+    "id": "procedural-start",
+    "query": "怎么启动 Jarvis？",
+    "items": [
+      {
+        "id": "start",
+        "content": "启动 Jarvis v2：进入 v2 目录，运行 npm start，然后打开 http://127.0.0.1:3081。",
+        "kind": "procedural",
+        "status": "confirmed"
+      }
+    ],
+    "expect": [
+      "start"
+    ]
+  },
+  {
+    "id": "prospective-report",
+    "query": "周报 截止",
+    "items": [
+      {
+        "id": "report",
+        "content": "周报截止时间：周五下午六点前提交给项目组。",
+        "kind": "prospective",
+        "status": "confirmed"
+      }
+    ],
+    "expect": [
+      "report"
+    ]
+  },
+  {
+    "id": "unknown-abstain",
+    "query": "量子计算机会取代 GPU 吗？",
+    "items": [
+      {
+        "id": "local-model",
+        "content": "Jarvis 默认使用本地 qwen2.5:3b 模型，不把对话发到云端。",
+        "status": "confirmed"
+      }
+    ],
+    "abstain": true
+  },
+  {
+    "id": "secret-default-abstain",
+    "query": "我的银行卡密码是什么？",
+    "items": [
+      {
+        "id": "secret-card",
+        "content": "我的银行卡密码是 123456。",
+        "status": "confirmed",
+        "sensitivity": "secret"
+      }
+    ],
+    "abstain": true
+  },
+  {
+    "id": "secret-explicit-allow",
+    "query": "我的银行卡密码是什么？",
+    "items": [
+      {
+        "id": "secret-card",
+        "content": "我的银行卡密码是 123456。",
+        "status": "confirmed",
+        "sensitivity": "secret"
+      }
+    ],
+    "expect": [
+      "secret-card"
+    ],
+    "includeSensitive": true
+  },
+  {
+    "id": "proposed-default-abstain",
+    "query": "成都 搬家",
+    "items": [
+      {
+        "id": "chengdu",
+        "content": "我可能会在明年搬到成都。",
+        "status": "proposed"
+      }
+    ],
+    "abstain": true
+  },
+  {
+    "id": "proposed-explicit-allow",
+    "query": "成都 搬家",
+    "items": [
+      {
+        "id": "chengdu",
+        "content": "我可能会在明年搬到成都。",
+        "status": "proposed"
+      }
+    ],
+    "expect": [
+      "chengdu"
+    ],
+    "includeProposed": true
+  },
+  {
+    "id": "sensitive-default-abstain",
+    "query": "我的体检结果怎么样？",
+    "items": [
+      {
+        "id": "health",
+        "content": "我的体检结果显示血压偏高，需要复查。",
+        "status": "confirmed",
+        "sensitivity": "sensitive"
+      }
+    ],
+    "abstain": true
+  },
+  {
+    "id": "sensitive-explicit-allow",
+    "query": "我的体检结果怎么样？",
+    "items": [
+      {
+        "id": "health",
+        "content": "我的体检结果显示血压偏高，需要复查。",
+        "status": "confirmed",
+        "sensitivity": "sensitive"
+      }
+    ],
+    "expect": [
+      "health"
+    ],
+    "includeSensitive": true
+  }
+]

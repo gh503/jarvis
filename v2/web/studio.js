@@ -61,6 +61,8 @@ const state = {
   data: null,
   graph: null,
   graphAt: 0,
+  traceHistory: [],
+  traceHistoryAt: 0,
   tuning: null,
   tuningDraft: {},
   tuningSaved: {},
@@ -146,7 +148,9 @@ function updateHealth() {
   }
   const model = data.status?.modelReady || data.status?.providerReady
   const voice = Boolean(data.status?.voice?.asr && data.status?.voice?.tts)
-  dot.className = model && voice ? 'ok' : model ? 'warn' : 'bad'
+  const voiceState = data.status?.voice?.asrState
+  const voiceWarm = voice && (!voiceState || voiceState === 'ready')
+  dot.className = model && voiceWarm ? 'ok' : model ? 'warn' : 'bad'
   const modelLabel = data.status?.providerLabel || data.status?.provider || '模型'
   label.textContent = model ? `${modelLabel} · ${data.status?.model || '就绪'}` : '模型未就绪'
   $('#studio-version').textContent = `v${data.version || '2.0.0'}`
@@ -260,6 +264,12 @@ async function loadTab(tab, force = false) {
     }
     const observatory = await api('/api/observatory')
     state.data = observatory
+    if (tab === 'overview' && (force || Date.now() - state.traceHistoryAt > 12000)) {
+      try {
+        state.traceHistory = (await api('/api/traces?limit=12')).traces || []
+        state.traceHistoryAt = Date.now()
+      } catch { /* history is optional */ }
+    }
     updateHealth()
     if (tab === 'memory') {
       if (force || !state.graph || Date.now() - state.graphAt > 9000) await loadGraph()
@@ -395,7 +405,7 @@ function donut(parts, center) {
 
 const EVENT_LABELS = {
   'turn.start': '回合开始', 'assistant.delta': '生成片段', 'assistant.done': '回合完成', 'assistant.audio': '语音片段',
-  'voice.asr.start': 'ASR 开始', 'voice.transcribed': '转写完成', 'memory.recalled': '记忆召回',
+  'voice.asr.start': 'ASR 开始', 'voice.transcribed': '转写完成', 'memory.recalled': '记忆召回', 'brief.ready': '每日简报',
   'memory.proposed': '记忆候选', 'memory.added': '记忆写入', 'memory.episode': '情景记录',
   'sense.capture': '感官捕获', 'attention.state': '注意力迁移', 'model.changed': '模型切换',
   'tuning.changed': '参数变更', 'action.proposed': '动作提案', 'action.executed': '动作执行',
@@ -465,7 +475,7 @@ function renderOverview() {
       ${statCard('最近首字', fmtMs(latest?.firstTokenMs), latest ? `${latest.source === 'voice' ? '语音' : '文本'}回合` : '等待首个回合', 'cyan')}
       ${statCard('最近整轮', fmtMs(latest?.totalMs), latest ? `${success}/${totalTurns} 轮成功` : '—', '')}
       ${statCard('长期记忆', String(mem.stats?.total ?? 0), `${mem.stats?.confirmed ?? 0} 已确认 · ${mem.stats?.proposed ?? 0} 候选`, 'amber')}
-      ${statCard('语音就绪', `${data.status?.voice?.asr ? 'ASR' : '—'} / ${data.status?.voice?.tts ? 'TTS' : '—'}`, data.status?.voice?.asr && data.status?.voice?.tts ? '本地语音链路可用' : '部分组件未就绪', data.status?.voice?.asr && data.status?.voice?.tts ? 'green' : 'danger')}
+      ${statCard('语音就绪', `${data.status?.voice?.asr ? 'ASR' : '—'} / ${data.status?.voice?.tts ? 'TTS' : '—'}`, data.status?.voice?.asrState === 'starting' ? 'ASR 模型加载中' : data.status?.voice?.asrState === 'error' ? 'ASR 异常，查看日志' : data.status?.voice?.asr && data.status?.voice?.tts ? '本地语音链路可用' : '部分组件未就绪', data.status?.voice?.asrState === 'starting' ? 'amber' : data.status?.voice?.asrState === 'error' ? 'danger' : data.status?.voice?.asr && data.status?.voice?.tts ? 'green' : 'danger')}
       ${statCard('系统负载', `${t.system.load1.toFixed(2)}`, `${t.system.cpuCount} 核 · RSS ${t.system.processRssMb} MB`, t.system.load1 / Math.max(1, t.system.cpuCount) > 0.8 ? 'danger' : '')}
     </div>
 
@@ -504,7 +514,7 @@ function renderOverview() {
       ${panel('最新回合 · 追踪', '从 ASR、召回、模型到语音，用一条回合线串起来；这是排查“为什么慢”的入口。', `
         <div class="waterfall">${latest ? `<div class="waterfall-head"><div><b>${esc(latest.source === 'voice' ? '语音回合' : '文本回合')}</b><span>${esc(fmtAgo(latest.startedAt))} · ${esc(latest.id.slice(0, 8))}</span></div><div class="waterfall-total">${esc(fmtMs(latest.totalMs))}</div></div>
           <div class="waterfall-bar"><i class="wf-asr" style="width:${latest.asrMs ? Math.max(4, Math.round((latest.asrMs / Math.max(1, latest.totalMs || 1)) * 100)) : 0}%"></i><i class="wf-model" style="width:${Math.max(4, Math.round(((latest.firstTokenMs || 0) / Math.max(1, latest.totalMs || 1)) * 100))}%"></i><i class="wf-tail"></i></div>
-          <div class="waterfall-legend"><span><i class="wf-asr"></i>ASR ${esc(fmtMs(latest.asrMs))}</span><span><i class="wf-model"></i>首字 ${esc(fmtMs(latest.firstTokenMs))}</span><span><i class="wf-audio"></i>首段 ${esc(fmtMs(latest.firstAudioMs))}</span><span>记忆召回 ${latest.contextCount}</span></div>
+          <div class="waterfall-legend"><span><i class="wf-asr"></i>ASR ${esc(fmtMs(latest.asrMs))}${latest.asrAudioMs ? ` · 音频 ${esc(fmtMs(latest.asrAudioMs))}` : ''}</span><span><i class="wf-model"></i>首字 ${esc(fmtMs(latest.firstTokenMs))}</span><span><i class="wf-audio"></i>首段 ${esc(fmtMs(latest.firstAudioMs))}</span><span>记忆召回 ${latest.contextCount}</span></div>
           <p class="waterfall-text">${esc(truncate(latest.text || '—', 180))}</p>` : '<div class="muted small">还没有可追踪的回合。</div>'}</div>`, 'span-7')}
       ${panel('事件流', '按时间倒序；点击“事件”页看完整载荷。', `<div class="event-list">${eventRows(eventList, 10) || '<div class="muted small">还没有事件。</div>'}</div>`, 'span-5')}
 
@@ -517,6 +527,7 @@ function renderOverview() {
           <div><span>召回</span><b>${t.counters.recalls}</b><small>${t.counters.memoryAdded} 写入</small></div>
           <div><span>捕获</span><b>${t.counters.captures}</b><small>${t.counters.actions} 动作</small></div>
         </div>`, 'span-6')}
+      ${panel('持久化回合', '最近完成的回合会写入本机 JSONL；重启后仍可回看，用于排查“刚才那轮为什么慢”。', traceHistoryTable(state.traceHistory), 'span-12')}
       ${panel('系统', '本机进程与资源；Jarvis 默认只监听回环地址。', `
         <div class="system-rows">
           <div><span>运行时长</span><b>${esc(fmtMs(data.uptimeMs))}</b></div>
@@ -529,6 +540,18 @@ function renderOverview() {
     </div>`
 
   $$('[data-open-tab]').forEach(button => button.addEventListener('click', () => void setTab(button.dataset.openTab)))
+}
+
+function traceHistoryTable(traces) {
+  if (!traces?.length) return '<div class="muted small">还没有持久化回合。完成一次文本或语音对话后会出现。</div>'
+  return `<div class="trace-table">${traces.map(trace => `<div class="trace-row">
+    <span class="trace-time">${esc(fmtAgo(trace.startedAt))}</span>
+    <span class="trace-source">${trace.source === 'voice' ? '语音' : '文本'}</span>
+    <span>${pill(trace.status === 'ok' ? 'OK' : trace.status.toUpperCase(), trace.status === 'ok' ? 'green' : 'danger')}</span>
+    <span class="trace-metric">首字 ${esc(fmtMs(trace.firstTokenMs))}</span>
+    <span class="trace-metric">整轮 ${esc(fmtMs(trace.totalMs))}</span>
+    <span class="trace-text">${esc(truncate(trace.text || '—', 54))}</span>
+  </div>`).join('')}</div>`
 }
 
 function memoryFiltered() {
@@ -986,6 +1009,23 @@ async function seedDemoMemory() {
   }
 }
 
+async function consolidateMemory() {
+  const button = $('#consolidate-memory')
+  if (button) { button.disabled = true; button.textContent = '整理中…' }
+  try {
+    const result = await api('/api/memory/consolidate', { method: 'POST' })
+    notify(`已整理：${result.stats?.deduped ?? 0} 条去重 · ${result.stats?.superseded ?? 0} 条取代 · ${result.stats?.expiredProposals ?? 0} 条候选过期`, 'ok')
+    await loadGraph()
+    state.data = await api('/api/observatory')
+    renderMemory()
+    window.dispatchEvent(new CustomEvent('jarvis:memory-changed'))
+  } catch (error) {
+    notify(error instanceof Error ? error.message : String(error), 'danger')
+  } finally {
+    if (button) { button.disabled = false; button.textContent = '整理记忆' }
+  }
+}
+
 async function clearDemoMemory() {
   if (!window.confirm('清除所有 demo: 来源的演示记忆？真实记忆不会受影响。')) return
   try {
@@ -1246,10 +1286,11 @@ function renderConfig() {
       ${panel('语音', 'ASR / TTS 二进制与模型路径；本地优先。', configRows(config.voice || {}), 'span-6')}
       ${panel('感知与打扰', '静默、预算与屏幕捕获边界。', configRows({ quiet: config.quiet, dailySpeakBudget: config.dailySpeakBudget, screenTimeoutMs: config.screenTimeoutMs, screenBlocklist: config.screenBlocklist }), 'span-6')}
       ${panel('路径', '数据、网页与运行时目录。', configRows({ dataDir: config.dataDir, webDir: config.webDir }), 'span-6')}
-      ${config.host === '127.0.0.1' || config.host === '::1' ? panel('开发工具', '仅回环可用。演示记忆带 demo: 来源标记，可一键清除，不会混入真实记忆。', `<div class="dev-actions"><button class="s-btn primary" data-demo-seed="1">加载演示记忆</button><button class="s-btn danger" data-demo-clear="1">清除演示记忆</button><span>用于检查记忆星座、召回解释与截图。</span></div>`, 'span-12') : ''}
+      ${config.host === '127.0.0.1' || config.host === '::1' ? panel('开发工具', '仅回环可用。演示记忆带 demo: 来源标记，可一键清除，不会混入真实记忆。', `<div class="dev-actions"><button class="s-btn primary" data-demo-seed="1">加载演示记忆</button><button class="s-btn" id="consolidate-memory">整理记忆</button><button class="s-btn danger" data-demo-clear="1">清除演示记忆</button><span>演示数据带 demo: 来源标记；整理只做去重、取代链和过期候选，不删除事实。</span></div>`, 'span-12') : ''}
       ${panel('完整脱敏 JSON', '可直接复制给诊断或 issue；已移除所有密钥。', `<pre class="raw-json" id="config-raw">${esc(raw)}</pre>`, 'span-12')}
     </div>`
   $$('[data-demo-seed]').forEach(button => button.addEventListener('click', () => void seedDemoMemory()))
+  $('#consolidate-memory')?.addEventListener('click', () => void consolidateMemory())
   $$('[data-demo-clear]').forEach(button => button.addEventListener('click', () => void clearDemoMemory()))
   $$('[data-open-tab]').forEach(button => button.addEventListener('click', () => void setTab(button.dataset.openTab)))
   $('#config-copy')?.addEventListener('click', async () => {

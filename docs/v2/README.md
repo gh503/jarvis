@@ -49,6 +49,7 @@ v2 不再从“给 agent 加一个聊天窗口”出发，而是从下面这个�
 | [implementation-status.md](implementation-status.md) | 已实现 / 部分实现 / 缺口 / 验证方式 | Implemented baseline |
 | [operations.md](operations.md) | 安装、启动、远程、隐私、验收、故障排查 | Implemented baseline |
 | [observatory.md](observatory.md) | Studio 的信息架构、指标定义、记忆图、调参架构与安全 | Implemented |
+| [security.md](security.md) | 信任边界、凭据、静态加密范围、残余风险、导出/擦除 | Implemented baseline |
 
 ## v2 范围
 

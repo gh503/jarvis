@@ -34,6 +34,8 @@ export class PiperSynthesizer {
   private child: ChildProcessWithoutNullStreams | null = null
   private stdoutBuffer = ''
   private readonly pending = new Map<string, PendingSynthesis>()
+  private startPromise: Promise<void> | null = null
+  private generation = 0
 
   constructor(private readonly options: SynthesizerOptions) {}
 
@@ -43,7 +45,15 @@ export class PiperSynthesizer {
 
   async start(): Promise<void> {
     if (this.child) return
+    if (this.startPromise) return await this.startPromise
+    this.startPromise = this.startInternal().finally(() => { this.startPromise = null })
+    return await this.startPromise
+  }
+
+  private async startInternal(): Promise<void> {
+    const generation = this.generation
     if (!(await this.available())) throw new Error('Piper or its voice model is missing')
+    if (generation !== this.generation) throw new Error('Piper start was superseded')
     const voice = this.options.getVoiceParams?.() ?? { lengthScale: 1, noiseScale: 0.667, noiseW: 0.8, maxChars: 4000 }
     const child = spawn(this.options.piperBin, [
       '--model', this.options.voice,
@@ -140,6 +150,7 @@ export class PiperSynthesizer {
   }
 
   async close(): Promise<void> {
+    this.generation += 1
     const child = this.child
     this.child = null
     this.failAll(new Error('Piper shut down'))

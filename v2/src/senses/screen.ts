@@ -9,6 +9,8 @@ export interface Capture {
   path: string
   source: 'portal' | 'x11' | 'camera'
   bytes: number
+  windowTitle?: string
+  titleKnown?: boolean
 }
 
 export class ScreenCapture {
@@ -52,7 +54,7 @@ export class ScreenCapture {
       if (!(await fileExists(output))) throw new Error('portal returned no image')
       this.logger?.info('screen captured through portal', { output })
       const stat = await import('node:fs/promises').then(module => module.stat(output))
-      return { path: output, source: 'portal', bytes: stat.size }
+      return { path: output, source: 'portal', bytes: stat.size, windowTitle: title, titleKnown: Boolean(title) }
     } catch (error) {
       const detail = String(error)
       if (detail.includes('exited with 2') || detail.includes('denied')) {
@@ -65,7 +67,8 @@ export class ScreenCapture {
         throw new Error('屏幕授权未完成或超时。请在系统弹窗里允许共享后重试，或改用文字/摄像头。')
       }
       this.logger?.warn('portal capture failed; trying X11 fallback', { error: detail })
-      return await this.captureX11(output)
+      const captured = await this.captureX11(output)
+      return { ...captured, windowTitle: title, titleKnown: Boolean(title) }
     }
   }
 

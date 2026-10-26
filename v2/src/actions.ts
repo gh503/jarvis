@@ -124,6 +124,10 @@ export class ActionManager {
     throw new Error('我只支持打开 http/https 网页，或“文件管理器/浏览器”。')
   }
 
+  clear(): void {
+    this.actions.clear()
+  }
+
   list(): ActionRequest[] {
     const now = this.now().getTime()
     for (const action of this.actions.values()) {

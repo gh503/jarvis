@@ -16,6 +16,7 @@ import sys
 import tempfile
 import time
 import traceback
+import wave
 
 # HuggingFace's HTTP client can choke on a socks:// ALL_PROXY value that some
 # desktop environments export. Respect HTTP(S)_PROXY but do not let the
@@ -47,7 +48,25 @@ def main() -> int:
             compute_type=args.compute_type,
             cpu_threads=max(1, args.threads),
         )
-        emit({"ready": True, "model": args.model, "loadMs": int((time.time() - started) * 1000)})
+        load_ms = int((time.time() - started) * 1000)
+        # The model weights load quickly, but ctranslate2/ONNX kernels are
+        # initialised on first inference. Pay that cost during startup instead
+        # of on the person's first sentence.
+        warm_started = time.time()
+        import numpy as np
+
+        silence = np.zeros(8000, dtype=np.float32)
+        warm_segments, _ = model.transcribe(
+            silence,
+            language=args.language,
+            beam_size=1,
+            vad_filter=False,
+            condition_on_previous_text=False,
+            without_timestamps=True,
+        )
+        list(warm_segments)
+        warm_ms = int((time.time() - warm_started) * 1000)
+        emit({"ready": True, "model": args.model, "loadMs": load_ms, "warmupMs": warm_ms})
     except Exception as exc:
         emit({"ready": False, "error": f"{exc}"})
         traceback.print_exc(file=sys.stderr)
@@ -71,6 +90,8 @@ def main() -> int:
             with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as handle:
                 handle.write(data)
                 path = handle.name
+            with wave.open(path, "rb") as wav_info:
+                audio_ms = int(wav_info.getnframes() / max(1, wav_info.getframerate()) * 1000)
             started = time.time()
             segments, info = model.transcribe(
                 path,
@@ -88,6 +109,7 @@ def main() -> int:
                     "text": text,
                     "language": getattr(info, "language", args.language),
                     "durationMs": int((time.time() - started) * 1000),
+                    "audioMs": audio_ms,
                 }
             )
         except Exception as exc:

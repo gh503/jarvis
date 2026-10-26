@@ -4,7 +4,7 @@ import { join } from 'node:path'
 import { createInterface, type Interface } from 'node:readline'
 import type { Logger } from '../logger.ts'
 import { makeTempDir, removeDir, toWav } from './media.ts'
-import type { Transcriber, Transcription } from './asr.ts'
+import type { Transcriber, TranscriberState, Transcription } from './asr.ts'
 
 interface Pending {
   resolve: (value: Transcription) => void
@@ -18,7 +18,9 @@ interface WorkerMessage {
   text?: string
   language?: string
   durationMs?: number
+  audioMs?: number
   loadMs?: number
+  warmupMs?: number
   error?: string
 }
 
@@ -30,6 +32,7 @@ export class FasterWhisperTranscriber implements Transcriber {
   private ready: Promise<void> | null = null
   private queue: Promise<unknown> = Promise.resolve()
   private stopped = false
+  private workerState: TranscriberState = { state: 'idle' }
 
   constructor(
     private readonly options: {
@@ -46,8 +49,14 @@ export class FasterWhisperTranscriber implements Transcriber {
     return this.options.script.length > 0
   }
 
+  state(): TranscriberState {
+    return this.workerState
+  }
+
   start(): Promise<void> {
+    if (this.stopped) return Promise.reject(new Error('ASR worker is closed'))
     if (this.ready) return this.ready
+    this.workerState = { state: 'starting' }
     this.ready = new Promise<void>((resolve, reject) => {
       const child = spawn(
         this.options.pythonBin,
@@ -87,9 +96,11 @@ export class FasterWhisperTranscriber implements Transcriber {
           clearTimeout(timer)
           if (!settled) {
             settled = true
+            this.workerState = { state: 'ready' }
             this.options.logger?.info('asr worker ready', {
               model: this.options.model,
               loadMs: message.loadMs,
+              warmupMs: message.warmupMs,
             })
             resolve()
           }
@@ -97,6 +108,7 @@ export class FasterWhisperTranscriber implements Transcriber {
         }
         if (message.ready === false) {
           clearTimeout(timer)
+          this.workerState = { state: 'error', error: message.error ?? 'ASR worker failed to load' }
           fail(new Error(message.error ?? 'ASR worker failed to load'))
           return
         }
@@ -112,6 +124,7 @@ export class FasterWhisperTranscriber implements Transcriber {
             text: String(message.text ?? '').trim(),
             language: String(message.language ?? this.options.language),
             durationMs: Number(message.durationMs ?? 0),
+            audioMs: Number(message.audioMs ?? 0) || undefined,
           })
         }
       })
@@ -122,17 +135,25 @@ export class FasterWhisperTranscriber implements Transcriber {
       })
       child.on('error', error => {
         clearTimeout(timer)
+        this.workerState = { state: 'error', error: error.message }
         fail(error)
       })
       child.on('close', code => {
         clearTimeout(timer)
         if (!settled) fail(new Error(`ASR worker exited with code ${code}`))
         this.child = null
+        this.ready = null
+        if (!this.stopped) {
+          this.workerState = this.workerState.state === 'starting'
+            ? { state: 'error', error: `ASR worker exited with code ${code}` }
+            : { state: 'idle' }
+        }
         for (const pending of this.pending.values()) {
           clearTimeout(pending.timer)
           pending.reject(new Error(`ASR worker exited with code ${code}`))
         }
         this.pending.clear()
+        if (!this.stopped) this.options.logger?.warn('asr worker exited; it will restart on next request', { code })
       })
     })
     return this.ready
@@ -173,6 +194,10 @@ export class FasterWhisperTranscriber implements Transcriber {
       const timer = setTimeout(() => {
         this.pending.delete(id)
         reject(new Error('ASR request timed out'))
+        // A wedged Python worker cannot be trusted to process the next
+        // utterance in order. Tear it down; the next request starts a fresh
+        // process (and pays the warm-up once, not forever).
+        this.restart()
       }, 120_000)
       timer.unref()
       this.pending.set(id, { resolve, reject, timer })
@@ -184,13 +209,21 @@ export class FasterWhisperTranscriber implements Transcriber {
     })
   }
 
+  private restart(): void {
+    const child = this.child
+    this.child = null
+    this.ready = null
+    this.workerState = { state: 'idle' }
+    try { child?.kill('SIGKILL') } catch { /* already gone */ }
+  }
+
   async close(): Promise<void> {
     this.stopped = true
+    this.workerState = { state: 'idle' }
     this.lines?.close()
     this.child?.stdin.end()
     this.child?.kill('SIGTERM')
     this.child = null
     this.ready = null
-    void this.stopped
   }
 }

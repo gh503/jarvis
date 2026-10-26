@@ -59,6 +59,7 @@ export interface MemoryInput {
   pinned?: boolean
   retention?: MemoryRetention
   expiresAt?: string | null
+  resolveConflicts?: boolean
 }
 
 export interface EpisodeInput {
@@ -111,7 +112,10 @@ export type QueryType = 'fact' | 'preference' | 'temporal' | 'entity' | 'multiho
 
 export interface ConsolidationStats {
   expired: number
+  expiredProposals: number
   deduped: number
+  superseded: number
+  embedded: number
   projected: number
   durationMs: number
 }

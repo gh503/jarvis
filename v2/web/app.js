@@ -9,6 +9,7 @@ const state = {
   wsReady: false,
   reconnect: 0,
   token: localStorage.getItem('jarvis_token') || '',
+  senseConsent: localStorage.getItem('jarvis_sense_consent') === '1',
   status: {},
   voice: { asr: false, tts: false },
   attention: { state: 'idle' },
@@ -163,6 +164,7 @@ function handleEvent(event) {
       updateLatency()
       break
     case 'assistant.cancelled':
+      stopAudio()
       finishStreaming('（已停止）')
       setBusy(false)
       break
@@ -196,6 +198,9 @@ function handleEvent(event) {
     case 'action.failed':
       noteAction(data.action, `执行失败：${data.action?.error || '未知错误'}`)
       closeModal()
+      break
+    case 'brief.ready':
+      appendMessage('assistant', `今日简报\n${data.brief?.headline || ''}\n${(data.brief?.items || []).map(item => `· ${item.text}`).join('\n')}`)
       break
     case 'proactive.message':
       appendMessage('assistant', `⏰ ${data.reminder?.text || '提醒你一件事'}`)
@@ -231,6 +236,14 @@ function updateAttention(snapshot) {
   if (snapshot.state === 'responding') orb.classList.add('responding')
 }
 
+function voiceLabel() {
+  if (!state.voice.asr) return '未启用'
+  if (state.voice.asrState === 'starting') return '加载中'
+  if (state.voice.asrState === 'error') return '异常'
+  if (state.voice.asrState === 'idle') return '待启动'
+  return '就绪'
+}
+
 function applyStatus(status = {}) {
   state.status = { ...state.status, ...status }
   if (status.voice) state.voice = status.voice
@@ -240,6 +253,27 @@ function applyStatus(status = {}) {
   const provider = state.status.provider === 'remote' ? '远端' : '本地'
   $('#model-pill').textContent = state.status.modelReady ? `${model} · ${provider}` : '模型未就绪'
   $('#model-pill').style.opacity = state.status.modelReady ? '1' : '0.6'
+  const asrStarting = state.voice.asrState === 'starting'
+  const mic = $('#mic-btn')
+  const orb = $('#orb')
+  if (mic) {
+    mic.disabled = asrStarting
+    mic.title = asrStarting ? '语音识别加载中…' : state.voice.asrState === 'error' ? '语音识别异常；仍可重试或直接打字' : '按住说话'
+    mic.setAttribute('aria-label', asrStarting ? '语音识别加载中' : state.voice.asrState === 'error' ? '语音识别异常' : '按下说话')
+  }
+  if (orb) {
+    orb.disabled = asrStarting
+    orb.title = asrStarting ? '语音识别加载中…' : '按下说话'
+  }
+  const hint = $('#state-hint')
+  if (hint) {
+    if (asrStarting) hint.textContent = '语音识别加载中，马上就好…'
+    else if (hint.dataset.asr === '1') {
+      hint.textContent = '说“看下这个”，或按住下方麦克风。'
+      delete hint.dataset.asr
+    }
+    if (asrStarting) hint.dataset.asr = '1'
+  }
   $('#memory-count').textContent = String(state.memory.length)
   $('#reminder-count').textContent = String(state.reminders.length)
   if (state.status.attention) updateAttention(state.status.attention)
@@ -328,11 +362,45 @@ function updateLatency() {
   state.requestStartedAt = 0
 }
 
+function looksLikeSenseRequest(text) {
+  return /(看|瞧|瞅).{0,8}(屏幕|桌面|摄像头|镜头)|看下这个|看看这个|what.*(screen|camera)/i.test(text)
+}
+
+function showSenseConsent(pendingText = '') {
+  openModal(`
+    <p class="eyebrow">SENSES / CONSENT</p>
+    <h3>只在需要时看，不连续录制</h3>
+    <p>屏幕通过系统门户单次截取；摄像头只取一张画面。画面保存在本机，1 小时后自动清理，你可以随时删除。</p>
+    <ul class="brief-list">
+      <li><b>屏幕</b>会先经过 GNOME 的共享确认；拒绝后我不会绕过。</li>
+      <li><b>摄像头</b>只取单帧，不录视频、不留连续画面。</li>
+      <li><b>黑名单</b>窗口会被拒绝；如果系统不提供窗口标题，我会在画面卡片里标注“标题未知”。</li>
+    </ul>
+    <div class="modal-actions">
+      <button class="primary" id="sense-allow" type="button">${pendingText ? '允许这次' : '知道了'}</button>
+      <button id="sense-always" type="button">以后不再提醒</button>
+      <button id="sense-cancel" type="button">取消</button>
+    </div>
+  `, '感官权限')
+  $('#sense-cancel').addEventListener('click', closeModal)
+  $('#sense-allow').addEventListener('click', () => { closeModal(); if (pendingText) sendText(pendingText, { skipConsent: true }) })
+  $('#sense-always').addEventListener('click', () => {
+    state.senseConsent = true
+    localStorage.setItem('jarvis_sense_consent', '1')
+    closeModal()
+    if (pendingText) sendText(pendingText, { skipConsent: true })
+  })
+}
+
 function sendText(text, options = {}) {
   const clean = text.trim()
   if (!clean) return
   if (state.busy && !options.force) {
     appendMessage('system', '我还在处理上一件事。先点停止，或者等我一下。')
+    return
+  }
+  if (!options.skipConsent && !state.senseConsent && looksLikeSenseRequest(clean)) {
+    showSenseConsent(clean)
     return
   }
   const input = $('#input')
@@ -534,7 +602,7 @@ function showAction(action) {
       <button class="primary" id="action-approve" type="button">允许一次</button>
       <button id="action-deny" type="button">拒绝</button>
     </div>
-  `)
+  `, '确认动作')
   const approve = $('#action-approve')
   const deny = $('#action-deny')
   approve.addEventListener('click', async () => {
@@ -568,7 +636,7 @@ function renderRuntime() {
     ['模型', state.status.model || '—'],
     ['模型来源', state.status.provider === 'remote' ? '远端' : '本地'],
     ['模型就绪', state.status.modelReady ? '是' : '否'],
-    ['语音识别', state.voice.asr ? '就绪' : '未就绪'],
+    ['语音识别', voiceLabel()],
     ['语音合成', state.voice.tts ? '就绪' : '未就绪'],
     ['注意力', state.attention.state || 'idle'],
     ['专注模式', state.focus ? '开' : '关'],
@@ -592,8 +660,24 @@ function showCapture(data) {
   $('#capture-image').src = data.url
   $('#capture-title').textContent = data.target === 'camera' ? '刚看了一眼摄像头' : '刚看了当前屏幕'
   const size = data.bytes ? `${Math.round(data.bytes / 1024)} KB` : ''
-  $('#capture-detail').textContent = `${data.source || 'portal'}${size ? ` · ${size}` : ''}`
+  const title = data.windowTitle ? ` · ${data.windowTitle}` : data.target === 'screen' ? ' · 窗口标题未知' : ''
+  $('#capture-detail').textContent = `${data.source || 'portal'}${size ? ` · ${size}` : ''}${title}`
   $('#capture-strip').hidden = false
+  $('#capture-delete').onclick = () => void deleteCapture(data.url)
+}
+
+async function deleteCapture(url) {
+  const name = String(url || '').split('/').pop()
+  if (!name) return
+  try {
+    await api(`/api/captures/${encodeURIComponent(name)}`, { method: 'DELETE' })
+    $('#capture-strip').hidden = true
+    $('#capture-image').removeAttribute('src')
+    state.captureUrl = ''
+    $('#hint').textContent = '画面已删除'
+  } catch (error) {
+    $('#hint').textContent = `删除失败：${error.message}`
+  }
 }
 
 function playAudio(url) {
@@ -636,6 +720,13 @@ function autoGrow(textarea) {
 
 async function startRecording() {
   if (state.recording) return
+  // Pressing the mic while Jarvis is thinking or speaking is a barge-in: stop
+  // the current turn on the server first, then record the next utterance.
+  if (state.busy || state.audioPlaying || state.audioQueue.length > 0) {
+    sendWs({ kind: 'cancel' })
+    setBusy(false)
+    state.sawAssistantEvent = false
+  }
   stopAudio()
   if (!navigator.mediaDevices?.getUserMedia || !window.MediaRecorder) {
     appendMessage('system', '这个浏览器不支持录音。请用 Chrome，或直接打字。')
@@ -692,7 +783,7 @@ async function finishRecording(chunks, mimeType) {
   }
   state.sawAssistantEvent = false
   setBusy(true)
-  $('#hint').textContent = '正在识别…'
+  $('#hint').textContent = state.voice.asrState === 'starting' ? '语音模型加载中，正在排队识别…' : '正在识别…'
   try {
     const response = await fetch('/api/voice', {
       method: 'POST',
@@ -753,7 +844,7 @@ function promptForToken() {
     <p>这台机器不是本机回环访问。输入 <code>~/.local/share/jarvis/data/auth-token</code> 里的令牌。</p>
     <div class="search-row"><input id="token-input" type="password" placeholder="粘贴令牌" autocomplete="off"></div>
     <button class="send-btn" id="token-save" type="button" style="width:auto;padding:0 14px;height:34px">保存并重连</button>
-  `)
+  `, '访问令牌')
   $('#token-save').addEventListener('click', () => {
     const value = $('#token-input').value.trim()
     if (!value) return
@@ -763,7 +854,41 @@ function promptForToken() {
   })
 }
 
-function openModal(html) {
+async function showBrief() {
+  try {
+    const brief = await api('/api/brief')
+    const items = (brief.items || []).map(item => `<li><b>${item.kind === 'calendar' ? '日程' : item.kind === 'reminder' ? '提醒' : '记忆'}</b> ${escapeHtml(item.text)}${item.detail ? `<small>${escapeHtml(item.detail)}</small>` : ''}</li>`).join('')
+    openModal(`
+      <p class="eyebrow">DAILY BRIEF · ${new Date().toLocaleDateString('zh-CN')}</p>
+      <h3>${escapeHtml(brief.greeting)}</h3>
+      <p>${escapeHtml(brief.headline)}</p>
+      ${items ? `<ul class="brief-list">${items}</ul>` : '<p class="muted small">日程和提醒会出现在这里。</p>'}
+      <div class="modal-actions">
+        <button class="primary" id="brief-read" type="button">朗读</button>
+        <button id="brief-close" type="button">关闭</button>
+      </div>
+    `, '今日简报')
+    $('#brief-close').addEventListener('click', closeModal)
+    $('#brief-read').addEventListener('click', async event => {
+      const button = event.currentTarget
+      button.disabled = true
+      button.textContent = '准备语音…'
+      try {
+        const result = await api('/api/brief/read', { method: 'POST', body: '{}' })
+        if (result.audioUrl) playAudio(result.audioUrl)
+        button.textContent = '已朗读'
+      } catch (error) {
+        button.disabled = false
+        button.textContent = `朗读失败：${error.message}`
+      }
+    })
+  } catch (error) {
+    appendMessage('system', `今日简报读取失败：${error.message}`)
+  }
+}
+
+function openModal(html, title = '设置') {
+  $('#modal-title').textContent = title
   $('#modal-body').innerHTML = html
   $('#modal').hidden = false
 }
@@ -838,17 +963,56 @@ async function showSettings() {
     <h3>本地运行时</h3>
     <div class="setting-row"><span>当前模型</span><span>${escapeHtml(status.model || selected.model || '—')} · ${status.provider === 'remote' ? '远端' : '本地'}</span></div>
     <div class="setting-row"><span>模型就绪</span><span>${status.modelReady ? '是' : '否'}</span></div>
-    <div class="setting-row"><span>语音识别</span><span>${state.voice.asr ? '就绪' : '未就绪'}</span></div>
+    <div class="setting-row"><span>语音识别</span><span>${voiceLabel()}</span></div>
     <div class="setting-row"><span>语音合成</span><span>${state.voice.tts ? '就绪' : '未就绪'}</span></div>
     <div class="setting-row"><span>注意力状态</span><span>${escapeHtml(state.attention.state || 'idle')}</span></div>
     <div class="setting-row"><span>专注模式</span><span>${state.focus ? '开' : '关'}</span></div>
+    <h3>设备</h3>
+    <p class="small muted">为手机或另一台电脑生成一次性配对码。设备令牌可单独撤销，不会暴露主令牌。</p>
+    <div class="device-list" id="device-list"><span class="muted small">读取中…</span></div>
+    <div class="privacy-actions">
+      <button class="model-action" id="device-pair" type="button">生成配对码</button>
+      <a class="model-action" href="/pair" target="_blank" rel="noopener">打开配对页</a>
+    </div>
+    <div id="pair-result" class="pair-result" hidden></div>
     <h3>隐私</h3>
     <p>屏幕走系统门户，按次授权；摄像头只取单帧；记忆默认只在本机 SQLite。模型上下文不包含标记为 sensitive / secret 的记忆。</p>
+    <button class="model-action" id="sense-explain" type="button" style="width:auto">查看感官权限说明</button>
     <p>远端模型会把当前对话与检索到的记忆上下文发送到你填写的服务商；切换前请确认其隐私政策。远端访问必须同时启用 TLS 和至少 24 字符的令牌。</p>
+    <div class="privacy-actions">
+      <button class="model-action" id="privacy-export" type="button">导出全部数据</button>
+      <button class="model-action danger" id="privacy-erase" type="button">删除全部对话与记忆</button>
+    </div>
+    <p class="small muted">删除会清空记忆、提醒、动作审计、语音与画面，并重置观察台历史；不可撤销。建议先导出。</p>
     <h3>诊断</h3>
     <p>终端运行 <code>npm run doctor</code> 可以检查模型、Whisper、Piper、屏幕门户和摄像头。</p>
   `)
   bindModelSettings(selected, settings)
+  void refreshDevices()
+}
+
+async function refreshDevices() {
+  const list = $('#device-list')
+  if (!list) return
+  try {
+    const data = await api('/api/devices')
+    const devices = data.devices || []
+    list.innerHTML = devices.length === 0
+      ? '<span class="muted small">还没有配对设备。主令牌仍然可用。</span>'
+      : devices.map(device => `<div class="device-row"><span><b>${escapeHtml(device.name)}</b><small>${device.revoked ? '已撤销' : `配对于 ${new Date(device.createdAt).toLocaleDateString('zh-CN')}`}</small></span><button class="model-action${device.revoked ? ' quiet' : ' danger'}" data-revoke-device="${escapeHtml(device.id)}" ${device.revoked ? 'disabled' : ''}>${device.revoked ? '已撤销' : '撤销'}</button></div>`).join('')
+    $$('[data-revoke-device]').forEach(button => button.addEventListener('click', async () => {
+      button.disabled = true
+      try {
+        await api(`/api/devices/${encodeURIComponent(button.dataset.revokeDevice)}`, { method: 'DELETE' })
+        await refreshDevices()
+      } catch (error) {
+        button.disabled = false
+        appendMessage('system', `撤销失败：${error.message}`)
+      }
+    }))
+  } catch (error) {
+    list.innerHTML = `<span class="muted small">读取设备失败：${escapeHtml(error.message)}</span>`
+  }
 }
 
 function bindModelSettings(selected, settings) {
@@ -874,6 +1038,59 @@ function bindModelSettings(selected, settings) {
       }
     })
   })
+  $('#device-pair')?.addEventListener('click', async event => {
+    const button = event.currentTarget
+    const name = window.prompt('给这台新设备起个名字（例如：我的手机）', '我的手机')
+    if (name === null) return
+    button.disabled = true
+    try {
+      const result = await api('/api/devices/pair', { method: 'POST', body: JSON.stringify({ name: name.trim() }) })
+      const box = $('#pair-result')
+      box.hidden = false
+      box.innerHTML = `<strong>${escapeHtml(result.code)}</strong><span>5 分钟内有效；在另一台设备打开 <code>${escapeHtml(location.origin)}/pair</code> 输入它。</span>`
+      button.disabled = false
+    } catch (error) {
+      button.disabled = false
+      appendMessage('system', `生成配对码失败：${error.message}`)
+    }
+  })
+  $('#privacy-export')?.addEventListener('click', async event => {
+    if (!window.confirm('导出文件包含全部记忆（包括 sensitive/secret）、提醒和回合摘要。请只保存在可信位置。继续？')) return
+    const button = event.currentTarget
+    button.disabled = true
+    try {
+      const data = await api('/api/privacy/export')
+      const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' })
+      const url = URL.createObjectURL(blob)
+      const link = document.createElement('a')
+      link.href = url
+      link.download = `jarvis-export-${new Date().toISOString().slice(0, 10)}.json`
+      link.click()
+      URL.revokeObjectURL(url)
+      button.textContent = '已导出'
+    } catch (error) {
+      button.disabled = false
+      button.textContent = `导出失败：${error.message}`
+    }
+  })
+  $('#privacy-erase')?.addEventListener('click', async event => {
+    const phrase = window.prompt('这会删除全部记忆、提醒、音频、画面、审计和观察台历史，并撤销已配对设备；不可撤销。\n输入“删除全部”确认。')
+    if (phrase !== '删除全部') return
+    const button = event.currentTarget
+    button.disabled = true
+    try {
+      const result = await api('/api/privacy/erase', { method: 'POST', body: JSON.stringify({ confirm: 'ERASE ALL' }) })
+      closeModal()
+      $('#capture-strip').hidden = true
+      $('#capture-image').removeAttribute('src')
+      await Promise.all([refreshMemory(), refreshReminders(), refreshStatus()])
+      appendMessage('system', `本机数据已删除：${result.erased?.items ?? 0} 条记忆、${result.erased?.reminders ?? 0} 个提醒。`)
+    } catch (error) {
+      button.disabled = false
+      appendMessage('system', `删除失败：${error.message}`)
+    }
+  })
+  $('#sense-explain')?.addEventListener('click', () => showSenseConsent())
   $('#model-test')?.addEventListener('click', async () => {
     const button = $('#model-test')
     const result = $('#model-result')
@@ -1026,6 +1243,7 @@ function bind() {
       input.setSelectionRange(input.value.length, input.value.length)
       autoGrow(input)
     }
+    if (action === 'brief') void showBrief()
   }))
   $$('.prompt-chips button').forEach(button => button.addEventListener('click', () => sendText(button.dataset.prompt)))
 
@@ -1068,6 +1286,11 @@ async function main() {
   tickClock()
   setInterval(tickClock, 15000)
   await bootstrap()
+  // The Whisper worker warms up in the background. Poll a few times so the
+  // "加载中" state clears promptly instead of waiting for the 30 s status poll.
+  setTimeout(() => void refreshStatus(), 2500)
+  setTimeout(() => void refreshStatus(), 7000)
+  setTimeout(() => void refreshStatus(), 12000)
   connect()
   setInterval(() => {
     if (state.wsReady) sendWs({ kind: 'ping' })

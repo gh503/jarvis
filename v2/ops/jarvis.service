@@ -1,0 +1,32 @@
+[Unit]
+Description=Jarvis v2 local-first personal assistant
+Documentation=https://github.com/gh503/jarvis
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=@REPO@
+ExecStart=@NODE@ --experimental-transform-types --enable-source-maps src/main.ts
+Environment=NODE_ENV=production
+Environment=JARVIS_DATA_DIR=@DATA@
+EnvironmentFile=-@REPO@/.env
+Restart=on-failure
+RestartSec=3
+KillMode=mixed
+TimeoutStopSec=15
+UMask=0077
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=@DATA@ @REPO@/data
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+LockPersonality=yes
+MemoryDenyWriteExecute=no
+
+[Install]
+WantedBy=default.target

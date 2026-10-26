@@ -5,6 +5,26 @@ import type { Capture } from './screen.ts'
 
 const MAX_IMAGE_BYTES = 12 * 1024 * 1024
 
+/** Keep the OCR prompt small enough for a 3B model on CPU/4 GB VRAM. */
+export function selectOcrExcerpt(text: string, query: string, maxChars = 2800): string {
+  if (text.length <= maxChars) return text
+  const lines = text.split(/\n+/).map(line => line.trim()).filter(Boolean)
+  const queryChars = new Set([...query].filter(char => /[\p{L}\p{N}]/u.test(char)))
+  const scored = lines.map((line, index) => ({
+    line, index,
+    score: [...queryChars].filter(char => line.includes(char)).length * 4 + (index < 8 ? 2 : 0),
+  })).sort((a, b) => b.score - a.score)
+  const chosen = new Set<number>()
+  let used = 0
+  for (const item of scored) {
+    if (used + item.line.length + 1 > maxChars) continue
+    chosen.add(item.index)
+    used += item.line.length + 1
+  }
+  if (chosen.size === 0) return text.slice(0, maxChars)
+  return lines.filter((_line, index) => chosen.has(index)).join('\n').slice(0, maxChars)
+}
+
 async function describeText(
   client: ModelClient,
   text: string,
@@ -21,11 +41,11 @@ async function describeText(
     `用户说：${userText || '帮我看看这个。'}`,
     '',
     'OCR 文字：',
-    text.slice(0, 7000),
+    selectOcrExcerpt(text, userText),
   ].join('\n')
   return await client.chatOnce([{ role: 'user', content: prompt }], {
     signal,
-    timeoutMs: 60_000,
+    timeoutMs: 35_000,
     temperature: 0.2,
     numCtx: 4096,
   })

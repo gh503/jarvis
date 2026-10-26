@@ -601,3 +601,11 @@ kbd { border: 1px solid var(--line); border-radius: 4px; padding: 1px 4px; font-
   .studio-nav-item strong { font-size: 11px; }
   .studio-rail-foot { margin-left: 4px; }
 }
+
+.trace-table { display: grid; gap: 5px; }
+.trace-row { display: grid; grid-template-columns: 72px 42px 48px 96px 96px minmax(0,1fr); align-items: center; gap: 8px; padding: 7px 9px; border: 1px solid var(--line); border-radius: 8px; font-size: 10.5px; color: var(--muted); }
+.trace-row .trace-time { color: var(--faint); }
+.trace-row .trace-source { color: var(--cyan); }
+.trace-row .trace-metric { font-variant-numeric: tabular-nums; }
+.trace-row .trace-text { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+@media (max-width: 760px) { .trace-row { grid-template-columns: 60px 36px 42px 1fr; } .trace-row .trace-metric:nth-of-type(2) { display: none; } .trace-row .trace-text { display: none; } }

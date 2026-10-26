@@ -5,6 +5,8 @@ import { ActionManager } from './actions.ts'
 import { Conversation } from './conversation.ts'
 import { EventBus } from './events.ts'
 import { createLogger, defaultLogFile } from './logger.ts'
+import { BriefScheduler } from './brief.ts'
+import { Notifier } from './notify.ts'
 import { TuningStore } from './tuning.ts'
 import { TelemetryCollector } from './telemetry.ts'
 import { MemoryStore } from './memory/store.ts'
@@ -16,6 +18,7 @@ import { CameraCapture } from './senses/camera.ts'
 import { OcrClient } from './senses/ocr.ts'
 import { ScreenCapture } from './senses/screen.ts'
 import { JarvisServer } from './server.ts'
+import { SecureFiles } from './secure-files.ts'
 import { WhisperTranscriber } from './voice/asr.ts'
 import { FasterWhisperTranscriber } from './voice/faster-whisper.ts'
 import { PiperSynthesizer } from './voice/tts.ts'
@@ -24,12 +27,16 @@ async function main(): Promise<void> {
   process.umask(0o077)
   const config = loadConfig()
   ensureRuntimeDirs(config)
+  const secure = new SecureFiles(config.dataDir)
+  secure.encryptDirectory(join(config.dataDir, 'captures'))
+  secure.encryptDirectory(join(config.dataDir, 'audio'))
+  secure.encryptJsonl(join(config.dataDir, 'telemetry.jsonl'))
   const logger = createLogger((process.env.JARVIS_LOG_LEVEL as 'debug' | 'info' | 'warn' | 'error' | undefined) ?? 'info', defaultLogFile(config.dataDir))
   const bus = new EventBus(300)
   const tuning = new TuningStore(join(config.dataDir, 'tuning.json'), config)
   await tuning.load()
   const attention = new AttentionManager(bus, tuning)
-  const telemetry = new TelemetryCollector(bus)
+  const telemetry = new TelemetryCollector(bus, { file: join(config.dataDir, 'telemetry.jsonl'), secure })
   const modelSettings = new ModelSettingsStore(join(config.dataDir, 'model-config.json'), {
     local: {
       baseUrl: config.ollama.url,
@@ -108,20 +115,35 @@ async function main(): Promise<void> {
     reminders,
     policy,
     tuning,
+    secure,
     logger: logger.child('conversation'),
   })
 
-  await conversation.initialize()
-  // The chat/TTS path is warm before the UI opens. Whisper/OCR workers start
-  // in the background so launch is not held hostage to their model load; by
-  // the time a person has clicked the mic they are normally ready.
+  // Start the slow local workers immediately, in parallel with the model and
+  // TTS warm-up. The HTTP server can open while Whisper is still loading; the
+  // status endpoint now reports `voice.asrState` so the UI can explain why the
+  // first utterance is queued instead of looking frozen.
   if (transcriber instanceof FasterWhisperTranscriber) {
     void transcriber.start().catch(error => logger.warn('ASR warm-up failed', { error: String(error) }))
   }
   void ocr.start().catch(error => logger.warn('OCR warm-up failed', { error: String(error) }))
+  await conversation.initialize()
 
   const scheduler = new ReminderScheduler(reminders, reminder => conversation.handleReminder(reminder), bus)
   scheduler.start()
+  const briefScheduler = new BriefScheduler(memory, reminders, bus, process.env.JARVIS_BRIEF_TIME || '08:30', process.env.JARVIS_CALENDAR_ICS, logger.child('brief'))
+  briefScheduler.start()
+  const notifier = new Notifier(logger.child('notify'))
+  bus.on('reminder.due', event => {
+    if (policy.isQuiet() || policy.isFocus()) return
+    const reminder = (event.data as { reminder?: { text?: string } }).reminder
+    if (reminder?.text) notifier.send('Jarvis · 提醒', reminder.text)
+  })
+  bus.on('brief.ready', event => {
+    if (policy.isQuiet() || policy.isFocus()) return
+    const brief = (event.data as { brief?: { headline?: string } }).brief
+    if (brief?.headline) notifier.send('Jarvis · 今日简报', brief.headline)
+  })
 
   const server = new JarvisServer({
     config,
@@ -136,6 +158,7 @@ async function main(): Promise<void> {
     memory,
     reminders,
     policy,
+    secure,
     logger: logger.child('server'),
   })
   const { url } = await server.start()
@@ -155,13 +178,30 @@ async function main(): Promise<void> {
   }, 30 * 60 * 1000)
   cleanup.unref()
 
+  // Consolidation is a background maintenance job, never on the chat path.
+  // Exact duplicates, supersedes chains and expired proposals are safe to
+  // retire automatically; the evidence stays in memory_events.
+  const consolidate = setInterval(() => {
+    void memory.consolidate()
+      .then(stats => logger.info('memory consolidated', { ...stats }))
+      .catch(error => logger.warn('memory consolidation failed', { error: String(error) }))
+  }, 6 * 60 * 60 * 1000)
+  consolidate.unref()
+  setTimeout(() => {
+    void memory.consolidate()
+      .then(stats => logger.info('memory consolidated', { ...stats }))
+      .catch(error => logger.warn('memory consolidation failed', { error: String(error) }))
+  }, 5 * 60 * 1000).unref()
+
   let stopping = false
   const shutdown = async (signal: string): Promise<void> => {
     if (stopping) return
     stopping = true
     logger.info('shutting down', { signal })
     clearInterval(cleanup)
+    clearInterval(consolidate)
     scheduler.stop()
+    briefScheduler.stop()
     conversation.cancel()
     await server.close().catch(() => undefined)
     await transcriber.close?.().catch(() => undefined)

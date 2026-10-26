@@ -129,3 +129,47 @@ test('episodes are stored separately from semantic memories', async () => {
   assert.equal(db.stats().episodes, 1)
   db.close()
 })
+
+test('consolidation retires stale proposals with an audit event', async () => {
+  let clock = new Date('2026-10-26T09:00:00+08:00')
+  const db = new MemoryStore({ file: ':memory:', embedder: new HashEmbedder(), now: () => clock })
+  await db.add({ kind: 'semantic', content: '我可能会搬到成都。', sourceKind: 'inferred', sourceRef: 'test', status: 'proposed' })
+  clock = new Date('2026-12-01T09:00:00+08:00')
+  const stats = await db.consolidate()
+  assert.equal(stats.expiredProposals, 1)
+  assert.equal(db.list({ includeInactive: true })[0]?.status, 'rejected')
+  db.close()
+})
+
+test('consolidation follows supersedes edges from imports', async () => {
+  const db = store()
+  const old = await db.add({ kind: 'semantic', content: '项目代号是 A。', sourceKind: 'user-stated', sourceRef: 'a', status: 'confirmed' })
+  await db.add({ kind: 'semantic', content: '项目代号是 B。', sourceKind: 'user-stated', sourceRef: 'b', status: 'confirmed', supersedesId: old.id })
+  const stats = await db.consolidate()
+  assert.equal(stats.superseded, 1)
+  assert.equal(db.get(old.id)?.status, 'superseded')
+  assert.ok(db.get(old.id)?.validTo)
+  db.close()
+})
+
+test('dedupe links the retired row to its replacement', async () => {
+  const db = store()
+  const first = await db.add({ kind: 'semantic', content: '重复的偏好。', sourceKind: 'user-stated', sourceRef: 'a', status: 'confirmed' })
+  await new Promise(resolve => setTimeout(resolve, 5))
+  const second = await db.add({ kind: 'semantic', content: '重复的偏好。', sourceKind: 'user-stated', sourceRef: 'b', status: 'confirmed' })
+  await db.consolidate()
+  assert.equal(db.get(first.id)?.supersedesId, second.id)
+  db.close()
+})
+
+test('eraseAll removes memories, episodes, links and reminders', async () => {
+  const db = new MemoryStore({ file: ':memory:', embedder: new HashEmbedder(), now })
+  const item = await db.add({ kind: 'semantic', content: '隐私擦除测试。', sourceKind: 'user-confirmed', sourceRef: 'test', status: 'confirmed' })
+  db.addEpisode({ startedAt: now().toISOString(), endedAt: now().toISOString(), summary: '一次测试对话', sourceRef: 'test' })
+  const counts = db.eraseAll()
+  assert.equal(counts.items, 1)
+  assert.equal(counts.episodes, 1)
+  assert.equal(db.get(item.id), null)
+  assert.equal(db.list({ limit: 10 }).length, 0)
+  db.close()
+})

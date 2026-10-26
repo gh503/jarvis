@@ -12,11 +12,11 @@ export class CameraCapture {
     private readonly logger?: Logger,
   ) {}
 
-  async capture(outputDir: string, device = '/dev/video0'): Promise<Capture> {
+  async capture(outputDir: string, device = process.env.JARVIS_CAMERA_DEVICE || '/dev/video0'): Promise<Capture> {
     try {
       await access(device)
     } catch {
-      throw new Error(`摄像头不可用：${device} 不存在`)
+      throw new Error(`摄像头不可用：${device} 不存在。可以用 JARVIS_CAMERA_DEVICE 指定设备。`)
     }
     await mkdir(outputDir, { recursive: true, mode: 0o700 })
     const output = join(outputDir, `camera-${Date.now()}.jpg`)

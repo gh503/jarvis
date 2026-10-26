@@ -5,6 +5,7 @@ import type { Logger } from '../logger.ts'
 import type { EventBus } from '../events.ts'
 import type { TuningStore } from '../tuning.ts'
 import { NullEmbedder, cosineSimilarity, decodeEmbedding, encodeEmbedding } from './embedding.ts'
+import { conflictCandidates } from './update.ts'
 import {
   classifyQuery,
   confidenceFrom,
@@ -283,6 +284,20 @@ export class MemoryStore {
     }
     this.insertItem(item, embedding)
     this.event(item.id, 'created', item.sourceKind)
+    if (input.resolveConflicts && item.status === 'confirmed') {
+      const conflicts = conflictCandidates(item.content, this.list({ includeSensitive: true, includeInactive: false, limit: 200 }))
+        .filter(old => old.id !== item.id)
+      if (conflicts.length > 0) {
+        const at = this.at()
+        for (const old of conflicts) {
+          this.db.prepare("UPDATE memory_items SET status = 'superseded', valid_to = COALESCE(valid_to, ?), updated_at = ? WHERE id = ?").run(at, at, old.id)
+          this.event(old.id, 'superseded_by_update', item.id)
+        }
+        const newest = conflicts[conflicts.length - 1]
+        this.db.prepare('UPDATE memory_items SET supersedes_id = ? WHERE id = ?').run(newest.id, item.id)
+        item.supersedesId = newest.id
+      }
+    }
     this.bus?.emit('memory.added', { item })
     return item
   }
@@ -423,9 +438,10 @@ export class MemoryStore {
       .slice(0, limit)
   }
 
-  private activeRowsForVector(limit = MAX_VECTOR_SCAN): Row[] {
+  private activeRowsForVector(limit = MAX_VECTOR_SCAN, includeProposed = false): Row[] {
+    const statuses = includeProposed ? "status IN ('confirmed','proposed')" : "status = 'confirmed'"
     return this.db.prepare(
-      "SELECT * FROM memory_items WHERE status = 'confirmed' AND (valid_to IS NULL OR valid_to > ?) AND embedding IS NOT NULL ORDER BY pinned DESC, updated_at DESC LIMIT ?",
+      `SELECT * FROM memory_items WHERE ${statuses} AND (valid_to IS NULL OR valid_to > ?) AND embedding IS NOT NULL ORDER BY pinned DESC, updated_at DESC LIMIT ?`,
     ).all(this.at(), limit) as Row[]
   }
 
@@ -454,19 +470,24 @@ export class MemoryStore {
       this.logger?.warn('query embedding failed; using lexical recall', { error: String(error) })
     }
     if (queryVector) {
-      for (const row of this.activeRowsForVector()) {
+      for (const row of this.activeRowsForVector(MAX_VECTOR_SCAN, effectiveOptions.includeProposed)) {
         const item = this.rowToItem(row)
         if (item.sensitivity === 'secret' && !options.includeSensitive) continue
         const vector = this.embeddingOf(row)
         if (!vector) continue
         const semantic = Math.max(0, cosineSimilarity(queryVector, vector))
-        if (semantic < minVectorSimilarity) continue
+        const lexical = lexicallyRelated(query, item, lexicalThreshold)
+        // Vector similarity is a useful gate for paraphrase, but an exact
+        // lexical match must not be discarded just because the embedding model
+        // scores a short Chinese question low. Keep either signal.
+        if (semantic < minVectorSimilarity && !lexical) continue
         const existing = candidates.get(item.id)
         if (existing) {
           existing.semantic = Math.max(existing.semantic, semantic)
           if (semantic > 0.3) existing.why.push('vector')
-        } else if (lexicallyRelated(query, item, lexicalThreshold)) {
-          candidates.set(item.id, { item, semantic, why: ['vector'] })
+          if (lexical) existing.why.push('lexical')
+        } else {
+          candidates.set(item.id, { item, semantic, why: [lexical ? 'lexical' : 'vector'] })
         }
       }
     }
@@ -611,7 +632,10 @@ export class MemoryStore {
     const at = this.at()
     const now = this.now().getTime()
     let expired = 0
+    let expiredProposals = 0
     let deduped = 0
+    let superseded = 0
+    let embedded = 0
     let projected = 0
 
     const expiring = this.db.prepare(
@@ -622,8 +646,36 @@ export class MemoryStore {
       expired += 1
     }
 
+    // A proposed memory is a suggestion, not a fact. If nobody confirmed or
+    // rejected it for 30 days, retire it instead of letting the recall pool
+    // fill with stale model guesses. The old row and event remain auditable.
+    const proposalCutoff = new Date(this.now().getTime() - 30 * 86_400_000).toISOString()
+    const staleProposals = this.db.prepare(
+      "SELECT id FROM memory_items WHERE status = 'proposed' AND created_at <= ?",
+    ).all(proposalCutoff) as Row[]
+    for (const row of staleProposals) {
+      this.db.prepare("UPDATE memory_items SET status = 'rejected', updated_at = ? WHERE id = ?").run(at, text(row.id))
+      this.event(text(row.id), 'proposal_expired', '30d')
+      expiredProposals += 1
+    }
+
+    // Follow explicit supersedes edges that may have arrived through import or
+    // an older app version. The predecessor must never stay active beside its
+    // replacement.
+    const linked = this.db.prepare(
+      "SELECT id, supersedes_id FROM memory_items WHERE supersedes_id IS NOT NULL AND status IN ('confirmed','proposed')",
+    ).all() as Row[]
+    for (const row of linked) {
+      const oldId = text(row.supersedes_id)
+      const old = this.get(oldId)
+      if (!old || (old.status !== 'confirmed' && old.status !== 'proposed')) continue
+      this.db.prepare("UPDATE memory_items SET status = 'superseded', valid_to = COALESCE(valid_to, ?), updated_at = ? WHERE id = ?").run(at, at, oldId)
+      this.event(oldId, 'superseded', text(row.id))
+      superseded += 1
+    }
+
     const rows = this.db.prepare(
-      "SELECT id, content, created_at FROM memory_items WHERE status = 'confirmed' ORDER BY created_at DESC",
+      "SELECT id, content, created_at FROM memory_items WHERE status = 'confirmed' ORDER BY created_at DESC, rowid DESC",
     ).all() as Row[]
     const seen = new Map<string, string>()
     for (const row of rows) {
@@ -632,8 +684,9 @@ export class MemoryStore {
       if (existing) {
         // Rows are ordered newest first; keep the newest item and retire the
         // older duplicate, not the other way around.
-        this.db.prepare("UPDATE memory_items SET status = 'superseded', valid_to = ?, updated_at = ? WHERE id = ?").run(
+        this.db.prepare("UPDATE memory_items SET status = 'superseded', valid_to = ?, supersedes_id = ?, updated_at = ? WHERE id = ?").run(
           at,
+          existing,
           at,
           text(row.id),
         )
@@ -641,6 +694,24 @@ export class MemoryStore {
         deduped += 1
       } else {
         seen.set(content, text(row.id))
+      }
+    }
+
+    // Repair vectors for imported or degraded rows. This is deliberately
+    // bounded so consolidation never turns into an unbounded model job.
+    const missingVectors = this.db.prepare(
+      "SELECT * FROM memory_items WHERE status IN ('confirmed','proposed') AND embedding IS NULL LIMIT 100",
+    ).all() as Row[]
+    for (const row of missingVectors) {
+      const item = this.rowToItem(row)
+      try {
+        const vector = await this.embedder.embed(`${item.gist}\n${item.content}`)
+        if (vector) {
+          this.db.prepare('UPDATE memory_items SET embedding = ? WHERE id = ?').run(encodeEmbedding(vector), item.id)
+          embedded += 1
+        }
+      } catch (error) {
+        this.logger?.warn('consolidation embedding failed', { id: item.id, error: String(error) })
       }
     }
 
@@ -654,7 +725,7 @@ export class MemoryStore {
     // Keep the token budget honest: old, low-value, unpinned items naturally
     // rank lower because strength decays; we do not destroy them.
     void now
-    const stats = { expired, deduped, projected, durationMs: Date.now() - started }
+    const stats = { expired, expiredProposals, deduped, superseded, embedded, projected, durationMs: Date.now() - started }
     this.bus?.emit('memory.consolidated', stats)
     return stats
   }
@@ -791,6 +862,32 @@ export class MemoryStore {
       embedded: num(row.embedded),
       episodes: num(episodes.n),
     }
+  }
+
+  eraseAll(): { items: number; episodes: number; reminders: number; links: number; events: number } {
+    const count = (table: string): number => {
+      const row = this.db.prepare(`SELECT COUNT(*) AS n FROM ${table}`).get() as Record<string, unknown>
+      return num(row.n)
+    }
+    const result = {
+      items: count('memory_items'),
+      episodes: count('memory_episodes'),
+      reminders: count('reminders'),
+      links: count('memory_links'),
+      events: count('memory_events'),
+    }
+    this.db.exec(`
+      DELETE FROM memory_links;
+      DELETE FROM memory_events;
+      DELETE FROM memory_entities;
+      DELETE FROM memory_fts;
+      DELETE FROM memory_items;
+      DELETE FROM memory_episodes;
+      DELETE FROM reminders;
+    `)
+    this.db.exec('VACUUM')
+    this.bus?.emit('memory.erased', result)
+    return result
   }
 
   exportAll(): { version: 2; exportedAt: string; items: MemoryItem[]; episodes: Episode[] } {

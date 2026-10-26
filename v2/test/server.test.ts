@@ -1,6 +1,6 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { mkdtemp, rm } from 'node:fs/promises'
+import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 import { ActionManager } from '../src/actions.ts'
@@ -18,6 +18,7 @@ import { TelemetryCollector } from '../src/telemetry.ts'
 import { ProactivePolicy } from '../src/proactive/policy.ts'
 import { ReminderStore } from '../src/proactive/reminders.ts'
 import { JarvisServer } from '../src/server.ts'
+import { SecureFiles } from '../src/secure-files.ts'
 import { WebSocket } from 'ws'
 
 function testConfig(dataDir: string): JarvisConfig {
@@ -49,7 +50,7 @@ test('server enforces proxy auth, CSRF and serves the shell', async () => {
   const config = testConfig(dir)
   const bus = new EventBus()
   const memory = new MemoryStore({ file: join(dir, 'jarvis.db'), embedder: new NullEmbedder() })
-  await memory.add({ kind: 'semantic', content: '测试记忆：观察台需要可读。', sourceKind: 'user-confirmed', sourceRef: 'test', status: 'confirmed' })
+  await memory.add({ kind: 'semantic', content: '测试记忆：观察台需要可读。', sourceKind: 'user-confirmed', sourceRef: 'test', status: 'confirmed', importance: { goal: 0.9 } })
   const reminders = new ReminderStore(join(dir, 'jarvis.db'))
   const actions = new ActionManager({ auditFile: join(dir, 'audit', 'actions.jsonl'), runner: async () => {} })
   const conversation = {
@@ -89,10 +90,15 @@ test('server enforces proxy auth, CSRF and serves the shell', async () => {
     memory,
     reminders,
     policy: new ProactivePolicy(config),
+    secure: new SecureFiles(config.dataDir),
     logger,
   })
   const { url } = await server.start()
   try {
+    const pairPage = await fetch(`${url}/pair`)
+    assert.equal(pairPage.status, 200)
+    assert.match(await pairPage.text(), /DEVICE PAIRING/)
+
     const shell = await fetch(`${url}/`)
     assert.equal(shell.status, 200)
     assert.equal(shell.headers.get('cache-control'), 'no-cache')
@@ -149,10 +155,58 @@ test('server enforces proxy auth, CSRF and serves the shell', async () => {
     const demoGuard = await fetch(`${url}/api/dev/demo-memory`, { method: 'POST' })
     assert.equal(demoGuard.status, 403)
 
+    const brief = await fetch(`${url}/api/brief`)
+    assert.equal(brief.status, 200)
+    const briefBody = await brief.json() as { greeting?: string; stats?: { memories?: number } }
+    assert.ok(briefBody.greeting)
+    assert.equal(briefBody.stats?.memories, 1)
+
+    const traces = await fetch(`${url}/api/traces?limit=5`)
+    assert.equal(traces.status, 200)
+    assert.deepEqual(await traces.json(), { traces: [] })
+
+    const consolidate = await fetch(`${url}/api/memory/consolidate`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: '{}' })
+    assert.equal(consolidate.status, 200)
+    const consolidBody = await consolidate.json() as { ok?: boolean }
+    assert.equal(consolidBody.ok, true)
+
+    const secure = new SecureFiles(config.dataDir)
+    await mkdir(join(config.dataDir, 'captures'), { recursive: true })
+    const encryptedName = 'encrypted.png'
+    await writeFile(join(config.dataDir, 'captures', encryptedName), Buffer.from('fake-png-bytes'))
+    await secure.encryptFile(join(config.dataDir, 'captures', encryptedName))
+    const encryptedRead = await fetch(`${url}/api/captures/${encryptedName}`)
+    assert.equal(encryptedRead.status, 200)
+    assert.equal(Buffer.from(await encryptedRead.arrayBuffer()).toString(), 'fake-png-bytes')
+
+    const captureDelete = await fetch(`${url}/api/captures/does-not-exist.png`, { method: 'DELETE' })
+    assert.equal(captureDelete.status, 200)
+    const captureTraversal = await fetch(`${url}/api/captures/..%2Fsecret`, { method: 'DELETE' })
+    assert.equal(captureTraversal.status, 400)
+
     const graph = await fetch(`${url}/api/memory/graph`)
     assert.equal(graph.status, 200)
     const graphBody = await graph.json() as { nodes?: unknown[] }
     assert.equal(graphBody.nodes?.length, 1)
+
+    const pair = await fetch(`${url}/api/devices/pair`, {
+      method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ name: 'test phone' }),
+    })
+    assert.equal(pair.status, 200)
+    const pairBody = await pair.json() as { code?: string }
+    assert.match(pairBody.code ?? '', /^\d{6}$/)
+    const claim = await fetch(`${url}/api/devices/claim`, {
+      method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ code: pairBody.code, name: 'test phone' }),
+    })
+    assert.equal(claim.status, 200)
+    const claimBody = await claim.json() as { token?: string; device?: { id?: string } }
+    assert.ok(claimBody.token)
+    const deviceHealth = await fetch(`${url}/api/health`, { headers: { 'x-forwarded-for': '203.0.113.9', authorization: `Bearer ${claimBody.token}` } })
+    assert.equal(deviceHealth.status, 200)
+    const revoke = await fetch(`${url}/api/devices/${claimBody.device?.id}`, { method: 'DELETE' })
+    assert.equal(revoke.status, 200)
+    const revokedHealth = await fetch(`${url}/api/health`, { headers: { 'x-forwarded-for': '203.0.113.9', authorization: `Bearer ${claimBody.token}` } })
+    assert.equal(revokedHealth.status, 401)
 
     const noKeyRemote = await fetch(`${url}/api/model/activate`, {
       method: 'POST',

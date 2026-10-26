@@ -16,6 +16,7 @@
 - Web UI 同时有记忆面板、提醒面板、专注模式、停止按钮和实时注意力状态。
 
 默认只监听 `127.0.0.1`。没有云端 API key 也能完整运行。
+威胁模型、静态加密范围与残余风险见 [security.md](security.md)。
 
 ## 2. 当前机器的安装结果
 
@@ -62,7 +63,34 @@ bash scripts/install-desktop.sh --autostart
 ```bash
 bash scripts/install-service.sh
 systemctl --user status jarvis.service
+journalctl --user -u jarvis -f
 ```
+
+`install-service.sh` 会写入 `~/.config/systemd/user/jarvis.service`，使用当前
+`node` 绝对路径、`UMask=0077`、`NoNewPrivileges`、`ProtectSystem=strict` 和
+`ProtectHome=read-only`（只开放数据目录写入）。如果 3081 已被开发进程占用，
+安装器只安装不启动，避免两个实例同时写同一个 SQLite。
+
+备份（服务运行时也可以，SQLite 使用 `VACUUM INTO` 生成一致快照）：
+
+```bash
+cd ~/jarvis/v2
+npm run backup -- ~/jarvis-backup.tar.gz
+# 归档含 jarvis.db、tuning.json、manifest.json；不含 auth-token、音频、画面、日志
+# 需要连模型 Key 一起备份时加 --include-secrets（文件仍是 0600）
+```
+
+恢复（会覆盖本机数据，必须先停服务）：
+
+```bash
+systemctl --user stop jarvis.service   # 或停掉开发进程
+npm run restore -- ~/jarvis-backup.tar.gz --yes
+systemctl --user start jarvis.service
+```
+
+恢复前会检查 `PRAGMA integrity_check`，并把当前数据复制到
+`~/.local/share/jarvis/data.pre-restore-<时间>`。检测到 `src/main.ts`
+仍在运行时会拒绝执行。
 
 Ollama 需要先运行。当前环境用：
 
@@ -139,6 +167,27 @@ JARVIS_TLS_KEY=/home/you/.config/jarvis/key.pem
 PWA 可以安装到手机主屏；第一版远程只支持 HTTP/WS + PWA，不包含 WebRTC
 把手机摄像头当远端输入。
 
+### 5.0 桌面快捷键
+
+```bash
+bash scripts/install-hotkey.sh '<Super>j'
+```
+
+只在 GNOME/Unity 下写入 `org.gnome.settings-daemon.plugins.media-keys` 的自定义
+快捷键；命令是 `xdg-open http://127.0.0.1:3081`，不会启动第二个服务。Wayland
+下是否能把已有窗口提到前台由桌面决定；最稳妥的是把 PWA 安装到独立窗口后使用。
+
+### 5.1 设备配对与撤销
+
+在已登录的桌面端打开 **设置 → 设备 → 生成配对码**，得到 6 位一次性配对码
+（5 分钟有效、最多尝试 5 次）。在手机/另一台电脑打开
+`https://<host>:3081/pair`，输入配对码和设备名即可。成功后服务端设置
+HttpOnly、SameSite=Strict 的 Cookie 并跳回首页；令牌只在配对响应中出现一次。
+
+设备令牌以 SHA-256 哈希保存在 `data/devices.json`（0600），可在同一设置面板
+逐个撤销；撤销立即生效。设备令牌目前等价于主令牌（全权限），不要把它当成
+受限子账户。
+
 ## 6. 隐私边界
 
 - **屏幕**：只通过 `org.freedesktop.portal.Screenshot` 单次授权；Jarvis 不读
@@ -153,6 +202,14 @@ PWA 可以安装到手机主屏；第一版远程只支持 HTTP/WS + PWA，不�
   不会把完整对话写进日志。
 - **默认静默**：主动提醒先过 `ProactivePolicy`（专注模式、免打扰时段、
   每日语音预算）；被拦下时只进入面板，不出声。
+- **画面留存**：`data/captures` 只保留 1 小时，音频保留 6 小时；画面卡片
+  显示“只在本机 · 1 小时后自动删除”，并提供单张删除按钮。删除接口拒绝
+  路径穿越。
+- **每日简报**：08:30 生成本地规则简报（提醒 + 相关记忆 + 可选只读 ICS），
+  通过 WebSocket 和桌面通知送达；不调用云端模型。
+- **数据导出/擦除**：设置 → 隐私 → 导出全部数据（JSON）；“删除全部本机数据”
+  会清空记忆、提醒、动作审计、音频、画面和 trace，必须输入中文确认短语，
+  不可撤销。
 
 Wayland 下拿不到活动窗口标题（`xdotool` 对原生 Wayland 失败，
 `org.gnome.Shell.Eval` 返回 false），因此窗口级黑名单目前只能在能拿到标题的
@@ -165,8 +222,9 @@ X11/XWayland 场景生效；真正的强制点是 portal 的按次授权。不�
 |---|---|
 | 文字回答（热） | ~0.8–1.5 s |
 | 文字回答（模型冷启动） | 4–9 s；服务启动时会先预热，预热完成后 UI 才开始接受请求 |
-| 语音首句（热） | ~3–4 s：ASR ~2 s + LLM ~1 s + 首句 Piper ~1 s |
-| 语音整轮（热） | ~6–8 s；文本先流式出现，音频按短句排队播放 |
+| 语音首句（热） | ~2–3 s：ASR ~1.3 s + LLM 首字 ~0.5 s + 首段 Piper ~1 s |
+| 语音整轮（热） | ~2.5–4 s（1.5 s 音频实测 2.57 s）；文本先流式出现，音频按短句排队播放 |
+| ASR 冷启动 | ~3–4 s 模型加载 + ~1 s 推理预热；启动日志 `loadMs/warmupMs`，期间 `asrState=starting` |
 | OCR 一帧 | 4–8 s（RapidOCR CPU） |
 | 屏幕 OCR + 回答 | ~8–16 s |
 | qwen2.5vl 3B 视觉 | 40–150 s，4 GB 显存下会 CPU/GPU 分层 |
@@ -191,6 +249,14 @@ npm run typecheck
 npm test
 npm run doctor
 curl -s http://127.0.0.1:3081/api/health
+
+# 记忆回归评测（11 条；弃权/隐私/候选/更新）
+npm run memory:eval
+
+# 每日简报 / 持久化回合 / 设备 / 隐私
+curl -s http://127.0.0.1:3081/api/brief
+curl -s 'http://127.0.0.1:3081/api/traces?limit=20'
+curl -s http://127.0.0.1:3081/api/devices
 
 # 文字 + 记忆
 curl -s -X POST http://127.0.0.1:3081/api/chat \

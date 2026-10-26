@@ -3,7 +3,10 @@
 set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 DATA="${JARVIS_DATA_DIR:-$HOME/.local/share/jarvis/data}"
-URL="http://127.0.0.1:${JARVIS_PORT:-3081}"
+PORT="${JARVIS_PORT:-3081}"
+URL="http://127.0.0.1:${PORT}"
+export JARVIS_DATA_DIR="$DATA"
+export JARVIS_PORT="$PORT"
 mkdir -p "$DATA/run"
 
 if ! curl -fsS --noproxy '*' "$URL/api/health" >/dev/null 2>&1; then

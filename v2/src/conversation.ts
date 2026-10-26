@@ -9,6 +9,7 @@ import type { ChatMessage, ModelClient } from './model/ollama.ts'
 import type { MemoryItem, RecallResult } from './memory/types.ts'
 import type { MemoryStore } from './memory/store.ts'
 import { MemoryExtractor } from './memory/extract.ts'
+import { conflictCandidates } from './memory/update.ts'
 import type { CameraCapture } from './senses/camera.ts'
 import type { ScreenCapture } from './senses/screen.ts'
 import { describeCapture } from './senses/vision.ts'
@@ -20,6 +21,7 @@ import type { Reminder, ReminderStore } from './proactive/reminders.ts'
 import type { ProactivePolicy } from './proactive/policy.ts'
 import type { Capture } from './senses/screen.ts'
 import type { TuningStore } from './tuning.ts'
+import type { SecureFiles } from './secure-files.ts'
 
 export interface ConversationDeps {
   config: JarvisConfig
@@ -36,6 +38,7 @@ export interface ConversationDeps {
   reminders: ReminderStore
   policy: ProactivePolicy
   tuning: TuningStore
+  secure: SecureFiles
   logger: Logger
 }
 
@@ -55,6 +58,7 @@ export interface TurnResult {
   contextUsed?: string[]
   audioSpoken?: boolean
   error?: string
+  cancelled?: boolean
 }
 
 interface Intent {
@@ -112,6 +116,7 @@ export class Conversation {
   private lastHealth: { ok: boolean; models: string[]; error?: string } = { ok: false, models: [] }
   private turnId = ''
   private turnStartedAt = 0
+  private speechEpoch = 0
 
   constructor(private readonly deps: ConversationDeps) {
     this.extractor = new MemoryExtractor(deps.model, deps.memory, deps.logger)
@@ -148,7 +153,11 @@ export class Conversation {
     }
     this.deps.bus.emit('runtime.ready', {
       modelReady: this.modelReady,
-      voice: this.voiceReady,
+      voice: {
+        ...this.voiceReady,
+        asrState: this.deps.transcriber.state?.().state ?? (this.voiceReady.asr ? 'ready' : 'unavailable'),
+        asrError: this.deps.transcriber.state?.().error ?? null,
+      },
     })
   }
 
@@ -162,7 +171,11 @@ export class Conversation {
       providerLabel: modelStatus?.label ?? '本地 Ollama',
       baseUrl: modelStatus?.baseUrl ?? '',
       models: this.lastHealth.models,
-      voice: this.voiceReady,
+      voice: {
+        ...this.voiceReady,
+        asrState: this.deps.transcriber.state?.().state ?? (this.voiceReady.asr ? 'ready' : 'unavailable'),
+        asrError: this.deps.transcriber.state?.().error ?? null,
+      },
       ollamaOk: this.lastHealth.ok,
       ollamaError: this.lastHealth.error ?? null,
       busy: this.busy,
@@ -174,6 +187,10 @@ export class Conversation {
 
   async reconfigureVoice(): Promise<void> {
     await this.deps.synthesizer.reconfigure()
+  }
+
+  async speakText(text: string): Promise<string | undefined> {
+    return await this.speak(text)
   }
 
   async refreshModel(): Promise<boolean> {
@@ -222,6 +239,7 @@ export class Conversation {
     this.busy = true
     this.abort = new AbortController()
     this.turnAudioUrls = []
+    const turnEpoch = ++this.speechEpoch
     this.turnId = options.turnId ?? randomUUID()
     if (!options.turnId) this.turnStartedAt = Date.now()
     this.deps.policy.noteInteraction()
@@ -236,10 +254,12 @@ export class Conversation {
       if (!options.skipAttention) await this.prepareUnderstanding()
       this.deps.bus.emit('user.message', { text, source: options.source ?? 'text' })
       const intent = intentOf(text)
-      const result = await this.route(intent, text, options)
+      const update = intent.type === 'chat' ? await this.resolveStatementUpdate(text) : null
+      const result = update ?? await this.route(intent, text, options)
       const reply = result.reply.trim() || '我在。'
       const wantsVoice = Boolean(options.voice || intent.type === 'look')
-      const audioUrl = wantsVoice && !result.audioSpoken ? await this.speak(reply) : undefined
+      const audioUrl = wantsVoice && !result.audioSpoken && turnEpoch === this.speechEpoch ? await this.speak(reply) : undefined
+      if (turnEpoch !== this.speechEpoch) return { ...result, reply, audioUrl: undefined, cancelled: true }
       this.history.push({ role: 'user', content: text })
       this.history.push({ role: 'assistant', content: reply })
       const maxHistory = Math.max(2, Math.round(this.deps.tuning.number('conversation.maxHistory')))
@@ -272,6 +292,35 @@ export class Conversation {
     } finally {
       this.busy = false
       this.abort = null
+    }
+  }
+
+  /**
+   * A plain-language update ("我搬到杭州了") should not leave two contradictory
+   * facts active just because the user did not prefix it with "记住". This is
+   * deliberately limited to a high-confidence subject/value parse and a real
+   * conflict; everything else goes through the normal chat/extractor path.
+   */
+  private async resolveStatementUpdate(text: string): Promise<TurnResult | null> {
+    if (text.length > 180 || /[?？]\s*$/.test(text) || /(哪里|什么|为什么|怎么|吗|呢)/.test(text)) return null
+    const candidates = conflictCandidates(text, this.deps.memory.list({ includeSensitive: true, limit: 200 }))
+      .filter(item => item.kind === 'semantic')
+    if (candidates.length === 0) return null
+    const item = await this.deps.memory.add({
+      kind: 'semantic',
+      content: text,
+      sourceKind: 'user-stated',
+      sourceRef: `update:${new Date().toISOString()}`,
+      trust: 'high',
+      confidence: 0.95,
+      importance: { explicit: 0.9, goal: 0.7, social: 0.5, novelty: 0.4, repetition: 0.5, deadline: 0.2 },
+      status: 'confirmed',
+      resolveConflicts: true,
+    })
+    this.deps.bus.emit('memory.pinned', { id: item.id })
+    return {
+      reply: `好，我更新了：${item.gist}。之前记的是“${candidates[0].gist}”，已经不再采用。`,
+      memoryIds: [item.id],
     }
   }
 
@@ -321,6 +370,7 @@ export class Conversation {
       confidence: 1,
       importance: { explicit: 1, goal: 0.8, social: 0.5, novelty: 0.4, repetition: 0.5, deadline: 0.3 },
       status: 'confirmed',
+      resolveConflicts: true,
     })
     this.deps.bus.emit('memory.pinned', { id: item.id })
     return { reply: `记住了：${item.gist}`, memoryIds: [item.id] }
@@ -456,6 +506,8 @@ export class Conversation {
         file: capture.path,
         url: `/api/captures/${capture.path.split('/').pop()}`,
         bytes: capture.bytes,
+        windowTitle: capture.windowTitle || '',
+        titleKnown: capture.titleKnown ?? false,
       })
       this.deps.attention.send({ type: 'context_ready', reason: 'capture_done' })
     } catch (error) {
@@ -470,17 +522,24 @@ export class Conversation {
     } catch (error) {
       return { reply: `画面看到了，但理解失败：${error instanceof Error ? error.message : String(error)}` }
     } finally {
-      // Keep the capture for the UI; cleanup runs periodically.
+      // The UI still needs a URL, but the bytes should not sit in plaintext
+      // after the turn. The server decrypts on read.
+      await this.deps.secure.encryptFile(capture.path).catch(error => {
+        this.deps.logger.warn('capture encryption failed', { error: String(error) })
+      })
     }
   }
 
   private enqueueSpeech(text: string): void {
     const clean = text.trim()
     const turnId = this.turnId
+    const epoch = this.speechEpoch
     if (!clean) return
     this.speechQueue = this.speechQueue
       .then(async () => {
+        if (epoch !== this.speechEpoch || turnId !== this.turnId) return
         const url = await this.speak(clean)
+        if (epoch !== this.speechEpoch || turnId !== this.turnId) return
         if (url) {
           this.turnAudioUrls.push(url)
           this.deps.bus.emit('assistant.audio', { turnId, url, text: clean })
@@ -497,6 +556,7 @@ export class Conversation {
     const path = join(this.deps.config.dataDir, 'audio', name)
     try {
       await this.deps.synthesizer.synthesize(text, path)
+      await this.deps.secure.encryptFile(path)
       return `/api/audio/${name}`
     } catch (error) {
       this.deps.logger.warn('tts failed', { error: String(error) })
@@ -509,6 +569,7 @@ export class Conversation {
     const turnId = randomUUID()
     this.turnId = turnId
     this.turnStartedAt = Date.now()
+    const audioEpoch = ++this.speechEpoch
     await this.prepareUnderstanding()
     let transcript = ''
     const asrStarted = Date.now()
@@ -516,12 +577,15 @@ export class Conversation {
     try {
       const result = await this.deps.transcriber.transcribe(buffer, extension)
       transcript = result.text
-      this.deps.bus.emit('voice.transcribed', { turnId, text: transcript, durationMs: result.durationMs, asrMs: Date.now() - asrStarted })
+      this.deps.bus.emit('voice.transcribed', { turnId, text: transcript, durationMs: result.durationMs, audioMs: result.audioMs, asrMs: Date.now() - asrStarted })
     } catch (error) {
       this.deps.attention.reset('asr_error')
       const reply = `没听清：${error instanceof Error ? error.message : String(error)}`
       this.deps.bus.emit('assistant.done', { turnId, text: reply, error: reply, durationMs: Date.now() - this.turnStartedAt })
       return { reply }
+    }
+    if (audioEpoch !== this.speechEpoch) {
+      return { reply: '好，停了。', cancelled: true }
     }
     if (!transcript) {
       this.deps.attention.reset('empty_asr')
@@ -561,8 +625,10 @@ export class Conversation {
   }
 
   cancel(): void {
+    this.speechEpoch += 1
     this.abort?.abort()
     this.busy = false
+    this.turnAudioUrls = []
     this.clearFollowup()
     this.deps.attention.reset('cancel')
     this.deps.bus.emit('assistant.cancelled', {})
