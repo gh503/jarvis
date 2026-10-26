@@ -1,6 +1,8 @@
 import type { Logger } from '../logger.ts'
 import type { Transcriber, TranscriberState, Transcription } from './asr.ts'
+import { EdgeSynthesizer } from './edge.ts'
 import { RemoteSynthesizer, RemoteTranscriber } from './remote.ts'
+import { resolveAsrAdapter, resolveTtsAdapter } from './providers.ts'
 import type { AsrProfile, PublicVoiceSettings, TtsProfile, VoiceSettings, VoiceSettingsStore } from './settings.ts'
 import type { Synthesizer } from './tts.ts'
 
@@ -12,6 +14,7 @@ export interface VoiceRuntimeStatus {
     label: string
     kind: 'local' | 'remote'
     transport: string
+    adapter: string
     model: string
     baseUrl: string
     language: string
@@ -22,6 +25,7 @@ export interface VoiceRuntimeStatus {
     id: string
     label: string
     kind: 'local' | 'remote'
+    adapter: string
     model: string
     voice: string
     baseUrl: string
@@ -85,7 +89,14 @@ export class VoiceRuntime implements Transcriber, Synthesizer {
 
   private buildTts(profile: TtsProfile): Synthesizer {
     if (profile.kind === 'local') return this.options.localSynthesizer
-    return new RemoteSynthesizer({ profile, logger: this.options.logger?.child('remote-tts') })
+    if (resolveTtsAdapter(profile) === 'edge') {
+      return new EdgeSynthesizer({
+        voice: profile.voice,
+        ffmpeg: this.options.ffmpeg,
+        logger: this.options.logger?.child('edge-tts'),
+      })
+    }
+    return new RemoteSynthesizer({ profile, ffmpeg: this.options.ffmpeg, logger: this.options.logger?.child('remote-tts') })
   }
 
   private rebuild(): void {
@@ -159,6 +170,7 @@ export class VoiceRuntime implements Transcriber, Synthesizer {
         label: asr.label,
         kind: asr.kind,
         transport: asr.transport,
+        adapter: resolveAsrAdapter(asr),
         model: asr.model,
         baseUrl: asr.baseUrl,
         language: asr.language,
@@ -169,6 +181,7 @@ export class VoiceRuntime implements Transcriber, Synthesizer {
         id: tts.id,
         label: tts.label,
         kind: tts.kind,
+        adapter: resolveTtsAdapter(tts),
         model: tts.model,
         voice: tts.voice,
         baseUrl: tts.baseUrl,

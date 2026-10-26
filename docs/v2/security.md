@@ -30,7 +30,7 @@ Jarvis 是一个**单用户、单机优先**的私人助手。默认只监听 `1
 | 配对码 | 进程内存 | 6 位、5 分钟、一次性；60 秒内最多 30 次失败尝试 |
 | 本地加密密钥 | `data/secret.key`，0600 | 32 字节随机；不进入备份、不写日志 |
 | 远端模型 Key | `data/model-config.json`，0600 | 设置页不回显；导出/备份默认不含 |
-| 远端 ASR/TTS Key | `data/voice-config.json`，0600 | 设置页不回显；导出默认不含；本地-only 可为空 |
+| 远端 ASR/TTS Key | `data/voice-config.json`，0600 | 设置页不回显；导出默认不含；本地-only 可为空；Gemini/Cloudflare 共用此文件 |
 
 `umask 077`；SQLite 主库/WAL/SHM、调参、模型配置、设备文件都收紧到 0600。
 配对设备在“删除全部对话与记忆”时一并撤销并删除 `devices.json`。
@@ -71,6 +71,11 @@ Jarvis 是一个**单用户、单机优先**的私人助手。默认只监听 `1
 - 远端模型/ASR/TTS 只在用户显式切换/配置后使用；隐私过滤和“本地优先”路由在
   `src/model/router.ts` 与 `src/voice/runtime.ts`，但**没有网络层 DLP 网关**；
   不要把 secret 发给远端，也不要把远端 ASR/TTS 地址指向不可信服务。
+- Gemini/Cloudflare 的原生音频 adapter 与 Edge TTS 只是换了传输实现，不改变
+  出网边界：Gemini/Cloudflare 会收到整段音频或待朗读文本；Edge 会把文本发给
+  Microsoft 的在线语音服务。三者的 Key/账号权限与隐私条款由用户在控制台确认。
+- Cloudflare Base URL 含账号 ID（不是密钥），但仍属于部署元数据；设置页会显示
+  它，导出默认包含配置摘要。不要把账号 ID 当作认证凭据。
 - 屏幕/摄像头始终按需单帧；系统门户是真正的同意点，黑名单是补充而非替代。
 - **远端视觉默认关闭**：远端模型启用时，`look` 不采集屏幕/摄像头，也不把画面或
   图像发给服务商；只有服务端显式设置 `JARVIS_ALLOW_REMOTE_VISION=1` 才放行。

@@ -127,7 +127,9 @@ Base URL 只填域名、填 `/v1`、或填完整端点都可以；客户端会�
 4. 返回的模型 id 自动填入选择器；当前模型预选中。
 
 没有 `/models` 的兼容网关会明确提示“无法自动列出模型”；本版不退回手填。
-完整说明见 [models.md](models.md)。
+Cloudflare Workers AI 例外：Jarvis 使用账号级 `ai/models/search` 自动读取模型，
+Base URL 填 `https://api.cloudflare.com/client/v4/accounts/<ACCOUNT_ID>/ai/v1`。
+完整说明见 [models.md](models.md) 与 [providers.md](providers.md)。
 
 ### 4.3 操作
 
@@ -194,6 +196,9 @@ curl -s -X POST http://127.0.0.1:3081/api/model/activate \
   精确报文见 [voice.md](voice.md)。
 - **本地 TTS**：Piper 常驻 worker，按短句流式合成。
 - **远端 TTS**：OpenAI 兼容 `POST /audio/speech`，请求 WAV；输出仍在本机加密。
+- **Gemini / Cloudflare / Edge**：在“服务商”下拉选择；Gemini/Cloudflare 走原生
+  音频端点，Edge 调用本机 `edge-tts` 命令。各厂商的 Base URL、模型、音色和限制见
+  [providers.md](providers.md)。
 
 配置持久化在 `data/voice-config.json`（0600）；Key 不回显。远端非 loopback
 必须 TLS（`https` / `wss`），TTS 不接受 `ws`。默认全部本地；不配置远端就不出网。

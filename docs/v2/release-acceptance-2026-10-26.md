@@ -1,5 +1,8 @@
 # Jarvis v2 发布验收报告
 
+> 后续新增的多厂商接入（Gemini / Cloudflare / Edge）见
+> [provider-acceptance-2026-10-26.md](provider-acceptance-2026-10-26.md)；本报告记录的是当时 77 项基线。
+
 - 日期：2026-10-26（Asia/Shanghai）
 - 分支：`feat/jarvis-v2`
 - 基线：`1aeeccd`

@@ -1,5 +1,6 @@
 import type { Embedder } from '../memory/types.ts'
 import type { ChatMessage, ChatOptions, ModelClient, ModelHealth, ModelInfo, ModelStatus } from './types.ts'
+import { isCloudflareBaseUrl, listCloudflareModels } from './cloudflare.ts'
 
 interface OpenAIChoice {
   delta?: { content?: string }
@@ -80,6 +81,9 @@ export class OpenAICompatibleClient implements ModelClient, Embedder {
   }
 
   async health(timeoutMs = 5000): Promise<ModelHealth> {
+    if (isCloudflareBaseUrl(this.baseUrl)) {
+      return await listCloudflareModels(this.baseUrl, this.apiKey, timeoutMs)
+    }
     try {
       const response = await fetch(this.endpoint('/models'), {
         headers: this.headers(),

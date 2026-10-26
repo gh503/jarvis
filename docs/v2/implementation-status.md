@@ -3,7 +3,7 @@
 - Date: 2026-10-26
 - Branch: `feat/jarvis-v2`
 - Runtime: `v2/`（TypeScript / Node 24 / SQLite / 本地 Web UI）
-- Tests: 77 passing (`TZ=Asia/Shanghai npm test`), typecheck clean
+- Tests: 86 passing (`TZ=Asia/Shanghai npm test`), typecheck clean
 - Release acceptance: [release-acceptance-2026-10-26.md](release-acceptance-2026-10-26.md)
 
 ## 1. 已实现并跑通
@@ -22,7 +22,8 @@
 | 本地 LLM / embedding / 视觉 adapter | `v2/src/model/ollama.ts` | `qwen2.5:3b`, `nomic-embed-text` 实测 |
 | 本地/远端模型切换（UI 一键） | `v2/src/model/{router,openai,settings}.ts`, `v2/web/app.js` | `test/{openai,model-settings}.test.ts`；mock 远端 + UI 实测 |
 | 三种 LLM 协议：Chat Completions / Responses / Anthropic Messages | `v2/src/model/{openai,anthropic,router}.ts` | `test/{openai,anthropic}.test.ts`；SSE/非流式、图片、system、Key 头 |
-| 模型列表从服务地址自动发现 | `v2/src/model/{openai,anthropic,ollama,router}.ts`, `v2/src/server.ts`, `v2/web/app.js` | `POST /api/model/list`；本地 Ollama 实测 5 个模型；UI 下拉 |
+| 模型列表从服务地址自动发现 | `v2/src/model/{openai,anthropic,ollama,router,cloudflare}.ts`, `v2/src/server.ts`, `v2/web/app.js` | `POST /api/model/list`；本地 Ollama 实测 5 个模型；Cloudflare 账号模型搜索 mock 测试；UI 下拉 |
+| 多厂商语音 adapter（Gemini / Cloudflare / Edge） | `v2/src/voice/{providers,remote,edge}.ts`, `v2/src/voice/{settings,runtime}.ts` | `test/{voice-providers,voice-settings}.test.ts`；Gemini ASR/TTS、Cloudflare ASR/TTS、Edge 可用性 |
 | 语音本地/远端独立切换 | `v2/src/voice/{settings,runtime,remote}.ts`, `v2/src/main.ts` | `test/{voice-settings,voice-remote}.test.ts`；mock HTTP 端到端 ASR+TTS 实测 |
 | ASR WebSocket（默认）+ HTTP 双传输 | `v2/src/voice/remote.ts`, `docs/v2/voice.md` | WS mock 验证 start/PCM/end/final；HTTP multipart 实测 |
 | 实时语音：PTT → ASR → LLM → TTS | `v2/src/voice/*`, `v2/src/conversation.ts` | `/api/voice` 实测首段语音 2.34 s、整轮 2.57 s（1.56 s 音频）；本地/远端切换实测 |
@@ -63,8 +64,8 @@
 | M3.5 记忆增强 | 后台 proposed 抽取、混合向量召回、冲突候选、评测集 | 真实语义质量仍需更大规模人工标注集 |
 | M4 主动性 | 提醒、预算、专注、静默时段、每日简报、只读 ICS | 无双向日历写入；无会议检测 |
 | M5 远程 | 令牌 + TLS + PWA + WS + 设备配对/撤销 | 无 WebRTC；无逐设备权限范围（设备令牌等价主令牌） |
-| 模型来源 | 本地 Ollama / 远端 Chat Completions、Responses、Anthropic Messages；模型列表自动发现 | 未覆盖 Azure 专有头/部署名；切换 embedding 模型需重建索引 |
-| 语音来源 | ASR 本地 faster-whisper / 远端 HTTP 或 WS；TTS 本地 Piper / 远端 `/audio/speech` | 浏览器仍是整段上传；WS 是本项目契约，不含 OpenAI Realtime adapter；无 VAD/唤醒词 |
+| 模型来源 | 本地 Ollama / 远端 Chat Completions、Responses、Anthropic Messages；Gemini、Groq、硅基流动、OpenRouter、Cloudflare；模型列表自动发现 | 未覆盖 Azure 专有头/部署名；切换 embedding 模型需重建索引；Cloudflare 音频模型不在聊天下拉中 |
+| 语音来源 | ASR 本地 faster-whisper / 远端 HTTP、WS、Gemini、Cloudflare；TTS 本地 Piper / OpenAI-compatible、Gemini、Cloudflare、Edge | 浏览器仍是整段上传；WS 是本项目契约，不含 OpenAI Realtime adapter；无 VAD/唤醒词；Edge 无官方 SLA |
 | 可视化 | 总览、记忆星座、事件流、调参、A/B 默认对照、脱敏配置、持久化回合 | 无时间回放、无手动连线 UI |
 | 工具执行 | 打开网页/文件管理器（一次性确认 + 审计） | 无任意文件写入/终端/日历 |
 

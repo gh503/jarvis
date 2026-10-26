@@ -5,10 +5,24 @@ import WebSocket from 'ws'
 import type { Logger } from '../logger.ts'
 import type { Transcriber, TranscriberState, Transcription } from './asr.ts'
 import { makeTempDir, toWav } from './media.ts'
+import { cloudflareRunUrl, geminiEndpoint, pcmToWav, resolveAsrAdapter, resolveTtsAdapter, wavRateFromMime } from './providers.ts'
 import type { AsrProfile, TtsProfile } from './settings.ts'
 import type { Synthesizer } from './tts.ts'
 
 type WavInfo = { pcm: Buffer; sampleRate: number; channels: number; bits: number }
+
+interface GeminiInline { mimeType?: string; mime_type?: string; data?: string }
+
+interface GeminiAudioResponse {
+  candidates?: Array<{
+    content?: {
+      parts?: Array<{
+        inlineData?: GeminiInline
+        inline_data?: GeminiInline
+      }>
+    }
+  }>
+}
 
 function isWav(buffer: Buffer): boolean {
   return buffer.length > 44 && buffer.toString('ascii', 0, 4) === 'RIFF' && buffer.toString('ascii', 8, 12) === 'WAVE'
@@ -136,9 +150,14 @@ export class RemoteTranscriber implements Transcriber {
     const info = parseWav(wav)
     this.lastState = { state: 'ready' }
     try {
-      const result = this.options.profile.transport === 'websocket'
-        ? await this.viaWebSocket(wav, info, started)
-        : await this.viaHttp(wav, info, extension, started)
+      const adapter = resolveAsrAdapter(this.options.profile)
+      const result = adapter === 'gemini'
+        ? await this.viaGemini(wav, info, started)
+        : adapter === 'cloudflare'
+          ? await this.viaCloudflare(wav, info, started)
+          : this.options.profile.transport === 'websocket'
+            ? await this.viaWebSocket(wav, info, started)
+            : await this.viaHttp(wav, info, extension, started)
       this.lastState = { state: 'ready' }
       return result
     } catch (error) {
@@ -146,6 +165,67 @@ export class RemoteTranscriber implements Transcriber {
       this.lastState = { state: 'error', error: message }
       throw error
     }
+  }
+
+  private async viaGemini(wav: Buffer, info: WavInfo, started: number): Promise<Transcription> {
+    const profile = this.options.profile
+    if (!profile.model) throw new Error('Gemini ASR 需要填写模型，例如 gemini-3.5-transcribe')
+    if (wav.length > 18_000_000) throw new Error('Gemini 单次音频不能超过 18 MB')
+    const languageName = profile.language === 'zh' ? '中文' : profile.language === 'en' ? 'English' : profile.language
+    const response = await fetch(geminiEndpoint(profile.baseUrl, profile.model, 'generateContent'), {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'x-goog-api-key': profile.apiKey },
+      body: JSON.stringify({
+        contents: [{
+          role: 'user',
+          parts: [
+            { text: `逐字转写这段音频为${languageName}，只返回转写文本，不要解释。` },
+            { inline_data: { mime_type: 'audio/wav', data: wav.toString('base64') } },
+          ],
+        }],
+        generationConfig: { temperature: 0 },
+      }),
+      signal: AbortSignal.timeout(120_000),
+    })
+    const raw = await response.text()
+    if (!response.ok) throw new Error(`Gemini ASR 失败：HTTP ${response.status} ${raw.slice(0, 300)}`)
+    let data: {
+      candidates?: Array<{ content?: { parts?: Array<{ text?: string }> } }>
+      promptFeedback?: { blockReason?: string }
+    }
+    try {
+      data = JSON.parse(raw) as typeof data
+    } catch {
+      throw new Error('Gemini ASR 返回了非 JSON 内容')
+    }
+    const text = (data.candidates?.[0]?.content?.parts ?? []).map(part => part.text ?? '').join('').trim()
+    if (!text && data.promptFeedback?.blockReason) throw new Error(`Gemini 拒绝了这段音频：${data.promptFeedback.blockReason}`)
+    return { text, language: profile.language || 'zh', durationMs: Date.now() - started, audioMs: audioMs(info) }
+  }
+
+  private async viaCloudflare(wav: Buffer, info: WavInfo, started: number): Promise<Transcription> {
+    const profile = this.options.profile
+    if (!profile.model) throw new Error('Cloudflare ASR 需要填写模型，例如 @cf/openai/whisper')
+    if (wav.length > 20_000_000) throw new Error('Cloudflare 单次音频不能超过 20 MB')
+    const response = await fetch(cloudflareRunUrl(profile.baseUrl, profile.model), {
+      method: 'POST',
+      headers: { authorization: `Bearer ${profile.apiKey}`, 'content-type': 'audio/wav' },
+      body: new Uint8Array(wav),
+      signal: AbortSignal.timeout(120_000),
+    })
+    const raw = await response.text()
+    if (!response.ok) throw new Error(`Cloudflare ASR 失败：HTTP ${response.status} ${raw.slice(0, 300)}`)
+    let data: { result?: { text?: string; language?: string } | string; text?: string; language?: string }
+    try {
+      data = JSON.parse(raw) as typeof data
+    } catch {
+      throw new Error('Cloudflare ASR 返回了非 JSON 内容')
+    }
+    const text = typeof data.result === 'string'
+      ? data.result
+      : String(data.result?.text ?? data.text ?? '')
+    const language = String(data.result && typeof data.result !== 'string' ? data.result.language ?? profile.language ?? 'zh' : data.language ?? profile.language ?? 'zh')
+    return { text: text.trim(), language, durationMs: Date.now() - started, audioMs: audioMs(info) }
   }
 
   private async viaHttp(wav: Buffer, info: WavInfo, extension: string, started: number): Promise<Transcription> {
@@ -266,28 +346,49 @@ export class RemoteTranscriber implements Transcriber {
   }
 }
 
-/** Remote TTS using the OpenAI-compatible `/audio/speech` contract. */
+/** Remote TTS: OpenAI `/audio/speech`, Gemini native TTS, or Cloudflare Workers AI. */
 export class RemoteSynthesizer implements Synthesizer {
   constructor(private readonly options: {
     profile: TtsProfile
+    ffmpeg?: string
     logger?: Logger
   }) {}
 
   async available(): Promise<boolean> {
-    return Boolean(this.options.profile.baseUrl)
+    const adapter = resolveTtsAdapter(this.options.profile)
+    return adapter === 'edge' || Boolean(this.options.profile.baseUrl)
   }
 
   async synthesize(text: string, output: string): Promise<void> {
     const clean = text.replace(/\s+/g, ' ').trim()
     if (!clean) throw new Error('cannot synthesize empty text')
     const profile = this.options.profile
-    if (!profile.baseUrl) throw new Error('远端 TTS 还没有配置服务地址')
+    const adapter = resolveTtsAdapter(profile)
+    if (adapter !== 'edge' && !profile.baseUrl) throw new Error('远端 TTS 还没有配置服务地址')
+    const bytes = adapter === 'gemini'
+      ? await this.geminiSpeech(clean)
+      : adapter === 'cloudflare'
+        ? await this.cloudflareSpeech(clean)
+        : await this.openaiSpeech(clean)
+    if (!bytes.length) throw new Error('远端 TTS 返回了空音频')
+    if (bytes.length > 20_000_000) throw new Error('远端 TTS 音频超过 20 MB 上限')
+    await mkdir(dirname(output), { recursive: true, mode: 0o700 })
+    if (isWav(bytes)) {
+      await writeFile(output, bytes, { mode: 0o600 })
+    } else {
+      await this.convertToWav(bytes, output)
+    }
+    this.options.logger?.debug('remote tts synthesized', { chars: clean.length, bytes: bytes.length, request: randomUUID().slice(0, 8) })
+  }
+
+  private async openaiSpeech(text: string): Promise<Buffer> {
+    const profile = this.options.profile
     const response = await fetch(endpoint(profile.baseUrl, '/audio/speech'), {
       method: 'POST',
       headers: { 'content-type': 'application/json', ...authHeader(profile) },
       body: JSON.stringify({
         model: profile.model,
-        input: clean.slice(0, 4000),
+        input: text.slice(0, 4000),
         voice: profile.voice,
         response_format: 'wav',
       }),
@@ -303,13 +404,78 @@ export class RemoteSynthesizer implements Synthesizer {
     }
     const declared = Number(response.headers.get('content-length') ?? 0)
     if (declared > 20_000_000) throw new Error('远端 TTS 音频超过 20 MB 上限')
-    const bytes = Buffer.from(await response.arrayBuffer())
-    if (!bytes.length) throw new Error('远端 TTS 返回了空音频')
-    if (bytes.length > 20_000_000) throw new Error('远端 TTS 音频超过 20 MB 上限')
-    const path = output
-    await mkdir(dirname(path), { recursive: true, mode: 0o700 })
-    await writeFile(path, bytes, { mode: 0o600 })
-    this.options.logger?.debug('remote tts synthesized', { chars: clean.length, bytes: bytes.length, request: randomUUID().slice(0, 8) })
+    return Buffer.from(await response.arrayBuffer())
+  }
+
+  private async geminiSpeech(text: string): Promise<Buffer> {
+    const profile = this.options.profile
+    if (!profile.model) throw new Error('Gemini TTS 需要填写模型，例如 gemini-3.8-flash-tts')
+    const response = await fetch(geminiEndpoint(profile.baseUrl, profile.model, 'generateContent'), {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'x-goog-api-key': profile.apiKey },
+      body: JSON.stringify({
+        contents: [{ parts: [{ text }] }],
+        generationConfig: {
+          responseModalities: ['AUDIO'],
+          speechConfig: {
+            voiceConfig: { prebuiltVoiceConfig: { voiceName: profile.voice || 'Kore' } },
+          },
+        },
+      }),
+      signal: AbortSignal.timeout(120_000),
+    })
+    const raw = await response.text()
+    if (!response.ok) throw new Error(`Gemini TTS 失败：HTTP ${response.status} ${raw.slice(0, 300)}`)
+    let payload: GeminiAudioResponse | null = null
+    try { payload = JSON.parse(raw) as GeminiAudioResponse } catch { payload = null }
+    const part = payload?.candidates?.[0]?.content?.parts?.find(item => item.inlineData?.data || item.inline_data?.data)
+    const inline = part?.inlineData ?? part?.inline_data
+    if (!inline?.data) throw new Error('Gemini TTS 没有返回音频；检查模型是否支持 TTS 与音色名')
+    const mime = inline.mimeType ?? inline.mime_type ?? 'audio/L16'
+    const bytes = Buffer.from(inline.data, 'base64')
+    if (/wav/i.test(mime) || isWav(bytes)) return bytes
+    if (/mpeg|mp3/i.test(mime)) return bytes
+    return pcmToWav(bytes, wavRateFromMime(mime), 1, 16)
+  }
+
+  private async cloudflareSpeech(text: string): Promise<Buffer> {
+    const profile = this.options.profile
+    if (!profile.model) throw new Error('Cloudflare TTS 需要填写模型，例如 @cf/myshell-ai/melotts')
+    const aura = /aura/i.test(profile.model)
+    const response = await fetch(cloudflareRunUrl(profile.baseUrl, profile.model), {
+      method: 'POST',
+      headers: { authorization: `Bearer ${profile.apiKey}`, 'content-type': 'application/json' },
+      body: JSON.stringify(aura
+        ? { text: text.slice(0, 4000), speaker: profile.voice || 'angus' }
+        : { prompt: text.slice(0, 4000), lang: /[\u3400-\u9fff]/.test(text) ? 'zh' : 'en' }),
+      signal: AbortSignal.timeout(120_000),
+    })
+    const raw = Buffer.from(await response.arrayBuffer())
+    if (!response.ok) throw new Error(`Cloudflare TTS 失败：HTTP ${response.status} ${raw.toString('utf8').slice(0, 300)}`)
+    const contentType = response.headers.get('content-type') ?? ''
+    if (contentType.includes('application/json')) {
+      try {
+        const data = JSON.parse(raw.toString('utf8')) as { result?: { audio?: string } | string }
+        const encoded = typeof data.result === 'string' ? data.result : data.result?.audio
+        if (encoded) return Buffer.from(encoded, 'base64')
+      } catch {
+        // Fall through to the JSON error below.
+      }
+      throw new Error('Cloudflare TTS 返回了 JSON 而不是音频；检查模型权限与请求参数')
+    }
+    return raw
+  }
+
+  private async convertToWav(bytes: Buffer, output: string): Promise<void> {
+    if (!this.options.ffmpeg) throw new Error('该 TTS 返回的不是 WAV，需要配置 ffmpeg 才能播放')
+    const dir = await makeTempDir('jarvis-remote-tts-')
+    const input = join(dir, 'speech.bin')
+    try {
+      await writeFile(input, bytes)
+      await toWav(this.options.ffmpeg, input, output)
+    } finally {
+      await rm(dir, { recursive: true, force: true }).catch(() => undefined)
+    }
   }
 
   async warmup(): Promise<void> {

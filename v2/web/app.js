@@ -284,9 +284,16 @@ function updateAttention(snapshot) {
   if (snapshot.state === 'responding') orb.classList.add('responding')
 }
 
+function voiceAdapterLabel(adapter, provider) {
+  if (adapter === 'gemini') return 'Gemini'
+  if (adapter === 'cloudflare') return 'Cloudflare'
+  if (adapter === 'edge') return 'Edge'
+  return provider === 'remote' ? '远端' : '本地'
+}
+
 function voiceLabel() {
   if (!state.voice.asr) return '未启用'
-  const prefix = state.voice.asrProvider === 'remote' ? '远端 · ' : ''
+  const prefix = `${voiceAdapterLabel(state.voice.asrAdapter, state.voice.asrProvider)} · `
   if (state.voice.asrState === 'starting') return `${prefix}加载中`
   if (state.voice.asrState === 'error') return `${prefix}异常`
   if (state.voice.asrState === 'idle') return `${prefix}待启动`
@@ -295,7 +302,7 @@ function voiceLabel() {
 
 function ttsLabel() {
   if (!state.voice.tts) return '未就绪'
-  return `${state.voice.ttsProvider === 'remote' ? '远端' : '本地'} · 就绪`
+  return `${voiceAdapterLabel(state.voice.ttsAdapter, state.voice.ttsProvider)} · 就绪`
 }
 
 function applyStatus(status = {}) {
@@ -1064,8 +1071,8 @@ function settingsOverviewInnerHtml() {
   const status = state.status || {}
   const voice = state.voice || {}
   const modelSource = status.provider === 'remote' ? '远端' : '本地'
-  const asrSource = voice.asrProvider === 'remote' ? '远端' : '本地'
-  const ttsSource = voice.ttsProvider === 'remote' ? '远端' : '本地'
+  const asrSource = voiceAdapterLabel(voice.asrAdapter, voice.asrProvider)
+  const ttsSource = voiceAdapterLabel(voice.ttsAdapter, voice.ttsProvider)
   const asrText = voice.asr === false ? '未启用' : voice.asrState === 'starting' ? '加载中' : voice.asrState === 'error' ? '异常' : '就绪'
   const ttsText = voice.tts ? '就绪' : '未就绪'
   return `
@@ -1091,8 +1098,8 @@ function settingsOverviewHtml() {
 function settingsTabBadge(name) {
   if (name === 'model') return state.status?.provider === 'remote' ? '远端' : '本地'
   if (name === 'voice') {
-    const asr = state.voice?.asrProvider === 'remote' ? '远端' : '本地'
-    const tts = state.voice?.ttsProvider === 'remote' ? '远端' : '本地'
+    const asr = voiceAdapterLabel(state.voice?.asrAdapter, state.voice?.asrProvider)
+    const tts = voiceAdapterLabel(state.voice?.ttsAdapter, state.voice?.ttsProvider)
     return asr === tts ? asr : '混合'
   }
   return ''
@@ -1162,6 +1169,7 @@ function modelFormHtml(selected) {
       </label>
     </div>
     <p class="settings-hint" id="model-list-status" role="status"></p>
+    <p class="settings-hint">Cloudflare 的 Base URL 形如 <code>https://api.cloudflare.com/client/v4/accounts/&lt;ACCOUNT_ID&gt;/ai/v1</code>，模型从账号的 Workers AI 模型搜索自动读取；Gemini 可用 <code>https://generativelanguage.googleapis.com/v1beta/openai/</code>。其余 OpenAI 兼容服务填各自的 <code>/v1</code>。</p>
     ${remote ? `<label class="settings-field"><span>API Key</span>
       <input id="model-key" type="password" autocomplete="new-password" value="" placeholder="${escapeHtml(keyHint)}">
     </label>` : ''}
@@ -1209,13 +1217,21 @@ function voiceSettingsHtml(settings) {
         </div>
         <div class="voice-local-summary">${settingsDot(true)}<span>本地 <b>${escapeHtml(asr.local?.model || '—')}</b> <small>${escapeHtml(asr.local?.label || '')}</small></span></div>
         <div class="voice-remote" data-voice-remote="asr" ${asrActive ? '' : 'hidden'}>
+          <label class="settings-field"><span>服务商</span>
+            <select id="asr-adapter">
+              <option value="auto" ${(asrRemote.adapter || 'auto') === 'auto' ? 'selected' : ''}>自动识别（按服务地址）</option>
+              <option value="openai" ${asrRemote.adapter === 'openai' ? 'selected' : ''}>OpenAI 兼容 / Groq / 硅基流动 / OpenRouter</option>
+              <option value="gemini" ${asrRemote.adapter === 'gemini' ? 'selected' : ''}>Google Gemini（原生音频）</option>
+              <option value="cloudflare" ${asrRemote.adapter === 'cloudflare' ? 'selected' : ''}>Cloudflare Workers AI</option>
+            </select>
+          </label>
           <label class="settings-field"><span>传输方式</span>
             <select id="asr-transport">
               <option value="websocket" ${asrRemote.transport !== 'http' ? 'selected' : ''}>WebSocket 流式（默认）</option>
               <option value="http" ${asrRemote.transport === 'http' ? 'selected' : ''}>HTTP 一次性上传</option>
             </select>
           </label>
-          <label class="settings-field"><span>WebSocket / 服务地址</span>
+          <label class="settings-field" id="asr-base-field"><span>WebSocket / 服务地址</span>
             <input id="asr-base" type="url" autocomplete="off" spellcheck="false" value="${escapeHtml(asrRemote.baseUrl || '')}" placeholder="wss://asr.example.com/v1/stream">
           </label>
           <div class="settings-form-grid">
@@ -1223,7 +1239,7 @@ function voiceSettingsHtml(settings) {
             <label class="settings-field"><span>语言</span><input id="asr-language" type="text" autocomplete="off" spellcheck="false" value="${escapeHtml(asrRemote.language || 'zh')}" placeholder="zh"></label>
           </div>
           <label class="settings-field"><span>API Key</span><input id="asr-key" type="password" autocomplete="new-password" value="" placeholder="${escapeHtml(asrKeyHint)}"></label>
-          <p class="settings-hint">WebSocket 使用 Jarvis 流式协议（start / PCM 分片 / end / final）；HTTP 使用 OpenAI 兼容 <code>/audio/transcriptions</code>。默认 WebSocket。</p>
+          <p class="settings-hint" id="asr-adapter-hint">OpenAI 兼容使用 <code>/audio/transcriptions</code>；Gemini / Cloudflare 使用各自原生音频端点。Gemini 或 Cloudflare 会自动切换为 HTTP。</p>
         </div>
       </div>
       <div class="voice-card${ttsActive ? ' active' : ''}" data-voice-card="tts">
@@ -1232,19 +1248,28 @@ function voiceSettingsHtml(settings) {
           <label class="source-switch"><span>来源</span>
             <select id="tts-source" aria-label="TTS 来源">
               <option value="local" ${ttsActive ? '' : 'selected'}>本地引擎</option>
-              <option value="remote" ${ttsActive ? 'selected' : ''}>远端服务</option>
+              <option value="remote" ${ttsActive ? 'selected' : ''}>远端 / Edge TTS</option>
             </select>
           </label>
         </div>
         <div class="voice-local-summary">${settingsDot(true)}<span>本地 <b>${escapeHtml((tts.local?.voice || '').split('/').pop() || '—')}</b> <small>${escapeHtml(tts.local?.label || '')}</small></span></div>
         <div class="voice-remote" data-voice-remote="tts" ${ttsActive ? '' : 'hidden'}>
-          <label class="settings-field"><span>服务地址</span><input id="tts-base" type="url" autocomplete="off" spellcheck="false" value="${escapeHtml(ttsRemote.baseUrl || '')}" placeholder="https://api.openai.com/v1"></label>
+          <label class="settings-field"><span>服务商</span>
+            <select id="tts-adapter">
+              <option value="auto" ${(ttsRemote.adapter || 'auto') === 'auto' ? 'selected' : ''}>自动识别（按服务地址）</option>
+              <option value="openai" ${ttsRemote.adapter === 'openai' ? 'selected' : ''}>OpenAI 兼容 / Groq / 硅基流动</option>
+              <option value="gemini" ${ttsRemote.adapter === 'gemini' ? 'selected' : ''}>Google Gemini（原生 TTS）</option>
+              <option value="cloudflare" ${ttsRemote.adapter === 'cloudflare' ? 'selected' : ''}>Cloudflare Workers AI</option>
+              <option value="edge" ${ttsRemote.adapter === 'edge' ? 'selected' : ''}>Edge TTS（本机命令，免费）</option>
+            </select>
+          </label>
+          <label class="settings-field" id="tts-base-field"><span>服务地址</span><input id="tts-base" type="url" autocomplete="off" spellcheck="false" value="${escapeHtml(ttsRemote.baseUrl || '')}" placeholder="https://api.openai.com/v1"></label>
           <div class="settings-form-grid">
             <label class="settings-field"><span>模型</span><input id="tts-model" type="text" autocomplete="off" spellcheck="false" value="${escapeHtml(ttsRemote.model || '')}" placeholder="tts-1"></label>
-            <label class="settings-field"><span>音色</span><input id="tts-voice" type="text" autocomplete="off" spellcheck="false" value="${escapeHtml(ttsRemote.voice || '')}" placeholder="alloy"></label>
+            <label class="settings-field"><span>音色</span><input id="tts-voice" type="text" autocomplete="off" spellcheck="false" value="${escapeHtml(ttsRemote.voice || '')}" placeholder="alloy / Kore / zh-CN-XiaoxiaoNeural"></label>
           </div>
-          <label class="settings-field"><span>API Key</span><input id="tts-key" type="password" autocomplete="new-password" value="" placeholder="${escapeHtml(ttsKeyHint)}"></label>
-          <p class="settings-hint">使用 OpenAI 兼容 <code>/audio/speech</code>，返回 WAV；音频仍由本机加密保存。</p>
+          <label class="settings-field" id="tts-key-field"><span>API Key</span><input id="tts-key" type="password" autocomplete="new-password" value="" placeholder="${escapeHtml(ttsKeyHint)}"></label>
+          <p class="settings-hint" id="tts-adapter-hint">OpenAI 兼容使用 <code>/audio/speech</code>；Gemini / Cloudflare 使用原生接口；Edge TTS 需要本机安装 <code>edge-tts</code>。</p>
         </div>
       </div>
     </div>
@@ -1507,12 +1532,70 @@ function bindVoiceSettings() {
     const remote = $(`[data-voice-remote="${kind}"]`)
     if (source && remote) remote.hidden = source.value !== 'remote'
   }
+  const applyPreset = (kind, adapter) => {
+    const base = $(`#${kind}-base`)
+    const model = $(`#${kind}-model`)
+    const voice = kind === 'tts' ? $('#tts-voice') : null
+    if (adapter === 'gemini') {
+      if (base && !base.value.trim()) base.value = 'https://generativelanguage.googleapis.com/v1beta'
+      if (model && !model.value.trim()) model.value = kind === 'asr' ? 'gemini-3.5-transcribe' : 'gemini-3.8-flash-tts'
+      if (voice && !voice.value.trim()) voice.value = 'Kore'
+    } else if (adapter === 'cloudflare') {
+      if (base) base.placeholder = 'https://api.cloudflare.com/client/v4/accounts/<ACCOUNT_ID>/ai/v1'
+      if (model && !model.value.trim()) model.value = kind === 'asr' ? '@cf/openai/whisper' : '@cf/myshell-ai/melotts'
+    } else if (adapter === 'edge') {
+      if (model && !model.value.trim()) model.value = 'edge-tts'
+      if (voice && !voice.value.trim()) voice.value = 'zh-CN-XiaoxiaoNeural'
+    }
+  }
+  const syncAdapter = kind => {
+    const adapter = $(`#${kind}-adapter`)?.value || 'auto'
+    const edge = kind === 'tts' && adapter === 'edge'
+    const native = adapter === 'gemini' || adapter === 'cloudflare'
+    const baseField = $(`#${kind}-base-field`)
+    if (baseField) baseField.hidden = edge
+    if (kind === 'tts') {
+      const keyField = $('#tts-key-field')
+      if (keyField) keyField.hidden = edge
+      if (edge) {
+        const model = $('#tts-model')
+        const voice = $('#tts-voice')
+        if (model && !model.value.trim()) model.value = 'edge-tts'
+        if (voice && !voice.value.trim()) voice.value = 'zh-CN-XiaoxiaoNeural'
+        if (voice) voice.placeholder = 'zh-CN-XiaoxiaoNeural'
+      }
+    }
+    if (kind === 'asr') {
+      const transport = $('#asr-transport')
+      if (transport && native) {
+        transport.value = 'http'
+        transport.disabled = true
+      } else if (transport) {
+        transport.disabled = false
+      }
+    }
+    const hint = $(`#${kind}-adapter-hint`)
+    if (hint) {
+      hint.textContent = edge
+        ? 'Edge TTS 调用本机 edge-tts 命令，需要联网且没有官方 SLA；首次使用前运行 python3 -m pip install --user edge-tts。'
+        : native
+          ? 'Gemini / Cloudflare 使用各自原生音频端点，不使用 OpenAI /audio/* 路径；模型和音色名以对应控制台为准。'
+          : 'OpenAI 兼容使用 /audio/* 路径；Groq、硅基流动、OpenRouter 等按各自模型与音频能力选择。'
+    }
+  }
   for (const kind of ['asr', 'tts']) {
     const source = $(`#${kind}-source`)
     source?.addEventListener('change', () => {
       sync(kind)
       markSettingsDirty('voice')
     })
+    const adapter = $(`#${kind}-adapter`)
+    adapter?.addEventListener('change', () => {
+      applyPreset(kind, adapter.value)
+      syncAdapter(kind)
+      markSettingsDirty('voice')
+    })
+    syncAdapter(kind)
   }
   $('#voice-save')?.addEventListener('click', async event => {
     const button = event.currentTarget
@@ -1530,8 +1613,8 @@ function bindVoiceSettings() {
         body: JSON.stringify({
           activeAsr: $('#asr-source')?.value || 'local',
           activeTts: $('#tts-source')?.value || 'local',
-          asr: { remote: { transport: $('#asr-transport')?.value || 'websocket', baseUrl: $('#asr-base')?.value.trim() || '', model: $('#asr-model')?.value.trim() || '', language: $('#asr-language')?.value.trim() || 'zh', apiKey: $('#asr-key')?.value.trim() || '' } },
-          tts: { remote: { baseUrl: $('#tts-base')?.value.trim() || '', model: $('#tts-model')?.value.trim() || '', voice: $('#tts-voice')?.value.trim() || '', apiKey: $('#tts-key')?.value.trim() || '' } },
+          asr: { remote: { adapter: $('#asr-adapter')?.value || 'auto', transport: $('#asr-transport')?.value || 'websocket', baseUrl: $('#asr-base')?.value.trim() || '', model: $('#asr-model')?.value.trim() || '', language: $('#asr-language')?.value.trim() || 'zh', apiKey: $('#asr-key')?.value.trim() || '' } },
+          tts: { remote: { adapter: $('#tts-adapter')?.value || 'auto', baseUrl: $('#tts-base')?.value.trim() || '', model: $('#tts-model')?.value.trim() || '', voice: $('#tts-voice')?.value.trim() || '', apiKey: $('#tts-key')?.value.trim() || '' } },
         }),
       })
       state.voiceSettings = data.settings

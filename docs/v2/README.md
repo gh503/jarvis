@@ -47,10 +47,12 @@ v2 不再从“给 agent 加一个聊天窗口”出发，而是从下面这个�
 | [decision-register.md](decision-register.md) | 已固定的决策、理由、影响 | Accepted |
 | [implementation-plan.md](implementation-plan.md) | v2 的实现切片与验收顺序 | Draft；已按纵向切片推进 |
 | [models.md](models.md) | 三种 LLM 协议、模型自动发现、Key 与回退边界 | Implemented |
+| [providers.md](providers.md) | Gemini / Groq / 硅基流动 / OpenRouter / Cloudflare / Edge 接入矩阵与填法 | Implemented |
 | [voice.md](voice.md) | ASR WebSocket/HTTP 契约、TTS、本地/远端切换 | Implemented |
 | [implementation-status.md](implementation-status.md) | 已实现 / 部分实现 / 缺口 / 验证方式 | Implemented baseline |
 | [operations.md](operations.md) | 安装、启动、远程、隐私、验收、故障排查 | Implemented baseline |
 | [release-acceptance-2026-10-26.md](release-acceptance-2026-10-26.md) | 发布验收报告：测试矩阵、修复清单、残余风险与放行结论 | Accepted |
+| [provider-acceptance-2026-10-26.md](provider-acceptance-2026-10-26.md) | 多厂商接入验收：mock、真实 Edge、UI、未验证边界 | Accepted (local) |
 | [observatory.md](observatory.md) | Studio 的信息架构、指标定义、记忆图、调参架构与安全 | Implemented |
 | [security.md](security.md) | 信任边界、凭据、静态加密范围、残余风险、导出/擦除 | Implemented baseline |
 
@@ -65,7 +67,8 @@ v2 不再从“给 agent 加一个聊天窗口”出发，而是从下面这个�
 - 注意力管理器：决定何时看、看哪一路、何时说、用什么通道说。
 - 记忆 v2：分层存储、时间有效性、混合召回、离线巩固、可解释召回。
 - 本地/远端模型路由：Web 设置里编辑本地 Ollama / 远端 OpenAI Chat Completions、OpenAI Responses、Anthropic Messages；模型列表从服务地址自动获取；测试通过后点一下切换，下一轮立即生效。
-- 本地/远端语音：ASR 支持 WebSocket 流式（默认）和 HTTP；TTS 支持本地 Piper 与远端 OpenAI-compatible；两侧独立切换。
+- 本地/远端语音：ASR 支持 WebSocket 流式（默认）和 HTTP；TTS 支持本地 Piper、OpenAI-compatible、Gemini、Cloudflare、Edge；两侧独立切换。
+- 多厂商模型：Gemini、Groq、硅基流动、OpenRouter、Cloudflare Workers AI 可直连；模型列表自动发现。
 - 工具执行：文件、浏览器、日历、提醒；高风险动作走审批和审计。
 - 桌面浮窗/托盘 + 手机 PWA/WebRTC 远程入口（手机后置）。
 

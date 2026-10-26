@@ -11,8 +11,8 @@
 
 | 侧 | 本地默认 | 远端 |
 |---|---|---|
-| ASR | faster-whisper `tiny` 持久 worker（或 whisper.cpp） | OpenAI-compatible HTTP，或 Jarvis Streaming ASR WebSocket |
-| TTS | Piper + `zh_CN-huayan-medium.onnx` | OpenAI-compatible `POST /audio/speech` |
+| ASR | faster-whisper `tiny` 持久 worker（或 whisper.cpp） | OpenAI-compatible HTTP、Jarvis Streaming ASR WebSocket、Gemini 原生、Cloudflare Workers AI |
+| TTS | Piper + `zh_CN-huayan-medium.onnx` | OpenAI-compatible `POST /audio/speech`、Gemini 原生 TTS、Cloudflare Workers AI、Edge TTS |
 
 设置页的“语音模型”分两张卡；每张卡可以选本地/远端，保存后立即重建
 `VoiceRuntime`，不需要重启，也不会打断已经在进行的回合：
@@ -145,10 +145,27 @@ Content-Type: application/json
 
 - 请求 `response_format=wav`；返回音频写入 `data/audio/` 临时文件，随后由
   `SecureFiles` 立即 AES-256-GCM 加密；浏览器通过 `/api/audio/:name` 解密读取。
-- 远端 TTS 不预热；`available()` 只检查地址是否配置。
+- 远端 TTS 不预热；`available()` 检查地址（Edge 检查本机命令是否存在）。
 - 失败会记录 warning 并让该句没有音频，不会中断文字回复；下一句仍可继续。
-- 当前只支持 WAV 输出；如果服务只返回 MP3，需要增加格式字段/转码，不在本版
-  静默改扩展名。
+- OpenAI/Gemini/Cloudflare 的 WAV 直接保存；Cloudflare MeloTTS/Aura 与 Edge 的
+  MP3 由本机 ffmpeg 转成 16 kHz 单声道 WAV，再加密保存。转换失败会明确报错。
+
+### 4.1 多厂商 adapter
+
+语音设置里的“服务商”决定调用哪条端点；也可以保持“自动识别”，由 Base URL
+的 host 判断：
+
+| 服务商 | ASR 端点 | TTS 端点 | 说明 |
+|---|---|---|---|
+| OpenAI 兼容 | `POST /audio/transcriptions` | `POST /audio/speech` | Groq、硅基流动、OpenAI、自建 whisper-server |
+| Gemini | `POST /models/<model>:generateContent` | 同左，`responseModalities=["AUDIO"]` | 原生音频，不走 `/audio/*` |
+| Cloudflare | `POST /ai/run/<model>` | 同左 | ASR 发原始 WAV；TTS 发 JSON |
+| Edge TTS | — | 本机 `edge-tts` 命令 | 无 Key、无 Base URL、无 SLA |
+
+详细填法、模型名、免费额度和隐私注意见 [providers.md](providers.md)。
+
+Gemini / Cloudflare 的原生音频 adapter 会强制使用 HTTP；即使旧配置里保存了
+WebSocket，加载时也会归一到 HTTP。Edge TTS 只出现在 TTS 服务商下拉中。
 
 ## 5. 配置 API
 

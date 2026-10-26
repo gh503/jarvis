@@ -53,6 +53,7 @@ content-type: application/json
 |---|---|---|
 | Ollama | `GET /api/tags` | `models[].name` |
 | Chat Completions / Responses | `GET /models` | `data[].id`（也兼容 `models[]`） |
+| Cloudflare Workers AI | `GET /client/v4/accounts/<id>/ai/models/search` | `result[]`，过滤文本生成模型 |
 | Anthropic Messages | `GET /v1/models` | `data[].id` / `display_name` |
 
 UI 把结果放进 `<select>`，当前模型预选中；没有结果时保留当前值并显示原因。
@@ -67,8 +68,11 @@ Key 仍然是“留空表示保留已保存的 Key”；换 Base URL 时如果�
 部分兼容网关不实现 `GET /models`。发现会返回
 `服务没有 /models，无法自动列出模型`，这是明确的可解释失败，不会静默显示
 空列表。此时仍可用“测试连接”做一次极小的聊天请求验证；但**本版坚持不把
-模型名变成自由文本输入**，所以这类服务需要在上游补 `/models`（或使用支持
-模型发现的网关）。
+模型名变成自由文本输入**，所以这类服务需要在上游补 `/models`。
+
+Cloudflare Workers AI 是例外：它没有 OpenAI `/models`，但有账号级模型搜索，
+`v2/src/model/cloudflare.ts` 把它映射成同一份 `ModelHealth` 列表。Base URL
+必须包含 `/client/v4/accounts/<ACCOUNT_ID>/ai/v1`。
 
 ## 3. 测试与切换
 
@@ -100,4 +104,5 @@ Key 仍然是“留空表示保留已保存的 Key”；换 Base URL 时如果�
 - 不支持 Anthropic prompt caching / extended thinking 参数。
 - 模型发现没有分页；超过 200 个模型会截断。
 - Azure OpenAI 的部署名和 `api-key` 头需要单独 adapter。
+- Cloudflare 模型搜索只过滤文本生成任务；音频/embedding 模型不会出现在聊天模型下拉中（语音设置单独填写）。
 - 切换 embedding 模型不会自动重建向量索引；需要 `npm run memory:reindex`（或删除投影后重建）。

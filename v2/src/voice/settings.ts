@@ -1,6 +1,7 @@
 import { chmod, mkdir, readFile, rename, writeFile } from 'node:fs/promises'
 import { dirname } from 'node:path'
 import { isLoopbackHost } from '../model/settings.ts'
+import { normalizeVoiceAdapter, resolveAsrAdapter, resolveTtsAdapter, type VoiceAdapter } from './providers.ts'
 
 export type VoiceSource = 'local' | 'remote'
 export type AsrTransport = 'websocket' | 'http'
@@ -14,6 +15,7 @@ export interface AsrProfile {
   model: string
   apiKey: string
   language: string
+  adapter?: VoiceAdapter
 }
 
 export interface TtsProfile {
@@ -24,6 +26,7 @@ export interface TtsProfile {
   model: string
   voice: string
   apiKey: string
+  adapter?: VoiceAdapter
 }
 
 export interface VoiceSettings {
@@ -80,6 +83,7 @@ function asrProfile(value: Partial<AsrProfile>, fallback: AsrProfile): AsrProfil
     model: String(value.model ?? fallback.model ?? '').trim(),
     apiKey: String(value.apiKey ?? fallback.apiKey ?? ''),
     language: String(value.language ?? fallback.language ?? 'zh').trim().slice(0, 16) || 'zh',
+    adapter: normalizeVoiceAdapter(value.adapter ?? fallback.adapter),
   }
 }
 
@@ -93,6 +97,7 @@ function ttsProfile(value: Partial<TtsProfile>, fallback: TtsProfile): TtsProfil
     model: String(value.model ?? fallback.model ?? '').trim(),
     voice: String(value.voice ?? fallback.voice ?? '').trim(),
     apiKey: String(value.apiKey ?? fallback.apiKey ?? ''),
+    adapter: normalizeVoiceAdapter(value.adapter ?? fallback.adapter),
   }
 }
 
@@ -125,6 +130,12 @@ export function validateVoiceSettings(settings: VoiceSettings): VoiceSettings {
   // remote provider first. Remote fields are validated when they are set, and
   // strictly when that side is actually active.
   const asrRemote = settings.asr.remote
+  if (normalizeVoiceAdapter(asrRemote.adapter) === 'edge') throw new Error('Edge TTS 只能用于语音合成，不能作为 ASR')
+  const asrAdapter = resolveAsrAdapter(asrRemote)
+  asrRemote.adapter = normalizeVoiceAdapter(asrRemote.adapter)
+  // Native Gemini/Cloudflare audio endpoints are HTTP-only. Normalizing here
+  // keeps old saved WebSocket settings usable instead of rejecting them.
+  if (asrAdapter !== 'openai') asrRemote.transport = 'http'
   if (asrRemote.baseUrl) {
     validateRemoteUrl(
       asrRemote.baseUrl,
@@ -137,8 +148,17 @@ export function validateVoiceSettings(settings: VoiceSettings): VoiceSettings {
     throw new Error(`${asrRemote.label} 还没有填写服务地址`)
   }
   if (settings.activeAsr === 'remote' && !asrRemote.model) throw new Error('远端 ASR 模型不能为空')
+
   const ttsRemote = settings.tts.remote
-  if (ttsRemote.baseUrl) {
+  const ttsAdapter = resolveTtsAdapter(ttsRemote)
+  ttsRemote.adapter = normalizeVoiceAdapter(ttsRemote.adapter)
+  if (ttsAdapter === 'edge') {
+    // Edge TTS is a local command, not an HTTP endpoint. It still uses the
+    // remote slot so the rest of the runtime can switch engines uniformly.
+    ttsRemote.baseUrl = ''
+    ttsRemote.apiKey = ''
+    if (!ttsRemote.model) ttsRemote.model = 'edge-tts'
+  } else if (ttsRemote.baseUrl) {
     validateRemoteUrl(ttsRemote.baseUrl, ttsRemote.label, ['http:', 'https:'])
     validateSecret(ttsRemote.apiKey)
   } else if (settings.activeTts === 'remote') {
@@ -163,17 +183,17 @@ export class VoiceSettingsStore {
   private defaultSettings(): VoiceSettings {
     const localAsr: AsrProfile = {
       id: 'local', label: `本地 ${this.defaults.asrEngine}`, kind: 'local', transport: 'http',
-      baseUrl: '', model: this.defaults.asrModel, apiKey: '', language: this.defaults.asrLanguage,
+      baseUrl: '', model: this.defaults.asrModel, apiKey: '', language: this.defaults.asrLanguage, adapter: 'auto',
     }
     const remoteAsr: AsrProfile = {
       id: 'remote', label: '远端 ASR', kind: 'remote', transport: 'websocket',
-      baseUrl: '', model: 'whisper-1', apiKey: '', language: this.defaults.asrLanguage,
+      baseUrl: '', model: 'whisper-1', apiKey: '', language: this.defaults.asrLanguage, adapter: 'auto',
     }
     const localTts: TtsProfile = {
-      id: 'local', label: '本地 Piper', kind: 'local', baseUrl: '', model: 'piper', voice: this.defaults.ttsVoice, apiKey: '',
+      id: 'local', label: '本地 Piper', kind: 'local', baseUrl: '', model: 'piper', voice: this.defaults.ttsVoice, apiKey: '', adapter: 'auto',
     }
     const remoteTts: TtsProfile = {
-      id: 'remote', label: '远端 TTS', kind: 'remote', baseUrl: '', model: 'tts-1', voice: 'alloy', apiKey: '',
+      id: 'remote', label: '远端 TTS', kind: 'remote', baseUrl: '', model: 'tts-1', voice: 'alloy', apiKey: '', adapter: 'auto',
     }
     return {
       activeAsr: 'local', activeTts: 'local',
