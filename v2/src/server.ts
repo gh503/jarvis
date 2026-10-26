@@ -126,6 +126,7 @@ export class JarvisServer {
   private wss: WebSocketServer | null = null
   private readonly clients = new Set<WebSocket>()
   private readonly startedAt = Date.now()
+  private listeningPort = 0
 
   constructor(private readonly deps: ServerDeps) {}
 
@@ -179,7 +180,9 @@ export class JarvisServer {
 
     const scheme = this.deps.config.tlsCert ? 'https' : 'http'
     const host = this.deps.config.host === '0.0.0.0' || this.deps.config.host === '::' ? '127.0.0.1' : this.deps.config.host
-    return { url: `${scheme}://${host}:${this.deps.config.port}` }
+    const address = this.server?.address()
+    this.listeningPort = address && typeof address === 'object' ? address.port : this.deps.config.port
+    return { url: `${scheme}://${host}:${this.listeningPort}` }
   }
 
   private authorized(request: IncomingMessage, url: URL): boolean {

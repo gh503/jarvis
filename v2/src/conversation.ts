@@ -445,18 +445,33 @@ export class Conversation {
   }
 
   async handleReminder(reminder: Reminder): Promise<void> {
-    const decision = this.deps.policy.decide({
+    const state = this.deps.attention.getState()
+    const userBusy = state === 'listening' || state === 'capturing' || state === 'understanding' || state === 'responding' || state === 'need_context'
+    let decision = this.deps.policy.decide({
       urgency: 0.9,
       relevance: 0.7,
       timeliness: 0.85,
       preference: 0.6,
-      interruptCost: this.deps.policy.isFocus() ? 0.9 : 0.2,
+      interruptCost: userBusy || this.deps.policy.isFocus() ? 1 : 0.2,
       channelCost: 0.15,
     })
+    if (userBusy && decision.speak) {
+      decision = { speak: false, score: decision.score, reason: 'user_busy', channel: 'toast' }
+    }
+    if (state === 'followup') this.deps.attention.reset('proactive_reminder')
+    if (this.deps.attention.getState() === 'idle') {
+      this.deps.attention.send({ type: 'proactive_consider', reason: 'reminder' })
+    }
     let audioUrl: string | undefined
     if (decision.speak) {
+      if (this.deps.attention.getState() === 'considering') {
+        this.deps.attention.send({ type: 'proactive_speak', reason: 'reminder' })
+      }
       audioUrl = await this.speak(`提醒你：${reminder.text}`)
       if (audioUrl) this.deps.policy.noteSpoken()
+      this.deps.attention.reset('proactive_done')
+    } else if (this.deps.attention.getState() === 'considering') {
+      this.deps.attention.send({ type: 'proactive_silent', reason: decision.reason })
     }
     this.deps.bus.emit('proactive.message', { reminder, decision, audioUrl })
   }

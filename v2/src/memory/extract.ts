@@ -19,13 +19,31 @@ const KINDS = new Set<MemoryKind>(['semantic', 'episodic', 'procedural', 'prospe
 const SENSITIVITIES = new Set<MemorySensitivity>(['standard', 'sensitive'])
 
 export function shouldExtract(userText: string, assistantText: string): boolean {
-  const text = `${userText}\n${assistantText}`
   const trimmed = userText.trim()
+  void assistantText
   if (trimmed.length < 8) return false
   // Explicit remembering is already handled synchronously and must not create
   // a second, inferred duplicate.
   if (/^(\/remember|记住|帮我记住|忘掉|忘记|删除记忆|\/forget|\/memory|查看记忆|列出记忆)/i.test(trimmed)) return false
-  return /(答应|承诺|决定|以后|下次|截止|deadline|项目|喜欢|不喜欢|习惯|我的|我在做|住在|搬到|对.*过敏|重要)/.test(text)
+  return /(答应|承诺|决定|以后|下次|截止|deadline|喜欢|不喜欢|习惯|我住在|我搬到|对.*过敏|重要|我的[^，。]{0,12}(是|叫|在))/.test(trimmed)
+}
+
+const GENERIC_PREFIX = /^(用户|助手|Jarvis|他|她|这个|那个|任务|事情|内容|信息)/i
+const GENERIC_FRAGMENT = /(任务的截止日期|准备工作的安排|一次性任务|聊天内容)/
+
+/**
+ * Inferred candidates are only useful when they are specific and grounded in
+ * what the user actually said. A small local model otherwise invents generic
+ * “用户需要完成任务” rows that pollute recall.
+ */
+export function isUsefulCandidate(content: string, userText: string): boolean {
+  const clean = content.trim()
+  if (clean.length < 6) return false
+  if (GENERIC_PREFIX.test(clean) || GENERIC_FRAGMENT.test(clean)) return false
+  const chars = [...userText].filter(char => !/\s|[，。！？,.!?：:；;、]/.test(char))
+  if (chars.length === 0) return false
+  const overlap = chars.filter(char => clean.includes(char)).length
+  return overlap / chars.length >= 0.4
 }
 
 export function parseExtraction(text: string): Candidate[] {
@@ -57,7 +75,6 @@ export class MemoryExtractor {
       '{"memories":[{"kind":"semantic|episodic|procedural|prospective","content":"...","gist":"...","importance":{"goal":0.5,"novelty":0.5,"social":0.5,"repetition":0.5,"explicit":0.5,"deadline":0.5},"sensitivity":"standard|sensitive"}]}',
       '',
       `用户说：${userText.slice(0, 4000)}`,
-      `助手回答：${assistantText.slice(0, 2000)}`,
     ].join('\n')
 
     try {
@@ -75,6 +92,7 @@ export class MemoryExtractor {
       for (const candidate of candidates) {
         const content = String(candidate.content ?? '').trim()
         if (content.length < 4 || content.length > 2000) continue
+        if (!isUsefulCandidate(content, userText)) continue
         const normalized = content.replace(/\s+/g, '').replace(/[。！？.!?]/g, '').toLowerCase()
         if (known.has(normalized)) continue
         known.add(normalized)

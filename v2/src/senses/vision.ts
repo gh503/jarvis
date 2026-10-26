@@ -68,6 +68,7 @@ export async function describeCapture(
   allowVision = false,
 ): Promise<string> {
   if (ocr && (capture.source === 'camera' || capture.source === 'portal' || capture.source === 'x11')) {
+    let ocrFailed = false
     try {
       const result = await ocr.recognize(capture.path)
       if (result.text.trim().length >= 6) {
@@ -77,7 +78,10 @@ export async function describeCapture(
         return '屏幕里没有读到可识别的文字。如果这是一张图片或视频，可以对我说“用视觉看屏幕”，我再调用视觉模型。'
       }
     } catch {
-      // OCR is an optimization; fall through to the vision model.
+      ocrFailed = true
+    }
+    if (ocrFailed && !allowVision && capture.source !== 'camera') {
+      return '本地 OCR 没有跑起来；为了不让你等两分钟，我先不调用视觉模型。可以运行 npm run doctor 检查 RapidOCR，或对我说“用视觉看屏幕”。'
     }
   }
   return await describeImage(client, capture, userText, signal)
