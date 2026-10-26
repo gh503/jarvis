@@ -59,6 +59,7 @@ function securityHeaders(response: ServerResponse): void {
   response.setHeader('X-Content-Type-Options', 'nosniff')
   response.setHeader('Referrer-Policy', 'no-referrer')
   response.setHeader('X-Frame-Options', 'DENY')
+  response.setHeader('Permissions-Policy', 'camera=(self), microphone=(self), display-capture=(self), geolocation=()')
   response.setHeader(
     'Content-Security-Policy',
     "default-src 'self'; connect-src 'self' ws: wss:; img-src 'self' data: blob:; media-src 'self' blob:; style-src 'self' 'unsafe-inline'; script-src 'self'; font-src 'self'; frame-ancestors 'none'; base-uri 'none'",
@@ -277,6 +278,7 @@ export class JarvisServer {
 
   private async handle(request: IncomingMessage, response: ServerResponse): Promise<void> {
     securityHeaders(response)
+    if (this.deps.config.tlsCert) response.setHeader('Strict-Transport-Security', 'max-age=15552000')
     const url = new URL(request.url ?? '/', 'http://localhost')
     const path = decodeURIComponent(url.pathname)
 
