@@ -356,7 +356,6 @@ export class JarvisServer {
           byKind,
           byStatus,
           bySensitivity,
-          episodes: this.deps.memory.listEpisodes(30).slice(0, 12),
         },
         tuning: this.deps.tuning.current(),
         config: this.publicConfig(),
