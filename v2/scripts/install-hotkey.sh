@@ -4,6 +4,7 @@
 set -euo pipefail
 
 binding="${1:-<Super>j}"
+port="${JARVIS_PORT:-3081}"
 base="org.gnome.settings-daemon.plugins.media-keys"
 path="/org/gnome/settings-daemon/plugins/media-keys/custom-keybindings/jarvis/"
 desktop="${XDG_CURRENT_DESKTOP:-}"
@@ -29,7 +30,7 @@ if [[ "$current" != *"$path"* ]]; then
 fi
 schema="${base}.custom-keybinding:$path"
 gsettings set "$schema" name 'Jarvis'
-gsettings set "$schema" command 'xdg-open http://127.0.0.1:3081'
+gsettings set "$schema" command "xdg-open http://127.0.0.1:$port"
 gsettings set "$schema" binding "$binding"
-echo "Installed: $binding opens http://127.0.0.1:3081"
+echo "Installed: $binding opens http://127.0.0.1:$port"
 echo "Disable with: gsettings set $base custom-keybindings \"$(gsettings get "$base" custom-keybindings | sed "s#, '$path'##; s#'$path', ##")\""

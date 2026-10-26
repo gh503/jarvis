@@ -20,16 +20,19 @@ try {
   const snapshot = join(work, 'jarvis.db')
   const db = new DatabaseSync(dbFile)
   try {
+    db.exec('PRAGMA busy_timeout = 5000')
     db.exec(`VACUUM INTO '${snapshot.replace(/'/g, "''")}'`)
   } finally {
     db.close()
   }
 
+  await chmod(snapshot, 0o600)
   const files = ['jarvis.db']
   for (const name of ['tuning.json', ...(includeSecrets ? ['model-config.json'] : [])]) {
     const source = join(dataDir, name)
     if (existsSync(source)) {
       await copyFile(source, join(work, name))
+      await chmod(join(work, name), 0o600)
       files.push(name)
     }
   }

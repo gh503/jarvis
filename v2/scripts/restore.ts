@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 import { DatabaseSync } from 'node:sqlite'
 import { chmod, copyFile, mkdtemp, readFile, rm, rename } from 'node:fs/promises'
-import { existsSync } from 'node:fs'
+import { existsSync, statSync } from 'node:fs'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 import { spawnSync } from 'node:child_process'
@@ -28,6 +28,17 @@ if (!args.includes('--force')) {
 }
 const work = await mkdtemp(join(tmpdir(), 'jarvis-restore-'))
 try {
+  if (statSync(archive).size > 1_000_000_000) throw new Error('backup archive is too large')
+  const listing = spawnSync('tar', ['-tvzf', archive], { encoding: 'utf8', maxBuffer: 8 * 1024 * 1024 })
+  if (listing.status !== 0) throw new Error(`cannot list backup archive: ${listing.stderr || 'tar failed'}`)
+  const allowed = new Set(['', 'jarvis.db', 'manifest.json', 'tuning.json', 'model-config.json'])
+  for (const line of listing.stdout.split('\n').filter(Boolean)) {
+    const type = line[0]
+    const name = line.trim().split(/\s+/).pop()?.replace(/^\.\//, '') ?? ''
+    if ((type !== '-' && type !== 'd') || name.includes('..') || name.startsWith('/') || !allowed.has(name)) {
+      throw new Error(`unsafe entry in backup archive: ${line.slice(0, 120)}`)
+    }
+  }
   await runProcess('tar', ['-xzf', archive, '-C', work], { timeoutMs: 120_000 })
   const manifestFile = join(work, 'manifest.json')
   if (!existsSync(manifestFile)) throw new Error('archive has no manifest.json')
@@ -62,6 +73,9 @@ try {
     }
   }
   console.log(JSON.stringify({ ok: true, restored: manifest.files ?? [], dataDir, safety }, null, 2))
+} catch (error) {
+  console.error(`restore failed: ${error instanceof Error ? error.message : String(error)}`)
+  process.exitCode = 1
 } finally {
   await rm(work, { recursive: true, force: true })
 }

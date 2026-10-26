@@ -76,7 +76,7 @@ journalctl --user -u jarvis -f
 ```bash
 cd ~/jarvis/v2
 npm run backup -- ~/jarvis-backup.tar.gz
-# 归档含 jarvis.db、tuning.json、manifest.json；不含 auth-token、音频、画面、日志
+# 归档含 jarvis.db、tuning.json、manifest.json；不含 auth-token、secret.key、音频、画面、telemetry、日志
 # 需要连模型 Key 一起备份时加 --include-secrets（文件仍是 0600）
 ```
 
@@ -338,9 +338,12 @@ curl -s -X DELETE http://127.0.0.1:3081/api/dev/demo-memory -H 'x-jarvis-demo: 1
 
 - 没有唤醒词常听；第一版是按住说话。音频只在按住期间采集。
 - 没有 WebRTC；远程是 PWA + WebSocket。
-- 工具执行目前只有确认后的打开网页/文件管理器；没有任意文件写入、终端或日历。
+- 工具执行目前只有确认后的打开网页/文件管理器；没有任意文件写入、终端或**双向**日历；只读 ICS 只用于简报。
 - 视觉模型在 4 GB 显存上不具备实时性；已降级为显式可选路径。
 - 记忆巩固目前是确定性去重/过期/索引重建，不含 LLM 摘要。
 - 屏幕捕获的窗口级黑名单在原生 Wayland 下不可用；portal 授权是实际边界。
-- Studio 的 telemetry 只在内存保留最近 80 个 turn / 240 条事件，重启归零；未做按天落盘。
+- Studio 的实时 ring 只保留最近 80 个 turn / 240 条事件；已完成回合另存 `data/telemetry.jsonl`（加密、5 MB 滚动），重启后可回看。
 - 记忆图暂不支持手动连线/取消连线；`memory_links` 表已存在，API 仅服务端演示/巩固可写。
+- 记忆数据库没有全库加密；captures/audio/telemetry 已加密，但 DB 依赖 0600 + 整盘 LUKS。
+- 设备令牌等价主令牌，没有按设备限权；丢失设备要在设置里撤销。
+- 没有 GNOME 托盘图标；用桌面图标、PWA 独立窗口或 `scripts/install-hotkey.sh`。

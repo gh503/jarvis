@@ -902,7 +902,7 @@ export class JarvisServer {
       if (!info.isFile()) throw new Error('not a file')
       response.statusCode = 200
       response.setHeader('content-type', MIME[extname(path).toLowerCase()] ?? 'application/octet-stream')
-      response.setHeader('cache-control', 'private, max-age=3600')
+      response.setHeader('cache-control', 'private, no-store')
       response.end(this.deps.secure.decryptFile(path))
     } catch {
       sendText(response, 404, 'not found')
