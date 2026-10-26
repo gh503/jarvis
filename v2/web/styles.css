@@ -617,3 +617,11 @@ kbd { font-family: var(--mono); font-size: 9px; border: 1px solid var(--line); b
   line-height: 1.5;
   word-break: break-all;
 }
+
+.memory-why {
+  color: var(--faint);
+  font-family: var(--mono);
+  font-size: 9.5px;
+  line-height: 1.5;
+  margin-top: 7px;
+}

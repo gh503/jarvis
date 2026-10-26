@@ -397,6 +397,13 @@ function renderMemory(items = state.memory) {
     source.className = 'memory-source'
     source.textContent = `${item.sourceKind} · ${new Date(item.updatedAt).toLocaleDateString('zh-CN')}`
 
+    let why = null
+    if (Array.isArray(item.why) && item.why.length) {
+      why = document.createElement('div')
+      why.className = 'memory-why'
+      why.textContent = `为什么想起：${item.why.join(' · ')}${typeof item.score === 'number' ? ` · 相关度 ${item.score}` : ''}`
+    }
+
     const actions = document.createElement('div')
     actions.className = 'memory-actions'
     if (item.status === 'proposed') {
@@ -404,7 +411,7 @@ function renderMemory(items = state.memory) {
       actions.appendChild(actionButton('忽略', 'reject'))
     }
     actions.appendChild(actionButton('删除', 'delete', true))
-    card.append(top, text, source, actions)
+    card.append(top, text, source, ...(why ? [why] : []), actions)
     list.appendChild(card)
   }
 }
