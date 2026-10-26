@@ -1172,6 +1172,47 @@ function providerCardsHtml(settings, selectedId) {
   }).join('')
 }
 
+function scenarioRowHtml(scenario, orderedProfiles, profiles) {
+  const chain = scenario.profileIds && scenario.profileIds.length ? scenario.profileIds : []
+  const chainText = chain.length
+    ? chain.map(id => profiles.find(item => item.id === id)?.label || id).join(' → ')
+    : '跟随全局优先级'
+  return `<details class="scenario-row" data-scenario="${escapeHtml(scenario.id)}"${scenario.custom ? ' data-custom="1"' : ''}>
+    <summary>
+      <span class="scenario-title">${escapeHtml(scenario.label)}${scenario.custom ? ' <small class="scenario-custom-tag">自定义</small>' : ''}</span>
+      <span class="scenario-meta">${escapeHtml(chainText)}${scenario.model ? ` · ${escapeHtml(scenario.model)}` : ''}${scenario.temperature !== null && scenario.temperature !== undefined ? ` · T=${scenario.temperature}` : ''}</span>
+    </summary>
+    <div class="scenario-body">
+      <div class="scenario-row-head">
+        <label class="settings-field"><span>启用（参与自动识别）</span>
+          <input type="checkbox" class="scenario-enabled" ${scenario.enabled ? 'checked' : ''}>
+        </label>
+        ${scenario.custom ? `<button type="button" class="model-action quiet danger scenario-delete" title="删除该自定义场景">删除场景</button>` : ''}
+      </div>
+      ${scenario.custom ? `<label class="settings-field"><span>名称</span><input type="text" class="scenario-label" value="${escapeHtml(scenario.label)}" maxlength="32"></label>` : ''}
+      <div class="settings-field"><span>供应商链（按全局优先级勾排；不勾 = 跟随全局）</span>
+        <div class="scenario-chain">
+          ${orderedProfiles.map(profile => `<label class="scenario-chain-item"><input type="checkbox" class="scenario-profile" value="${escapeHtml(profile.id)}" ${chain.includes(profile.id) ? 'checked' : ''}> ${escapeHtml(profile.label)}</label>`).join('')}
+        </div>
+      </div>
+      <div class="settings-form-grid">
+        <label class="settings-field"><span>模型覆盖 <em>可选</em></span>
+          <input type="text" class="scenario-model" value="${escapeHtml(scenario.model || '')}" placeholder="留空用供应商默认模型" autocomplete="off" spellcheck="false">
+        </label>
+        <label class="settings-field"><span>温度 <em>可选</em></span>
+          <input type="number" class="scenario-temperature" min="0" max="2" step="0.1" value="${scenario.temperature ?? ''}" placeholder="默认">
+        </label>
+      </div>
+      <label class="settings-field"><span>自动识别关键词（逗号分隔）</span>
+        <input type="text" class="scenario-patterns" value="${escapeHtml((scenario.patterns || []).join('，'))}" placeholder="留空不参与自动识别" autocomplete="off">
+      </label>
+      <label class="settings-field"><span>场景提示词（注入系统提示）</span>
+        <textarea class="scenario-extra" rows="2" maxlength="4000">${escapeHtml(scenario.systemExtra || '')}</textarea>
+      </label>
+    </div>
+  </details>`
+}
+
 function scenarioCardHtml(settings) {
   const scenarios = settings.scenarios || []
   const profiles = settings.profiles || []
@@ -1181,42 +1222,10 @@ function scenarioCardHtml(settings) {
     const ib = priority.indexOf(b.id)
     return (ia < 0 ? 999 : ia) - (ib < 0 ? 999 : ib)
   })
-  const rows = scenarios.map(scenario => {
-    const chain = scenario.profileIds && scenario.profileIds.length ? scenario.profileIds : []
-    const chainText = chain.length
-      ? chain.map(id => profiles.find(item => item.id === id)?.label || id).join(' → ')
-      : '跟随全局优先级'
-    return `<details class="scenario-row" data-scenario="${escapeHtml(scenario.id)}">
-      <summary>
-        <span class="scenario-title">${escapeHtml(scenario.label)}</span>
-        <span class="scenario-meta">${escapeHtml(chainText)}${scenario.model ? ` · ${escapeHtml(scenario.model)}` : ''}${scenario.temperature !== null && scenario.temperature !== undefined ? ` · T=${scenario.temperature}` : ''}</span>
-      </summary>
-      <div class="scenario-body">
-        <label class="settings-field"><span>启用（参与自动识别）</span>
-          <input type="checkbox" class="scenario-enabled" ${scenario.enabled ? 'checked' : ''}>
-        </label>
-        <div class="settings-field"><span>供应商链（按全局优先级勾排；不勾 = 跟随全局）</span>
-          <div class="scenario-chain">
-            ${orderedProfiles.map(profile => `<label class="scenario-chain-item"><input type="checkbox" class="scenario-profile" value="${escapeHtml(profile.id)}" ${chain.includes(profile.id) ? 'checked' : ''}> ${escapeHtml(profile.label)}</label>`).join('')}
-          </div>
-        </div>
-        <div class="settings-form-grid">
-          <label class="settings-field"><span>模型覆盖 <em>可选</em></span>
-            <input type="text" class="scenario-model" value="${escapeHtml(scenario.model || '')}" placeholder="留空用供应商默认模型" autocomplete="off" spellcheck="false">
-          </label>
-          <label class="settings-field"><span>温度 <em>可选</em></span>
-            <input type="number" class="scenario-temperature" min="0" max="2" step="0.1" value="${scenario.temperature ?? ''}" placeholder="默认">
-          </label>
-        </div>
-        <label class="settings-field"><span>场景提示词（注入系统提示）</span>
-          <textarea class="scenario-extra" rows="2" maxlength="2000">${escapeHtml(scenario.systemExtra || '')}</textarea>
-        </label>
-      </div>
-    </details>`
-  }).join('')
+  const rows = scenarios.map(scenario => scenarioRowHtml(scenario, orderedProfiles, profiles)).join('')
   return `<div class="settings-card" id="scenario-card">
     <div class="settings-card-head">
-      <div><h4>工作场景</h4><p>不同场景走不同的供应商链和提示词；自动识别按消息内容判断，也可以在输入框旁手动指定。</p></div>
+      <div><h4>工作场景</h4><p>参考 ChatGPT / Claude Code / 办公助手的场景设计：每个场景有独立的供应商链、模型、温度和提示词；自动识别按消息内容判断，也可在输入框旁手动指定。</p></div>
     </div>
     <div class="scenario-toolbar">
       <label class="scenario-auto"><input type="checkbox" id="scenario-auto" ${settings.scenarioAuto !== false ? 'checked' : ''}> 自动识别场景</label>
@@ -1225,10 +1234,11 @@ function scenarioCardHtml(settings) {
           ${scenarios.map(item => `<option value="${escapeHtml(item.id)}" ${item.id === settings.defaultScenario ? 'selected' : ''}>${escapeHtml(item.label)}</option>`).join('')}
         </select>
       </label>
+      <button type="button" class="model-action" id="scenario-add">+ 自定义场景</button>
       <button type="button" class="model-action primary" id="scenario-save">保存场景</button>
       <span class="settings-feedback" id="scenario-result" role="status"></span>
     </div>
-    ${rows}
+    <div id="scenario-list">${rows}</div>
   </div>`
 }
 
@@ -1662,25 +1672,57 @@ function renderScenarioCard() {
   bindScenarioCard()
 }
 
+function scenarioRowFromDom(row) {
+  const temperatureRaw = row.querySelector('.scenario-temperature')?.value
+  const patternsRaw = row.querySelector('.scenario-patterns')?.value || ''
+  return {
+    id: row.dataset.scenario,
+    label: row.querySelector('.scenario-label')?.value.trim(),
+    enabled: Boolean(row.querySelector('.scenario-enabled')?.checked),
+    profileIds: [...row.querySelectorAll('.scenario-profile:checked')].map(input => input.value),
+    model: row.querySelector('.scenario-model')?.value.trim() || '',
+    temperature: temperatureRaw === '' ? null : Number(temperatureRaw),
+    systemExtra: row.querySelector('.scenario-extra')?.value || '',
+    patterns: patternsRaw.split(/[,，]/).map(item => item.trim()).filter(Boolean),
+  }
+}
+
 function bindScenarioCard() {
   const save = $('#scenario-save')
   if (!save || save.dataset.bound) return
   save.dataset.bound = '1'
+
+  $('#scenario-add')?.addEventListener('click', () => {
+    const list = $('#scenario-list')
+    if (!list || !state.modelSettings) return
+    const profiles = state.modelSettings.profiles || []
+    const priority = state.modelSettings.priority?.length ? state.modelSettings.priority : profiles.map(item => item.id)
+    const orderedProfiles = [...profiles].sort((a, b) => priority.indexOf(a.id) - priority.indexOf(b.id))
+    const draft = {
+      id: `s-${Date.now().toString(36)}`,
+      label: '新场景',
+      profileIds: [], model: '', temperature: null, maxTokens: null,
+      systemExtra: '', patterns: [], enabled: true, custom: true,
+    }
+    const template = document.createElement('template')
+    template.innerHTML = scenarioRowHtml(draft, orderedProfiles, profiles).trim()
+    const row = template.content.firstElementChild
+    row.open = true
+    list.appendChild(row)
+    bindScenarioRowDeletes(list)
+    markSettingsDirty('model')
+  })
+
+  bindScenarioRowDeletes($('#scenario-list'))
+
   save.addEventListener('click', async () => {
-    const scenarios = (state.modelSettings?.scenarios || []).map(scenario => {
-      const row = document.querySelector(`[data-scenario="${scenario.id}"]`)
-      if (!row) return { id: scenario.id }
-      const profileIds = [...row.querySelectorAll('.scenario-profile:checked')].map(input => input.value)
-      const temperatureRaw = row.querySelector('.scenario-temperature')?.value
-      return {
-        id: scenario.id,
-        enabled: Boolean(row.querySelector('.scenario-enabled')?.checked),
-        profileIds,
-        model: row.querySelector('.scenario-model')?.value.trim() || '',
-        temperature: temperatureRaw === '' ? null : Number(temperatureRaw),
-        systemExtra: row.querySelector('.scenario-extra')?.value || '',
-      }
-    })
+    const rows = [...document.querySelectorAll('#scenario-list [data-scenario]')]
+    const scenarios = rows.map(scenarioRowFromDom)
+    if (scenarios.some(item => item.label !== undefined && !item.label)) {
+      const result = $('#scenario-result')
+      if (result) { result.textContent = '自定义场景需要名称'; result.className = 'settings-feedback bad' }
+      return
+    }
     const result = $('#scenario-result')
     save.disabled = true
     try {
@@ -1695,12 +1737,27 @@ function bindScenarioCard() {
       state.modelSettings = data.settings
       renderScenarioCard()
       renderScenarioSelect()
+      clearSettingsDirty('model')
       if (result) { result.textContent = '场景已保存'; result.className = 'settings-feedback ok' }
     } catch (error) {
       if (result) { result.textContent = `保存失败：${error.message}`; result.className = 'settings-feedback bad' }
     } finally {
       save.disabled = false
     }
+  })
+}
+
+function bindScenarioRowDeletes(scope) {
+  scope?.querySelectorAll('.scenario-delete').forEach(button => {
+    if (button.dataset.bound) return
+    button.dataset.bound = '1'
+    button.addEventListener('click', () => {
+      const row = button.closest('[data-scenario]')
+      if (row && window.confirm('删除这个自定义场景？')) {
+        row.remove()
+        markSettingsDirty('model')
+      }
+    })
   })
 }
 

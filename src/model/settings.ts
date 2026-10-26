@@ -1,7 +1,7 @@
 import { chmod, mkdir, readFile, rename, writeFile } from 'node:fs/promises'
 import type { LlmProtocol } from './types.ts'
 import { dirname, join } from 'node:path'
-import { builtinScenarios, normalizeScenario, SCENARIO_CHAT, type ScenarioConfig } from './scenarios.ts'
+import { builtinScenarios, normalizeCustomScenario, normalizeScenario, SCENARIO_CHAT, type ScenarioConfig } from './scenarios.ts'
 
 export type ProviderKind = 'ollama' | 'openai'
 
@@ -172,10 +172,27 @@ export class ModelSettingsStore {
     const priority = [...priorityRaw, ...fallbackOrder.filter(id => !priorityRaw.includes(id))]
     const builtins = builtinScenarios()
     const savedScenarios = Array.isArray(saved.scenarios) ? saved.scenarios : []
+    // Old catalogs fold into their successor instead of lingering as customs.
+    const legacyScenarioIds: Record<string, string> = { reasoning: 'research' }
     const scenarios = builtins.map(builtin => {
-      const found = savedScenarios.find(item => item && item.id === builtin.id)
-      return normalizeScenario(found, builtin)
+      const direct = savedScenarios.find(item => item && item.id === builtin.id)
+      if (direct) return normalizeScenario(direct, builtin)
+      const legacy = savedScenarios.find(item => item && item.id && legacyScenarioIds[String(item.id)] === builtin.id)
+      if (!legacy) return normalizeScenario(undefined, builtin)
+      // Folding a renamed scenario keeps the new catalog's richer defaults and
+      // only carries over the user's extras (patterns union, not replace).
+      const legacyPatterns = Array.isArray((legacy as { patterns?: unknown }).patterns) ? (legacy as { patterns: unknown[] }).patterns : []
+      return normalizeScenario({ ...(legacy as object), patterns: [...legacyPatterns, ...builtin.patterns] }, builtin)
     })
+    for (const item of savedScenarios) {
+      const id = item && typeof item === 'object' ? String((item as { id?: unknown }).id ?? '') : ''
+      if (!id || id in legacyScenarioIds || scenarios.some(existing => existing.id === id)) continue
+      try {
+        scenarios.push(normalizeCustomScenario({ ...(item as object), id }))
+      } catch {
+        // A malformed custom scenario is dropped, not fatal.
+      }
+    }
     const defaultScenario = scenarios.some(item => item.id === saved.defaultScenario) ? String(saved.defaultScenario) : SCENARIO_CHAT
     const cooldowns: ModelSettings['cooldowns'] = {}
     if (saved.cooldowns && typeof saved.cooldowns === 'object') {
@@ -204,7 +221,10 @@ export class ModelSettingsStore {
     const ids = new Set(settings.profiles.map(item => item.id))
     if (ids.size !== settings.profiles.length) throw new Error('模型配置 id 重复')
     for (const id of settings.priority) if (!ids.has(id)) throw new Error(`优先级列表里有不存在的配置：${id}`)
+    const scenarioIds = new Set(settings.scenarios.map(item => item.id))
+    if (scenarioIds.size !== settings.scenarios.length) throw new Error('场景 id 重复')
     for (const scenario of settings.scenarios) {
+      if (!/^[a-z0-9-]{1,32}$/.test(scenario.id)) throw new Error(`场景 id 不合法：${scenario.id}`)
       for (const id of scenario.profileIds) if (!ids.has(id)) throw new Error(`场景 ${scenario.label} 引用了不存在的配置：${id}`)
     }
     if (!settings.scenarios.some(item => item.id === settings.defaultScenario)) throw new Error('默认场景不存在')
@@ -320,9 +340,15 @@ export class ModelSettingsStore {
     const settings = await this.load()
     const incoming = Array.isArray(input.scenarios) ? input.scenarios : []
     const scenarios = settings.scenarios.map(current => {
+      if (current.custom) return null // customs are rebuilt from the payload below
       const found = incoming.find(item => item && (item as { id?: unknown }).id === current.id)
       return normalizeScenario(found, current)
-    })
+    }).filter((item): item is ScenarioConfig => item !== null)
+    for (const item of incoming) {
+      const id = item && typeof item === 'object' ? String((item as { id?: unknown }).id ?? '') : ''
+      if (!id || scenarios.some(existing => existing.id === id)) continue
+      scenarios.push(normalizeCustomScenario({ ...(item as object), id }))
+    }
     const defaultScenario = scenarios.some(item => item.id === input.defaultScenario) ? String(input.defaultScenario) : settings.defaultScenario
     const next: ModelSettings = {
       ...settings,

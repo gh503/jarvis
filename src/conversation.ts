@@ -546,6 +546,7 @@ export class Conversation {
         temperature: scenario?.temperature ?? this.deps.tuning.number('conversation.temperature'),
         timeoutMs: Math.round(this.deps.tuning.number('conversation.streamTimeoutMs')),
         model: scenario?.model || undefined,
+        maxTokens: scenario?.maxTokens ?? undefined,
         profileIds: scenario && scenario.profileIds.length > 0 ? scenario.profileIds : undefined,
       })) {
         reply += delta

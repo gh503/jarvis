@@ -3,7 +3,7 @@
 - Date: 2026-10-26
 - Branch: `main`
 - Runtime: `v2/`（TypeScript / Node 24 / SQLite / 本地 Web UI）
-- Tests: 95 passing (`TZ=Asia/Shanghai npm test`), typecheck clean
+- Tests: 97 passing (`TZ=Asia/Shanghai npm test`), typecheck clean
 - Release acceptance: [release-acceptance-2026-10-26.md](release-acceptance-2026-10-26.md)
 
 ## 1. 已实现并跑通
@@ -24,7 +24,7 @@
 | 三种 LLM 协议：Chat Completions / Responses / Anthropic Messages | `src/model/{openai,anthropic,router}.ts` | `test/{openai,anthropic}.test.ts`；SSE/非流式、图片、system、Key 头 |
 | 供应商池：任意数量远端 profile + 优先级链 | `src/model/{settings,router,failover}.ts`, `src/server.ts` | `test/{failover,scenarios,model-api}.test.ts`；真实服务故障演练（dead provider → local）通过 |
 | 额度/故障自动切换 + 冷却持久化 | `src/model/failover.ts`, `src/model/router.ts` | 402/429/401/网络/5xx 分类；冷却落盘；`model.failover` SSE；已产出流不重试 |
-| 工作场景（编程/写作/推理） | `src/model/scenarios.ts`, `src/conversation.ts`, `web/app.js` | 自动识别 + 手动指定；场景链/模型/温度/提示词注入；`test/scenarios.test.ts` |
+| 工作场景（10 内置 + 自定义，参考 ChatGPT/Claude Code/办公助手） | `src/model/scenarios.ts`, `src/conversation.ts`, `web/app.js` | 自动识别 + 手动钉住；场景链/模型/温度/提示词/maxTokens；旧 reasoning 折入 research；`test/scenarios.test.ts` |
 | 模型列表从服务地址自动发现 | `src/model/{openai,anthropic,ollama,router,cloudflare}.ts`, `src/server.ts`, `web/app.js` | `POST /api/model/list`；本地 Ollama 实测 5 个模型；Cloudflare 账号模型搜索 mock 测试；UI 下拉 |
 | 多厂商语音 adapter（Gemini / Cloudflare / Edge） | `src/voice/{providers,remote,edge}.ts`, `src/voice/{settings,runtime}.ts` | `test/{voice-providers,voice-settings}.test.ts`；Gemini ASR/TTS、Cloudflare ASR/TTS、Edge 可用性 |
 | 语音本地/远端独立切换 | `src/voice/{settings,runtime,remote}.ts`, `src/main.ts` | `test/{voice-settings,voice-remote}.test.ts`；mock HTTP 端到端 ASR+TTS 实测 |
