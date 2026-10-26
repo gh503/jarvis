@@ -1,5 +1,7 @@
 # Jarvis v2 — 重新设计基线
 
+![Jarvis v2 桌面界面](screenshots/jarvis-home.png)
+
 - Status: **v2 baseline accepted; a working vertical slice is implemented under `v2/`**
 - Branch: `feat/jarvis-v2`
 - Date: 2026-10-26
