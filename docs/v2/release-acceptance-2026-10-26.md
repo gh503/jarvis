@@ -2,7 +2,8 @@
 
 - 日期：2026-10-26（Asia/Shanghai）
 - 分支：`feat/jarvis-v2`
-- 基线：`1aeeccd` + 本次验收修复（与本报告同批提交）
+- 基线：`1aeeccd`
+- 验收修复：`27c2bd8`；输入类型校验补丁：`deaa329`
 - 环境：Ubuntu 22.04.5 / Wayland / Node v24.14.0 / Chrome headless CDP
 - 主机：单用户、本机优先；监听 `http://127.0.0.1:3081`
 
