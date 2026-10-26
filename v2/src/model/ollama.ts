@@ -14,6 +14,7 @@ export interface ChatOptions {
   numCtx?: number
   signal?: AbortSignal
   timeoutMs?: number
+  keepAlive?: string
 }
 
 export interface OllamaModel {
@@ -39,14 +40,16 @@ export class OllamaClient implements Embedder {
   readonly model: string
   readonly visionModel: string
   readonly embedModel: string
+  readonly keepAlive: string
 
   constructor(
     private readonly baseUrl: string,
-    options: { model: string; visionModel: string; embedModel: string },
+    options: { model: string; visionModel: string; embedModel: string; keepAlive?: string },
   ) {
     this.model = options.model
     this.visionModel = options.visionModel
     this.embedModel = options.embedModel
+    this.keepAlive = options.keepAlive ?? '24h'
   }
 
   async health(timeoutMs = 3000): Promise<{ ok: boolean; models: OllamaModel[]; error?: string }> {
@@ -74,6 +77,7 @@ export class OllamaClient implements Embedder {
       model,
       messages,
       stream,
+      keep_alive: options.keepAlive ?? this.keepAlive,
       options: {
         temperature: options.temperature ?? 0.4,
         num_ctx: options.numCtx ?? 4096,
@@ -141,6 +145,19 @@ export class OllamaClient implements Embedder {
     return result.trim()
   }
 
+  async warmup(): Promise<{ chatMs: number; embedMs: number }> {
+    const chatStart = Date.now()
+    await this.chatOnce([{ role: 'user', content: '只回复：ok' }], {
+      temperature: 0,
+      numCtx: 4096,
+      timeoutMs: 60_000,
+    })
+    const chatMs = Date.now() - chatStart
+    const embedStart = Date.now()
+    await this.embed('warmup')
+    return { chatMs, embedMs: Date.now() - embedStart }
+  }
+
   async vision(image: Buffer, prompt: string, options: ChatOptions = {}): Promise<string> {
     return this.chatOnce(
       [{ role: 'user', content: prompt, images: [image.toString('base64')] }],
@@ -155,7 +172,7 @@ export class OllamaClient implements Embedder {
       const response = await fetch(`${this.baseUrl}/api/embed`, {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ model: this.embedModel, input: text }),
+        body: JSON.stringify({ model: this.embedModel, input: text, keep_alive: this.keepAlive }),
         signal: controller.signal,
       })
       if (response.ok) {
@@ -167,7 +184,7 @@ export class OllamaClient implements Embedder {
       const fallback = await fetch(`${this.baseUrl}/api/embeddings`, {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ model: this.embedModel, prompt: text }),
+        body: JSON.stringify({ model: this.embedModel, prompt: text, keep_alive: this.keepAlive }),
         signal: controller.signal,
       })
       if (!fallback.ok) return null

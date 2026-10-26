@@ -50,6 +50,7 @@ export interface TurnResult {
   audioUrl?: string
   memoryIds?: string[]
   contextUsed?: string[]
+  audioSpoken?: boolean
   error?: string
 }
 
@@ -101,6 +102,8 @@ export class Conversation {
   private busy = false
   private abort: AbortController | null = null
   private followupTimer: NodeJS.Timeout | null = null
+  private speechQueue: Promise<void> = Promise.resolve()
+  private turnAudioUrls: string[] = []
   private modelReady = false
   private voiceReady = { asr: false, tts: false }
   private lastHealth: { ok: boolean; models: string[]; error?: string } = { ok: false, models: [] }
@@ -123,6 +126,22 @@ export class Conversation {
     this.voiceReady = {
       asr: await this.deps.transcriber.available(),
       tts: await this.deps.synthesizer.available(),
+    }
+    if (this.voiceReady.tts) {
+      try {
+        await this.deps.synthesizer.warmup()
+      } catch (error) {
+        this.deps.logger.warn('tts warm-up failed', { error: String(error) })
+      }
+    }
+    // Load the chat and embedding models before the HTTP server starts. This
+    // turns the first user turn from a cold model load into a warm reply.
+    const warmStart = Date.now()
+    try {
+      const warm = await this.deps.model.warmup()
+      this.deps.logger.info('model warmed', { totalMs: Date.now() - warmStart, ...warm })
+    } catch (error) {
+      this.deps.logger.warn('model warm-up failed', { error: String(error), ms: Date.now() - warmStart })
     }
     this.deps.bus.emit('runtime.ready', {
       modelReady: this.modelReady,
@@ -177,6 +196,7 @@ export class Conversation {
     }
     this.busy = true
     this.abort = new AbortController()
+    this.turnAudioUrls = []
     this.deps.policy.noteInteraction()
     this.clearFollowup()
     try {
@@ -185,7 +205,8 @@ export class Conversation {
       const intent = intentOf(text)
       const result = await this.route(intent, text, options)
       const reply = result.reply.trim() || '我在。'
-      const audioUrl = options.voice || intent.type === 'look' ? await this.speak(reply) : undefined
+      const wantsVoice = Boolean(options.voice || intent.type === 'look')
+      const audioUrl = wantsVoice && !result.audioSpoken ? await this.speak(reply) : undefined
       this.history.push({ role: 'user', content: text })
       this.history.push({ role: 'assistant', content: reply })
       while (this.history.length > 16) this.history.shift()
@@ -341,6 +362,24 @@ export class Conversation {
 
     let reply = ''
     let emitted = false
+    let speechBuffer = ''
+    let speechStarted = false
+    const flushSpeech = () => {
+      if (!options.voice) return
+      while (speechBuffer.length > 0) {
+        const boundary = speechBuffer.search(/[。！？!?；;，,、\n]/)
+        // If the model emits one long clause without punctuation, speak the
+        // first 20 characters instead of waiting for the whole paragraph.
+        const end = boundary >= 0 ? boundary + 1 : speechBuffer.length >= 20 ? 20 : -1
+        if (end < 0) break
+        const sentence = speechBuffer.slice(0, end).trim()
+        speechBuffer = speechBuffer.slice(end)
+        if (sentence.length >= 2) {
+          speechStarted = true
+          this.enqueueSpeech(sentence)
+        }
+      }
+    }
     try {
       for await (const delta of this.deps.model.chatStream(messages, {
         signal: options.signal ?? this.abort?.signal,
@@ -349,16 +388,21 @@ export class Conversation {
       })) {
         reply += delta
         emitted = true
+        if (options.voice) speechBuffer += delta
         this.deps.bus.emit('assistant.delta', { text: delta, full: reply })
+        flushSpeech()
       }
     } catch (error) {
-      if (reply.trim()) return { reply: reply.trim(), contextUsed }
+      if (reply.trim()) return { reply: reply.trim(), contextUsed, audioSpoken: speechStarted }
       throw error
     }
     if (!emitted || !reply.trim()) {
       reply = '我听到了，但这次没想好怎么答。你再说一遍，或者换个说法？'
+    } else if (options.voice && speechBuffer.trim()) {
+      speechStarted = true
+      this.enqueueSpeech(speechBuffer)
     }
-    return { reply: reply.trim(), contextUsed, memoryIds: recall.items.map(item => item.id) }
+    return { reply: reply.trim(), contextUsed, audioSpoken: speechStarted, memoryIds: recall.items.map(item => item.id) }
   }
 
   private async look(target: 'screen' | 'camera', userText: string, forceVision = false): Promise<TurnResult> {
@@ -392,6 +436,22 @@ export class Conversation {
     }
   }
 
+  private enqueueSpeech(text: string): void {
+    const clean = text.trim()
+    if (!clean) return
+    this.speechQueue = this.speechQueue
+      .then(async () => {
+        const url = await this.speak(clean)
+        if (url) {
+          this.turnAudioUrls.push(url)
+          this.deps.bus.emit('assistant.audio', { url, text: clean })
+        }
+      })
+      .catch(error => {
+        this.deps.logger.warn('streaming tts failed', { error: String(error) })
+      })
+  }
+
   private async speak(text: string): Promise<string | undefined> {
     if (!(await this.deps.synthesizer.available())) return undefined
     const name = `reply-${Date.now()}-${randomUUID().slice(0, 8)}.wav`
@@ -422,7 +482,8 @@ export class Conversation {
       return { reply: '我没听到声音，再说一次？' }
     }
     const result = await this.handleText(transcript, { source: 'voice', voice: true, skipAttention: true })
-    return { ...result, transcript }
+    await this.speechQueue
+    return { ...result, transcript, audioUrl: result.audioUrl ?? this.turnAudioUrls[0] }
   }
 
   private finishAttention(): void {

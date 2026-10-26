@@ -121,12 +121,18 @@ X11/XWayland 场景生效；真正的强制点是 portal 的按次授权。不�
 
 | 路径 | 实测 |
 |---|---|
-| 文字回答（热） | ~0.9 s |
-| 文字回答（冷启动） | 8–15 s（模型加载） |
-| 语音整轮（热） | ~6 s：ASR ~2 s + LLM ~1 s + Piper ~3 s |
+| 文字回答（热） | ~0.8–1.5 s |
+| 文字回答（模型冷启动） | 4–9 s；服务启动时会先预热，预热完成后 UI 才开始接受请求 |
+| 语音首句（热） | ~3–4 s：ASR ~2 s + LLM ~1 s + 首句 Piper ~1 s |
+| 语音整轮（热） | ~6–8 s；文本先流式出现，音频按短句排队播放 |
 | OCR 一帧 | 4–8 s（RapidOCR CPU） |
 | 屏幕 OCR + 回答 | ~8–16 s |
 | qwen2.5vl 3B 视觉 | 40–150 s，4 GB 显存下会 CPU/GPU 分层 |
+
+语音的“慢”主要来自两段：模型冷加载（Ollama 默认 5 分钟后卸载）和
+Piper 每次启动的模型加载。v2 现在在启动时预热 LLM/nomic，并把 Piper
+保持为常驻 `--json-input` 进程；`JARVIS_OLLAMA_KEEP_ALIVE=24h` 避免
+办公间隙后第一次回答重新加载模型。若内存紧张，可把它设为 `5m`。
 
 因此默认策略是 **OCR-first**：屏幕/摄像头先读文字；只有明确说
 “用视觉看屏幕”或摄像头没有文字时才调用视觉模型。视觉模型是可选能力，
@@ -166,7 +172,8 @@ curl -s http://127.0.0.1:3081/api/reminders
 | 现象 | 处理 |
 |---|---|
 | `modelReady: false` | `ollama list`；拉 `qwen2.5:3b`；检查 `JARVIS_OLLAMA_URL` |
-| 回答很慢 / 显存不足 | `ollama ps` 看是否 CPU/GPU 分层；只保留 LLM + nomic；停掉视觉模型 |
+| 回答很慢 / 显存不足 | `ollama ps` 看是否 CPU/GPU 分层和 `expires_at`；只保留 LLM + nomic；停掉视觉模型；确认 `JARVIS_OLLAMA_KEEP_ALIVE=24h` |
+| 只有第一次回答慢 | 模型被 Ollama 卸载后重新加载；`ollama ps` 为空说明冷启动；v2 启动预热 + keep_alive 可消除 |
 | `没听清` / ASR 空 | 确认 faster-whisper worker ready；`python3 -c "import faster_whisper"` |
 | 屏幕 15 s 后黑屏 | Portal 未授权或超时；允许 GNOME 共享；X11 回退在 Wayland 不可用 |
 | OCR 读不到 | 屏幕主要是图片/视频；说“用视觉看屏幕”，或换到文字窗口 |

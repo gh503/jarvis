@@ -27,6 +27,7 @@ async function main(): Promise<void> {
     model: config.ollama.model,
     visionModel: config.ollama.visionModel,
     embedModel: config.ollama.embedModel,
+    keepAlive: config.ollama.keepAlive,
   })
   const memory = new MemoryStore({
     file: join(config.dataDir, 'jarvis.db'),
@@ -83,6 +84,9 @@ async function main(): Promise<void> {
   })
 
   await conversation.initialize()
+  // The chat/TTS path is warm before the UI opens. Whisper/OCR workers start
+  // in the background so launch is not held hostage to their model load; by
+  // the time a person has clicked the mic they are normally ready.
   if (transcriber instanceof FasterWhisperTranscriber) {
     void transcriber.start().catch(error => logger.warn('ASR warm-up failed', { error: String(error) }))
   }
@@ -129,6 +133,7 @@ async function main(): Promise<void> {
     conversation.cancel()
     await server.close().catch(() => undefined)
     await transcriber.close?.().catch(() => undefined)
+    await synthesizer.close().catch(() => undefined)
     await ocr.close().catch(() => undefined)
     reminders.close()
     memory.close()

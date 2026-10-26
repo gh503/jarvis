@@ -17,6 +17,7 @@ export interface JarvisConfig {
     model: string
     visionModel: string
     embedModel: string
+    keepAlive: string
   }
   voice: {
     asrEngine: 'faster-whisper' | 'whisper.cpp'
@@ -153,6 +154,7 @@ export function loadConfig(): JarvisConfig {
       model: env('JARVIS_LLM_MODEL', DEFAULTS.llmModel),
       visionModel: env('JARVIS_VISION_MODEL', DEFAULTS.visionModel),
       embedModel: env('JARVIS_EMBED_MODEL', DEFAULTS.embedModel),
+      keepAlive: env('JARVIS_OLLAMA_KEEP_ALIVE', '24h'),
     },
     voice: {
       asrEngine: env('JARVIS_ASR_ENGINE', 'faster-whisper') === 'whisper.cpp' ? 'whisper.cpp' : 'faster-whisper',

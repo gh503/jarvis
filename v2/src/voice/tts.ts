@@ -1,7 +1,8 @@
-import { mkdir } from 'node:fs/promises'
-import { dirname } from 'node:path'
+import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process'
+import { mkdir, rm } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import { dirname, resolve } from 'node:path'
 import type { Logger } from '../logger.ts'
-import { runProcess } from '../util/process.ts'
 import { fileExists } from './media.ts'
 
 export interface SynthesizerOptions {
@@ -10,23 +11,118 @@ export interface SynthesizerOptions {
   logger?: Logger
 }
 
+interface PendingSynthesis {
+  resolve: () => void
+  reject: (error: Error) => void
+  timer: NodeJS.Timeout
+}
+
+/**
+ * A long-lived Piper process. Spawning Piper per sentence costs 2–3 seconds in
+ * model loading alone; keeping it warm makes the first spoken clause arrive
+ * while the LLM is still writing the rest of the answer.
+ */
 export class PiperSynthesizer {
+  private child: ChildProcessWithoutNullStreams | null = null
+  private stdoutBuffer = ''
+  private readonly pending = new Map<string, PendingSynthesis>()
+
   constructor(private readonly options: SynthesizerOptions) {}
 
   async available(): Promise<boolean> {
     return (await fileExists(this.options.piperBin)) && (await fileExists(this.options.voice))
   }
 
+  async start(): Promise<void> {
+    if (this.child) return
+    if (!(await this.available())) throw new Error('Piper or its voice model is missing')
+    const child = spawn(this.options.piperBin, ['--model', this.options.voice, '--json-input', '--quiet'], {
+      stdio: ['pipe', 'pipe', 'pipe'],
+    })
+    this.child = child
+    child.stdout.setEncoding('utf8')
+    child.stderr.setEncoding('utf8')
+    child.stdout.on('data', (chunk: string) => this.onStdout(chunk))
+    child.stderr.on('data', (chunk: string) => this.options.logger?.debug('piper stderr', { text: chunk.trim().slice(0, 300) }))
+    child.on('error', error => {
+      if (this.child === child) this.child = null
+      this.failAll(new Error(`Piper failed: ${error.message}`))
+    })
+    child.on('exit', (code, signal) => {
+      if (this.child === child) this.child = null
+      this.failAll(new Error(`Piper exited (${code ?? signal ?? 'unknown'})`))
+    })
+    this.options.logger?.info('tts worker started', { model: this.options.voice })
+  }
+
+  private onStdout(chunk: string): void {
+    this.stdoutBuffer += chunk
+    const lines = this.stdoutBuffer.split(/\r?\n/)
+    this.stdoutBuffer = lines.pop() ?? ''
+    for (const line of lines) {
+      const clean = line.trim()
+      if (!clean) continue
+      const pending = this.pending.get(resolve(clean)) ?? [...this.pending.entries()].find(([path]) => clean.endsWith(path))?.[1]
+      if (!pending) continue
+      clearTimeout(pending.timer)
+      // Remove by value; the path may have appeared with a prefix.
+      for (const [path, value] of this.pending) {
+        if (value === pending) this.pending.delete(path)
+      }
+      pending.resolve()
+    }
+  }
+
+  private failAll(error: Error): void {
+    for (const [path, pending] of this.pending) {
+      clearTimeout(pending.timer)
+      pending.reject(error)
+      this.pending.delete(path)
+    }
+  }
+
   async synthesize(text: string, output: string): Promise<void> {
     const clean = text.replace(/\s+/g, ' ').trim()
     if (!clean) throw new Error('cannot synthesize empty text')
-    await mkdir(dirname(output), { recursive: true, mode: 0o700 })
-    await runProcess(
-      this.options.piperBin,
-      ['--model', this.options.voice, '--output_file', output, '--quiet'],
-      { input: `${clean.slice(0, 4000)}\n`, timeoutMs: 120_000, maxOutputBytes: 500_000 },
-    )
-    if (!(await fileExists(output))) throw new Error('Piper produced no audio')
-    this.options.logger?.debug('tts synthesized', { chars: clean.length, output })
+    const path = resolve(output)
+    await mkdir(dirname(path), { recursive: true, mode: 0o700 })
+    await this.start()
+    const child = this.child
+    if (!child?.stdin.writable) throw new Error('Piper is not writable')
+    await new Promise<void>((resolvePromise, rejectPromise) => {
+      const timer = setTimeout(() => {
+        this.pending.delete(path)
+        rejectPromise(new Error('Piper synthesis timed out'))
+      }, 120_000)
+      timer.unref()
+      this.pending.set(path, { resolve: resolvePromise, reject: rejectPromise, timer })
+      child.stdin.write(`${JSON.stringify({ text: clean.slice(0, 4000), output_file: path })}\n`, error => {
+        if (!error) return
+        const pending = this.pending.get(path)
+        if (pending) clearTimeout(pending.timer)
+        this.pending.delete(path)
+        rejectPromise(error)
+      })
+    })
+    if (!(await fileExists(path))) throw new Error('Piper produced no audio')
+    this.options.logger?.debug('tts synthesized', { chars: clean.length, output: path })
+  }
+
+  async warmup(): Promise<void> {
+    const path = resolve(tmpdir(), `jarvis-tts-warmup-${process.pid}.wav`)
+    try {
+      await this.synthesize('你好', path)
+    } finally {
+      await rm(path, { force: true }).catch(() => undefined)
+    }
+  }
+
+  async close(): Promise<void> {
+    const child = this.child
+    this.child = null
+    this.failAll(new Error('Piper shut down'))
+    if (!child) return
+    child.stdin.end()
+    child.kill('SIGTERM')
   }
 }

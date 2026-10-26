@@ -30,6 +30,9 @@ const state = {
   tokenPrompted: false,
   actions: [],
   seenActions: new Set(),
+  audioQueue: [],
+  audioPlaying: false,
+  lastTranscript: '',
 }
 
 const labels = {
@@ -128,7 +131,7 @@ function handleEvent(event) {
     case 'user.message':
       if (state.pendingUserEcho && data.text === state.pendingUserEcho) {
         state.pendingUserEcho = ''
-      } else if (data.source !== 'remote') {
+      } else if (data.source !== 'remote' && data.source !== 'voice') {
         appendMessage('user', data.text)
       }
       break
@@ -138,6 +141,9 @@ function handleEvent(event) {
       state.streamText = data.full || (state.streamText + (data.text || ''))
       state.streamEl.querySelector('.bubble').textContent = state.streamText
       scrollToBottom()
+      break
+    case 'assistant.audio':
+      if (data.url) playAudio(data.url)
       break
     case 'assistant.done':
       state.sawAssistantEvent = true
@@ -151,7 +157,10 @@ function handleEvent(event) {
       setBusy(false)
       break
     case 'voice.transcribed':
-      if (data.text) appendMessage('system', `听到：${data.text}`)
+      if (data.text) {
+        state.lastTranscript = data.text
+        appendMessage('system', `听到：${data.text}`)
+      }
       break
     case 'memory.added':
     case 'memory.proposed':
@@ -315,6 +324,7 @@ function sendText(text, options = {}) {
   const input = $('#input')
   input.value = ''
   autoGrow(input)
+  stopAudio()
   state.sawAssistantEvent = false
   state.pendingUserEcho = clean
   appendMessage('user', clean)
@@ -332,11 +342,11 @@ function sendText(text, options = {}) {
 }
 
 function handleHttpResult(result) {
-  if (result.transcript) appendMessage('system', `听到：${result.transcript}`)
+  if (result.transcript && result.transcript !== state.lastTranscript) appendMessage('system', `听到：${result.transcript}`)
   if (!state.sawAssistantEvent) {
     finishStreaming(result.reply || result.error || '', Boolean(result.error))
   }
-  if (result.audioUrl) playAudio(result.audioUrl)
+  if (result.audioUrl && !result.audioSpoken) playAudio(result.audioUrl)
   setBusy(false)
   updateLatency()
 }
@@ -572,12 +582,36 @@ function showCapture(data) {
 }
 
 function playAudio(url) {
-  if (state.muted) return
+  if (state.muted || !url) return
+  state.audioQueue.push(url)
+  if (!state.audioPlaying) playNextAudio()
+}
+
+function playNextAudio() {
   const player = $('#player')
+  const url = state.audioQueue.shift()
+  if (!url) {
+    state.audioPlaying = false
+    return
+  }
+  state.audioPlaying = true
+  player.onended = playNextAudio
+  player.onerror = playNextAudio
   player.src = url
   player.play().catch(() => {
+    state.audioPlaying = false
     $('#hint').textContent = '点击页面后可播放语音'
   })
+}
+
+function stopAudio() {
+  state.audioQueue = []
+  state.audioPlaying = false
+  const player = $('#player')
+  player.onended = null
+  player.onerror = null
+  player.pause()
+  player.removeAttribute('src')
 }
 
 function autoGrow(textarea) {
@@ -587,6 +621,7 @@ function autoGrow(textarea) {
 
 async function startRecording() {
   if (state.recording) return
+  stopAudio()
   if (!navigator.mediaDevices?.getUserMedia || !window.MediaRecorder) {
     appendMessage('system', '这个浏览器不支持录音。请用 Chrome，或直接打字。')
     return
@@ -780,7 +815,7 @@ function bind() {
     state.muted = !state.muted
     localStorage.setItem('jarvis_muted', state.muted ? '1' : '0')
     $('#mute-btn').setAttribute('aria-pressed', String(state.muted))
-    if (state.muted) $('#player').pause()
+    if (state.muted) stopAudio()
   })
   $('#mute-btn').setAttribute('aria-pressed', String(state.muted))
   $('#focus-btn').addEventListener('click', async () => {

@@ -13,7 +13,7 @@ function config(overrides: Partial<JarvisConfig> = {}): JarvisConfig {
     authToken: '',
     tlsCert: '',
     tlsKey: '',
-    ollama: { url: 'http://127.0.0.1:11434', model: 'qwen2.5:3b', visionModel: 'qwen2.5vl:3b', embedModel: 'nomic-embed-text' },
+    ollama: { url: 'http://127.0.0.1:11434', model: 'qwen2.5:3b', visionModel: 'qwen2.5vl:3b', embedModel: 'nomic-embed-text', keepAlive: '24h' },
     voice: { asrEngine: 'faster-whisper', pythonBin: 'python3', fasterWhisperScript: '', fasterWhisperModel: 'tiny', ocrScript: '', whisperBin: '', whisperModel: '', piperBin: '', piperVoice: '', ffmpeg: 'ffmpeg', arecord: 'arecord' },
     quiet: { start: '22:00', end: '08:00' },
     dailySpeakBudget: 5,
