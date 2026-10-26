@@ -28,7 +28,7 @@ try {
 
   await chmod(snapshot, 0o600)
   const files = ['jarvis.db']
-  for (const name of ['tuning.json', ...(includeSecrets ? ['model-config.json'] : [])]) {
+  for (const name of ['tuning.json', ...(includeSecrets ? ['model-config.json', 'voice-config.json'] : [])]) {
     const source = join(dataDir, name)
     if (existsSync(source)) {
       await copyFile(source, join(work, name))
@@ -42,7 +42,7 @@ try {
     createdAt: new Date().toISOString(),
     dataDir,
     files,
-    excluded: ['auth-token', 'secret.key (encryption key)', 'audio', 'captures', 'telemetry', 'logs', ...(includeSecrets ? [] : ['model-config.json (contains remote keys)'])],
+    excluded: ['auth-token', 'secret.key (encryption key)', 'audio', 'captures', 'telemetry', 'logs', ...(includeSecrets ? [] : ['model-config.json / voice-config.json (contain remote keys)'])],
     note: 'Restore while Jarvis is stopped. The database snapshot is consistent.',
   }
   await writeFile(join(work, 'manifest.json'), `${JSON.stringify(manifest, null, 2)}\n`, { mode: 0o600 })

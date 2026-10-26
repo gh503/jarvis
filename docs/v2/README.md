@@ -46,6 +46,8 @@ v2 不再从“给 agent 加一个聊天窗口”出发，而是从下面这个�
 | [memory-design.md](memory-design.md) | 记忆类型、写入、检索、巩固、遗忘、隐私、评测、迁移 | Baseline |
 | [decision-register.md](decision-register.md) | 已固定的决策、理由、影响 | Accepted |
 | [implementation-plan.md](implementation-plan.md) | v2 的实现切片与验收顺序 | Draft；已按纵向切片推进 |
+| [models.md](models.md) | 三种 LLM 协议、模型自动发现、Key 与回退边界 | Implemented |
+| [voice.md](voice.md) | ASR WebSocket/HTTP 契约、TTS、本地/远端切换 | Implemented |
 | [implementation-status.md](implementation-status.md) | 已实现 / 部分实现 / 缺口 / 验证方式 | Implemented baseline |
 | [operations.md](operations.md) | 安装、启动、远程、隐私、验收、故障排查 | Implemented baseline |
 | [observatory.md](observatory.md) | Studio 的信息架构、指标定义、记忆图、调参架构与安全 | Implemented |
@@ -61,7 +63,8 @@ v2 不再从“给 agent 加一个聊天窗口”出发，而是从下面这个�
 - 按需摄像头上下文：单帧或短 burst，本地先做检测。
 - 注意力管理器：决定何时看、看哪一路、何时说、用什么通道说。
 - 记忆 v2：分层存储、时间有效性、混合召回、离线巩固、可解释召回。
-- 本地/远端模型路由：Web 设置里编辑本地 Ollama / 远端 OpenAI-compatible，测试通过后点一下切换，下一轮立即生效。
+- 本地/远端模型路由：Web 设置里编辑本地 Ollama / 远端 OpenAI Chat Completions、OpenAI Responses、Anthropic Messages；模型列表从服务地址自动获取；测试通过后点一下切换，下一轮立即生效。
+- 本地/远端语音：ASR 支持 WebSocket 流式（默认）和 HTTP；TTS 支持本地 Piper 与远端 OpenAI-compatible；两侧独立切换。
 - 工具执行：文件、浏览器、日历、提醒；高风险动作走审批和审计。
 - 桌面浮窗/托盘 + 手机 PWA/WebRTC 远程入口（手机后置）。
 
@@ -109,4 +112,4 @@ npm run doctor
 
 Studio（总览 / 记忆星座 / 调参 / 脱敏配置 / 事件流）已经可打开：顶栏波形图标，或见 [observatory.md](observatory.md)。
 
-下一步按 [implementation-status.md](implementation-status.md) §4 的收益排序推进：真实 Portal 验收、手机 PWA 真机、记忆评测、工具执行。
+下一步按 [implementation-status.md](implementation-status.md) §4 的收益排序推进：真实 Portal 验收、手机 PWA 真机、记忆评测、工具执行。语音接口的协议细节见 [voice.md](voice.md)。

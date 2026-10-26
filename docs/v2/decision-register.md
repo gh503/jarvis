@@ -43,6 +43,9 @@
 | D-029 | **观察台/记忆星座/调参是开发期第二层，不进入日常主界面；效果参数与行为参数全部开放，但保存前不写盘，密钥/端口/TLS 仍由环境变量控制。** | 用户要求“丰富可视化 + 效果参数入口 + 记忆可视化”；把调试能力塞进主界面会提高认知负担，把安全边界做成 UI 开关会降低安全性。 | Studio 全屏覆盖层；`data/tuning.json` 0600；配置只读脱敏；演示数据仅 loopback + 显式 header；不引入图表库。 |
 
 
+| D-033 | **远端 LLM 显式区分三种协议：OpenAI Chat Completions、OpenAI Responses、Anthropic Messages；模型列表必须从服务地址自动发现，不再手填。** | 三种协议的 system/图片/SSE 事件名不同，靠“OpenAI-compatible”猜会静默失败；手填模型名容易拼错并掩盖服务不可用。 | profile 增加 `protocol`；`/api/model/list` 统一发现；UI 模型选择器；Anthropic 无 embedding，回退本地；没有 `/models` 的服务明确报错而不是退回手填。见 `models.md`。 |
+| D-034 | **ASR/TTS 各自拥有本地/远端 active 来源；远端 ASR 默认 WebSocket 流式，同时保留 OpenAI 兼容 HTTP；远端 TTS 走 `/audio/speech`。** | 用户要求语音模型也能切换，并明确 ASR 默认 WS；把“整段上传”和“流式”做成同一接口会让延迟/兼容性互相拖累。 | `VoiceRuntime` 门面按设置重建，不重启/不打断回合；`data/voice-config.json` 0600；WS 采用可测试的 Jarvis Streaming ASR v1，HTTP 采用 OpenAI multipart；默认仍本地。浏览器端麦克风分片实时流是后续工作。见 `voice.md`。 |
+
 ## 变更流程
 
 1. 提案：写清“要改什么、为什么、影响哪些文档/模块”。

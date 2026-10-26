@@ -22,6 +22,8 @@ import { SecureFiles } from './secure-files.ts'
 import { WhisperTranscriber } from './voice/asr.ts'
 import { FasterWhisperTranscriber } from './voice/faster-whisper.ts'
 import { PiperSynthesizer } from './voice/tts.ts'
+import { VoiceRuntime } from './voice/runtime.ts'
+import { VoiceSettingsStore } from './voice/settings.ts'
 
 async function main(): Promise<void> {
   process.umask(0o077)
@@ -91,6 +93,20 @@ async function main(): Promise<void> {
       maxChars: Math.round(tuning.number('voice.maxChars')),
     }),
   })
+  const voiceSettings = new VoiceSettingsStore(join(config.dataDir, 'voice-config.json'), {
+    asrModel: config.voice.asrEngine === 'faster-whisper' ? config.voice.fasterWhisperModel : config.voice.whisperModel,
+    asrEngine: config.voice.asrEngine,
+    asrLanguage: 'zh',
+    ttsVoice: config.voice.piperVoice,
+  })
+  const voice = new VoiceRuntime({
+    store: voiceSettings,
+    localTranscriber: transcriber,
+    localSynthesizer: synthesizer,
+    ffmpeg: config.voice.ffmpeg,
+    logger: logger.child('voice'),
+  })
+  await voice.initialize()
   const screen = new ScreenCapture(config, logger.child('screen'))
   const camera = new CameraCapture(config, logger.child('camera'))
   const ocr = new OcrClient({ pythonBin: config.voice.pythonBin, script: config.voice.ocrScript, logger: logger.child('ocr') })
@@ -106,8 +122,9 @@ async function main(): Promise<void> {
     attention,
     memory,
     model,
-    transcriber,
-    synthesizer,
+    transcriber: voice,
+    synthesizer: voice,
+    voice,
     screen,
     camera,
     ocr,
@@ -123,8 +140,8 @@ async function main(): Promise<void> {
   // TTS warm-up. The HTTP server can open while Whisper is still loading; the
   // status endpoint now reports `voice.asrState` so the UI can explain why the
   // first utterance is queued instead of looking frozen.
-  if (transcriber instanceof FasterWhisperTranscriber) {
-    void transcriber.start().catch(error => logger.warn('ASR warm-up failed', { error: String(error) }))
+  if (voice.status().activeAsr === 'local') {
+    void voice.start().catch(error => logger.warn('ASR warm-up failed', { error: String(error) }))
   }
   void ocr.start().catch(error => logger.warn('OCR warm-up failed', { error: String(error) }))
   await conversation.initialize()
@@ -152,6 +169,8 @@ async function main(): Promise<void> {
     conversation,
     models: model,
     modelSettings,
+    voiceSettings,
+    voice,
     tuning,
     telemetry,
     actions,
@@ -165,7 +184,7 @@ async function main(): Promise<void> {
   logger.info(`Jarvis v${config.version} listening`, {
     url,
     model: model.model,
-    asr: config.voice.asrEngine,
+    asr: voice.status().asr.label,
     mode: config.host === '127.0.0.1' ? 'local-only' : 'network',
   })
   if (config.host !== '127.0.0.1') {
@@ -204,8 +223,7 @@ async function main(): Promise<void> {
     briefScheduler.stop()
     conversation.cancel()
     await server.close().catch(() => undefined)
-    await transcriber.close?.().catch(() => undefined)
-    await synthesizer.close().catch(() => undefined)
+    await voice.close().catch(() => undefined)
     await ocr.close().catch(() => undefined)
     reminders.close()
     memory.close()

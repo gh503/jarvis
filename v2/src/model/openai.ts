@@ -11,6 +11,8 @@ interface OpenAIChunk {
   error?: { message?: string }
 }
 
+export type OpenAIProtocol = 'chat-completions' | 'responses'
+
 export class OpenAIError extends Error {
   constructor(message: string, readonly status?: number) {
     super(message)
@@ -31,6 +33,7 @@ export class OpenAICompatibleClient implements ModelClient, Embedder {
   private readonly apiKey: string
   private readonly id: string
   private readonly label: string
+  private readonly protocol: OpenAIProtocol
 
   constructor(options: {
     baseUrl: string
@@ -40,6 +43,7 @@ export class OpenAICompatibleClient implements ModelClient, Embedder {
     embedModel?: string
     id?: string
     label?: string
+    protocol?: OpenAIProtocol
   }) {
     let normalized = options.baseUrl.replace(/\/+$/, '')
     try {
@@ -55,15 +59,16 @@ export class OpenAICompatibleClient implements ModelClient, Embedder {
     this.embedModel = options.embedModel ?? ''
     this.id = options.id ?? 'remote'
     this.label = options.label ?? '远端模型'
+    this.protocol = options.protocol === 'responses' ? 'responses' : 'chat-completions'
   }
 
   status(): ModelStatus {
-    return { id: this.id, label: this.label, kind: 'openai', model: this.model, baseUrl: this.baseUrl, hasKey: Boolean(this.apiKey) }
+    return { id: this.id, label: this.label, kind: 'openai', protocol: this.protocol, model: this.model, baseUrl: this.baseUrl, hasKey: Boolean(this.apiKey) }
   }
 
   private endpoint(path: string): string {
-    if (this.baseUrl.endsWith('/chat/completions') || this.baseUrl.endsWith('/embeddings') || this.baseUrl.endsWith('/models')) {
-      return this.baseUrl.replace(/\/(chat\/completions|embeddings|models)$/, path)
+    if (/\/(chat\/completions|responses|embeddings|models)$/.test(this.baseUrl)) {
+      return this.baseUrl.replace(/\/(chat\/completions|responses|embeddings|models)$/, path)
     }
     return `${this.baseUrl}${path}`
   }
@@ -86,20 +91,19 @@ export class OpenAICompatibleClient implements ModelClient, Embedder {
       if (!response.ok) {
         // Some compatible servers do not expose /models. Let the explicit
         // connection test decide by making a tiny chat request.
-        if (response.status === 404 || response.status === 405) return { ok: true, models: [] }
+        if (response.status === 404 || response.status === 405) return { ok: true, models: [], error: '服务没有 /models，无法自动列出模型' }
         return { ok: false, models: [], error: `HTTP ${response.status}` }
       }
-      const data = (await response.json()) as { data?: Array<ModelInfo & { id?: string }> }
-      const models = Array.isArray(data.data)
-        ? data.data.map(item => ({ ...item, name: String(item.name ?? item.id ?? '') }))
-        : []
+      const data = (await response.json()) as { data?: Array<ModelInfo & { id?: string }>; models?: Array<ModelInfo & { id?: string }> }
+      const listed = Array.isArray(data.data) ? data.data : Array.isArray(data.models) ? data.models : []
+      const models = listed.map(item => ({ ...item, name: String(item.name ?? item.id ?? '') })).filter(item => item.name)
       return { ok: true, models }
     } catch (error) {
       return { ok: false, models: [], error: error instanceof Error ? error.message : String(error) }
     }
   }
 
-  private body(messages: ChatMessage[], options: ChatOptions, stream: boolean): string {
+  private chatBody(messages: ChatMessage[], options: ChatOptions, stream: boolean): string {
     const payloadMessages = messages.map(message => {
       if (!message.images?.length) return { role: message.role, content: message.content }
       return {
@@ -119,7 +123,38 @@ export class OpenAICompatibleClient implements ModelClient, Embedder {
     })
   }
 
+  private responsesBody(messages: ChatMessage[], options: ChatOptions, stream: boolean): string {
+    const instructions = messages.filter(message => message.role === 'system').map(message => message.content).join('\n\n').trim()
+    const input = messages
+      .filter(message => message.role !== 'system')
+      .map(message => message.images?.length
+        ? {
+            role: message.role,
+            content: [
+              { type: 'input_text', text: message.content },
+              ...message.images.map(image => ({ type: 'input_image', image_url: `data:image/jpeg;base64,${image}` })),
+            ],
+          }
+        : { role: message.role, content: message.content })
+    return JSON.stringify({
+      model: options.model ?? this.model,
+      input,
+      stream,
+      ...(instructions ? { instructions } : {}),
+      ...(options.temperature !== undefined ? { temperature: options.temperature } : {}),
+      ...(options.maxTokens ? { max_output_tokens: options.maxTokens } : {}),
+    })
+  }
+
   async *chatStream(messages: ChatMessage[], options: ChatOptions = {}): AsyncGenerator<string> {
+    if (this.protocol === 'responses') {
+      yield* this.responsesStream(messages, options)
+      return
+    }
+    yield* this.chatCompletionsStream(messages, options)
+  }
+
+  private async *chatCompletionsStream(messages: ChatMessage[], options: ChatOptions): AsyncGenerator<string> {
     const controller = new AbortController()
     const timeout = setTimeout(() => controller.abort(), options.timeoutMs ?? 120_000)
     const signal = options.signal ? AbortSignal.any([options.signal, controller.signal]) : controller.signal
@@ -127,7 +162,7 @@ export class OpenAICompatibleClient implements ModelClient, Embedder {
       const response = await fetch(this.endpoint('/chat/completions'), {
         method: 'POST',
         headers: { ...this.headers(), accept: 'text/event-stream' },
-        body: this.body(messages, options, true),
+        body: this.chatBody(messages, options, true),
         signal,
       })
       if (!response.ok || !response.body) {
@@ -165,6 +200,77 @@ export class OpenAICompatibleClient implements ModelClient, Embedder {
           if (chunk.error?.message) throw new OpenAIError(chunk.error.message)
           const content = chunk.choices?.[0]?.delta?.content
           if (content) yield content
+        }
+      }
+    } finally {
+      clearTimeout(timeout)
+    }
+  }
+
+  private async *responsesStream(messages: ChatMessage[], options: ChatOptions): AsyncGenerator<string> {
+    const controller = new AbortController()
+    const timeout = setTimeout(() => controller.abort(), options.timeoutMs ?? 120_000)
+    const signal = options.signal ? AbortSignal.any([options.signal, controller.signal]) : controller.signal
+    try {
+      const response = await fetch(this.endpoint('/responses'), {
+        method: 'POST',
+        headers: { ...this.headers(), accept: 'text/event-stream' },
+        body: this.responsesBody(messages, options, true),
+        signal,
+      })
+      if (!response.ok || !response.body) {
+        const detail = await response.text().catch(() => '')
+        throw new OpenAIError(`Responses 请求失败：HTTP ${response.status} ${detail.slice(0, 300)}`, response.status)
+      }
+      const contentType = response.headers.get('content-type') ?? ''
+      if (!contentType.includes('text/event-stream')) {
+        const data = (await response.json()) as {
+          output_text?: string
+          output?: Array<{ content?: Array<{ type?: string; text?: string }> }>
+        }
+        const text = data.output_text ?? (data.output ?? [])
+          .flatMap(item => item.content ?? [])
+          .filter(item => item.type === 'output_text' || item.text)
+          .map(item => item.text ?? '')
+          .join('')
+        if (text) yield text
+        return
+      }
+      const reader = response.body.getReader()
+      const decoder = new TextDecoder()
+      let buffer = ''
+      let sawDelta = false
+      while (true) {
+        const { value, done } = await reader.read()
+        if (done) break
+        buffer += decoder.decode(value, { stream: true })
+        const lines = buffer.split(/\r?\n/)
+        buffer = lines.pop() ?? ''
+        for (const line of lines) {
+          const trimmed = line.trim()
+          if (!trimmed.startsWith('data:')) continue
+          const raw = trimmed.slice(5).trim()
+          if (!raw || raw === '[DONE]') continue
+          let event: {
+            type?: string
+            delta?: string
+            error?: { message?: string }
+            response?: { output_text?: string }
+          }
+          try {
+            event = JSON.parse(raw) as typeof event
+          } catch {
+            continue
+          }
+          if (event.type === 'response.output_text.delta' && typeof event.delta === 'string') {
+            sawDelta = true
+            yield event.delta
+          }
+          if (event.type === 'response.completed') {
+            if (!sawDelta && event.response?.output_text) yield event.response.output_text
+            return
+          }
+          if (event.type === 'error') throw new OpenAIError(event.error?.message ?? 'Responses stream error')
         }
       }
     } finally {

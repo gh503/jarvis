@@ -1,4 +1,6 @@
 export type ChatRole = 'system' | 'user' | 'assistant'
+export type LlmProtocol = 'chat-completions' | 'responses' | 'anthropic'
+export type ModelProtocol = LlmProtocol | 'ollama'
 
 export interface ChatMessage {
   role: ChatRole
@@ -32,6 +34,7 @@ export interface ModelStatus {
   id: string
   label: string
   kind: 'ollama' | 'openai'
+  protocol: ModelProtocol
   model: string
   baseUrl: string
   hasKey: boolean

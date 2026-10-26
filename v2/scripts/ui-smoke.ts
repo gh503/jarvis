@@ -3,7 +3,7 @@
  * Browser smoke test over the Chrome DevTools Protocol.
  *
  * No Playwright/Chromium download: it drives the Chrome already installed on
- * the desktop. Start Chrome with `--remote-debugging-port=9222`, then run:
+ * the desktop. Start Chrome with `--remote-debugging-port=9223`, then run:
  *
  *   npm run ui:smoke
  *
@@ -11,7 +11,7 @@
  * Studio config and a 390 px layout, then closes the tab. It does not send a
  * conversation or mutate memory.
  */
-const CDP = (process.env.JARVIS_CDP_URL || 'http://127.0.0.1:9222').replace(/\/+$/, '')
+const CDP = (process.env.JARVIS_CDP_URL || 'http://127.0.0.1:9223').replace(/\/+$/, '')
 const APP = (process.env.JARVIS_URL || 'http://127.0.0.1:3081/').replace(/\/+$/, '') + '/'
 const TIMEOUT = 15_000
 
@@ -111,16 +111,25 @@ async function main(): Promise<void> {
 
     await cdp.evaluate("document.querySelector('#settings-btn').click()")
     await sleep(900)
-    const settings = await cdp.evaluate<{ open: boolean; privacy: boolean; devices: boolean; onboarding: boolean }>(`({
+    const settings = await cdp.evaluate<{ open: boolean; privacy: boolean; devices: boolean; onboarding: boolean; modelSelect: boolean; protocols: boolean; voice: boolean }>(`({
       open: !document.querySelector('#modal').hidden,
       privacy: Boolean(document.querySelector('#privacy-export') && document.querySelector('#privacy-erase')),
       devices: Boolean(document.querySelector('#device-list')),
-      onboarding: Boolean(document.querySelector('#onboard-again'))
+      onboarding: Boolean(document.querySelector('#onboard-again')),
+      modelSelect: document.querySelector('#model-name')?.tagName === 'SELECT',
+      protocols: Boolean(document.querySelector('#model-protocol') || document.querySelector('[data-model-select=remote]')),
+      voice: Boolean(document.querySelector('#asr-source') && document.querySelector('#tts-source') && document.querySelector('#voice-save'))
     })`)
     check(settings.open, 'settings: modal opens')
     check(settings.privacy, 'settings: privacy controls')
     check(settings.devices, 'settings: device list')
     check(settings.onboarding, 'settings: onboarding replay')
+    check(settings.modelSelect, 'settings: model list is a selector')
+    check(settings.protocols, 'settings: three LLM protocols')
+    check(settings.voice, 'settings: ASR/TTS source controls')
+    await cdp.evaluate("document.querySelector('[data-model-select=remote]').click()")
+    await sleep(700)
+    check(await cdp.evaluate<boolean>("document.querySelectorAll('#model-protocol option').length === 3"), 'settings: three LLM protocols')
     await cdp.evaluate("document.querySelector('#modal-close').click()")
     await sleep(250)
 

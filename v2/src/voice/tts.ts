@@ -5,6 +5,14 @@ import { dirname, resolve } from 'node:path'
 import type { Logger } from '../logger.ts'
 import { fileExists } from './media.ts'
 
+export interface Synthesizer {
+  available(): Promise<boolean>
+  synthesize(text: string, output: string): Promise<void>
+  warmup?(): Promise<void>
+  reconfigure?(): Promise<void>
+  close?(): Promise<void>
+}
+
 export interface VoiceParams {
   lengthScale: number
   noiseScale: number
@@ -30,7 +38,7 @@ interface PendingSynthesis {
  * model loading alone; keeping it warm makes the first spoken clause arrive
  * while the LLM is still writing the rest of the answer.
  */
-export class PiperSynthesizer {
+export class PiperSynthesizer implements Synthesizer {
   private child: ChildProcessWithoutNullStreams | null = null
   private stdoutBuffer = ''
   private readonly pending = new Map<string, PendingSynthesis>()

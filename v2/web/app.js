@@ -39,6 +39,7 @@ const state = {
   lastTranscript: '',
   modelSettings: null,
   modelFormId: 'local',
+  modelOptions: {},
 }
 
 const labels = {
@@ -238,10 +239,16 @@ function updateAttention(snapshot) {
 
 function voiceLabel() {
   if (!state.voice.asr) return '未启用'
-  if (state.voice.asrState === 'starting') return '加载中'
-  if (state.voice.asrState === 'error') return '异常'
-  if (state.voice.asrState === 'idle') return '待启动'
-  return '就绪'
+  const prefix = state.voice.asrProvider === 'remote' ? '远端 · ' : ''
+  if (state.voice.asrState === 'starting') return `${prefix}加载中`
+  if (state.voice.asrState === 'error') return `${prefix}异常`
+  if (state.voice.asrState === 'idle') return `${prefix}待启动`
+  return `${prefix}就绪`
+}
+
+function ttsLabel() {
+  if (!state.voice.tts) return '未就绪'
+  return `${state.voice.ttsProvider === 'remote' ? '远端' : '本地'} · 就绪`
 }
 
 function applyStatus(status = {}) {
@@ -637,7 +644,7 @@ function renderRuntime() {
     ['模型来源', state.status.provider === 'remote' ? '远端' : '本地'],
     ['模型就绪', state.status.modelReady ? '是' : '否'],
     ['语音识别', voiceLabel()],
-    ['语音合成', state.voice.tts ? '就绪' : '未就绪'],
+    ['语音合成', ttsLabel()],
     ['注意力', state.attention.state || 'idle'],
     ['专注模式', state.focus ? '开' : '关'],
     ['免打扰', state.status.quiet ? '当前时段' : '否'],
@@ -898,8 +905,150 @@ function closeModal() {
   state.tokenPrompted = false
 }
 
+function protocolLabel(protocol) {
+  if (protocol === 'responses') return 'OpenAI Responses'
+  if (protocol === 'anthropic') return 'Anthropic Messages'
+  if (protocol === 'ollama') return 'Ollama 原生'
+  return 'OpenAI Chat Completions'
+}
+
+function modelNameOptions(selected) {
+  const names = [...new Set([
+    ...(selected.model ? [selected.model] : []),
+    ...((state.modelOptions[selected.id] || []).map(item => typeof item === 'string' ? item : item.name).filter(Boolean)),
+  ])]
+  if (!names.length) return `<option value="">${selected.kind === 'openai' && !selected.hasKey ? '填写 Key 后获取模型' : '正在获取模型列表…'}</option>`
+  return names.map(name => `<option value="${escapeHtml(name)}" ${name === selected.model ? 'selected' : ''}>${escapeHtml(name)}</option>`).join('')
+}
+
+function voiceSettingsHtml(settings) {
+  const asr = settings.asr || {}
+  const tts = settings.tts || {}
+  const asrRemote = asr.remote || {}
+  const ttsRemote = tts.remote || {}
+  const asrKeyHint = asrRemote.hasKey ? '已保存；留空保持不变' : '粘贴 API Key'
+  const ttsKeyHint = ttsRemote.hasKey ? '已保存；留空保持不变' : '粘贴 API Key'
+  return `
+    <div class="voice-grid">
+      <div class="voice-card">
+        <div class="voice-card-head"><strong>语音识别 ASR</strong>
+          <select id="asr-source" aria-label="ASR 来源">
+            <option value="local" ${settings.activeAsr !== 'remote' ? 'selected' : ''}>本地</option>
+            <option value="remote" ${settings.activeAsr === 'remote' ? 'selected' : ''}>远端</option>
+          </select>
+        </div>
+        <div class="voice-local-summary">本地模型 <b>${escapeHtml(asr.local?.model || '—')}</b><span>${escapeHtml(asr.local?.label || '')}</span></div>
+        <div class="voice-remote" data-voice-remote="asr" ${settings.activeAsr === 'remote' ? '' : 'hidden'}>
+          <label>传输方式
+            <select id="asr-transport">
+              <option value="websocket" ${asrRemote.transport !== 'http' ? 'selected' : ''}>WebSocket 流式（默认）</option>
+              <option value="http" ${asrRemote.transport === 'http' ? 'selected' : ''}>HTTP 一次性上传</option>
+            </select>
+          </label>
+          <label>WebSocket / 服务地址
+            <input id="asr-base" type="url" autocomplete="off" spellcheck="false" value="${escapeHtml(asrRemote.baseUrl || '')}" placeholder="wss://asr.example.com/v1/stream">
+          </label>
+          <div class="model-form-row">
+            <label>模型
+              <input id="asr-model" type="text" autocomplete="off" spellcheck="false" value="${escapeHtml(asrRemote.model || '')}" placeholder="whisper-1">
+            </label>
+            <label>语言
+              <input id="asr-language" type="text" autocomplete="off" spellcheck="false" value="${escapeHtml(asrRemote.language || 'zh')}" placeholder="zh">
+            </label>
+          </div>
+          <label>API Key
+            <input id="asr-key" type="password" autocomplete="new-password" value="" placeholder="${escapeHtml(asrKeyHint)}">
+          </label>
+          <p class="model-form-note">WebSocket 使用 Jarvis 流式协议（start / PCM 分片 / end / final）；HTTP 使用 OpenAI 兼容 <code>/audio/transcriptions</code>。默认 WebSocket。</p>
+        </div>
+      </div>
+      <div class="voice-card">
+        <div class="voice-card-head"><strong>语音合成 TTS</strong>
+          <select id="tts-source" aria-label="TTS 来源">
+            <option value="local" ${settings.activeTts !== 'remote' ? 'selected' : ''}>本地</option>
+            <option value="remote" ${settings.activeTts === 'remote' ? 'selected' : ''}>远端</option>
+          </select>
+        </div>
+        <div class="voice-local-summary">本地 Piper <b>${escapeHtml((tts.local?.voice || '').split('/').pop() || '—')}</b><span>${escapeHtml(tts.local?.label || '')}</span></div>
+        <div class="voice-remote" data-voice-remote="tts" ${settings.activeTts === 'remote' ? '' : 'hidden'}>
+          <label>服务地址
+            <input id="tts-base" type="url" autocomplete="off" spellcheck="false" value="${escapeHtml(ttsRemote.baseUrl || '')}" placeholder="https://api.openai.com/v1">
+          </label>
+          <div class="model-form-row">
+            <label>模型
+              <input id="tts-model" type="text" autocomplete="off" spellcheck="false" value="${escapeHtml(ttsRemote.model || '')}" placeholder="tts-1">
+            </label>
+            <label>音色
+              <input id="tts-voice" type="text" autocomplete="off" spellcheck="false" value="${escapeHtml(ttsRemote.voice || '')}" placeholder="alloy">
+            </label>
+          </div>
+          <label>API Key
+            <input id="tts-key" type="password" autocomplete="new-password" value="" placeholder="${escapeHtml(ttsKeyHint)}">
+          </label>
+          <p class="model-form-note">使用 OpenAI 兼容 <code>/audio/speech</code>，返回 WAV；音频仍由本机加密保存。</p>
+        </div>
+      </div>
+    </div>
+    <div class="model-form-actions">
+      <button type="button" class="model-action primary" id="voice-save">保存语音设置</button>
+      <span class="model-list-status" id="voice-result" role="status"></span>
+    </div>`
+}
+
+function bindVoiceSettings(settings) {
+  const sync = kind => {
+    const source = $(`#${kind}-source`)
+    const remote = $(`[data-voice-remote="${kind}"]`)
+    if (source && remote) remote.hidden = source.value !== 'remote'
+  }
+  for (const kind of ['asr', 'tts']) {
+    $(`#${kind}-source`)?.addEventListener('change', () => sync(kind))
+  }
+  $('#voice-save')?.addEventListener('click', async event => {
+    const button = event.currentTarget
+    const result = $('#voice-result')
+    button.disabled = true
+    if (result) {
+      result.textContent = '正在保存并切换…'
+      result.className = 'model-list-status'
+    }
+    try {
+      const data = await api('/api/voice/apply', {
+        method: 'POST',
+        body: JSON.stringify({
+          activeAsr: $('#asr-source')?.value || 'local',
+          activeTts: $('#tts-source')?.value || 'local',
+          asr: { remote: { transport: $('#asr-transport')?.value || 'websocket', baseUrl: $('#asr-base')?.value.trim() || '', model: $('#asr-model')?.value.trim() || '', language: $('#asr-language')?.value.trim() || 'zh', apiKey: $('#asr-key')?.value.trim() || '' } },
+          tts: { remote: { baseUrl: $('#tts-base')?.value.trim() || '', model: $('#tts-model')?.value.trim() || '', voice: $('#tts-voice')?.value.trim() || '', apiKey: $('#tts-key')?.value.trim() || '' } },
+        }),
+      })
+      state.voiceSettings = data.settings
+      if (result) {
+        result.textContent = `已生效：ASR ${data.status.asr.label} · TTS ${data.status.tts.label}`
+        result.className = 'model-list-status ok'
+      }
+      await refreshStatus()
+      appendMessage('system', `语音设置已保存：ASR ${data.status.asr.kind === 'remote' ? '远端' : '本地'} · TTS ${data.status.tts.kind === 'remote' ? '远端' : '本地'}`)
+    } catch (error) {
+      if (result) {
+        result.textContent = `保存失败：${error.message}`
+        result.className = 'model-list-status bad'
+      }
+    } finally {
+      button.disabled = false
+    }
+  })
+}
+
 async function showSettings() {
   let model = null
+  let voice = null
+  try {
+    voice = await api('/api/voice')
+    state.voiceSettings = voice.settings
+  } catch {
+    voice = null
+  }
   try {
     model = await api('/api/model')
     state.modelSettings = model.settings
@@ -911,7 +1060,7 @@ async function showSettings() {
   }
   const settings = model.settings
   const selected = settings.profiles.find(item => item.id === state.modelFormId) || settings.profiles[0] || {
-    id: 'local', label: '本地 Ollama', kind: 'ollama', baseUrl: '', model: '', hasKey: false, embedModel: '', visionModel: '', keepAlive: '24h',
+    id: 'local', label: '本地 Ollama', kind: 'ollama', protocol: 'chat-completions', baseUrl: '', model: '', hasKey: false, embedModel: '', visionModel: '', keepAlive: '24h',
   }
   const status = state.status
   const cards = settings.profiles.map(profile => {
@@ -922,7 +1071,7 @@ async function showSettings() {
         <button type="button" class="model-card-main" data-model-select="${escapeHtml(profile.id)}">
           <span class="model-card-top"><strong>${escapeHtml(profile.label)}</strong><span class="model-card-badge">${current ? '当前' : reachable ? '可切换' : '待配置'}</span></span>
           <span class="model-card-name">${escapeHtml(profile.model || '未配置模型')}</span>
-          <span class="model-card-meta">${profile.kind === 'openai' ? '远端 OpenAI 兼容' : '本地 Ollama'}${profile.baseUrl ? ` · ${escapeHtml(profile.baseUrl)}` : ''}</span>
+          <span class="model-card-meta">${profile.kind === 'openai' ? protocolLabel(profile.protocol) : '本地 Ollama'}${profile.baseUrl ? ` · ${escapeHtml(profile.baseUrl)}` : ''}</span>
         </button>
         <div class="model-card-actions">
           <button type="button" class="model-action${current ? ' quiet' : ''}" data-model-activate="${escapeHtml(profile.id)}" ${current || !reachable ? 'disabled' : ''}>${current ? '已启用' : '切换'}</button>
@@ -935,13 +1084,24 @@ async function showSettings() {
     <div class="model-grid">${cards}</div>
     ${model.error ? `<p class="model-error">模型状态读取失败：${escapeHtml(model.error)}</p>` : ''}
     <div class="model-form" data-model-form="${escapeHtml(selected.id)}">
-      <div class="model-form-head"><strong>${escapeHtml(selected.label)}</strong><span>${selected.kind === 'openai' ? '远端 / OpenAI 兼容' : '本机 / Ollama'}</span></div>
+      <div class="model-form-head"><strong>${escapeHtml(selected.label)}</strong><span>${selected.kind === 'openai' ? protocolLabel(selected.protocol) : '本机 / Ollama 原生'}</span></div>
+      ${selected.kind === 'openai' ? `<label>接口协议
+        <select id="model-protocol">
+          <option value="chat-completions" ${selected.protocol !== 'responses' && selected.protocol !== 'anthropic' ? 'selected' : ''}>OpenAI Chat Completions</option>
+          <option value="responses" ${selected.protocol === 'responses' ? 'selected' : ''}>OpenAI Responses</option>
+          <option value="anthropic" ${selected.protocol === 'anthropic' ? 'selected' : ''}>Anthropic Messages</option>
+        </select>
+      </label>` : ''}
       <label>Base URL
         <input id="model-base" type="url" autocomplete="off" spellcheck="false" value="${escapeHtml(selected.baseUrl || '')}" placeholder="${selected.kind === 'openai' ? 'https://api.deepseek.com/v1' : 'http://127.0.0.1:11434'}">
       </label>
-      <label>模型名称
-        <input id="model-name" type="text" autocomplete="off" spellcheck="false" value="${escapeHtml(selected.model || '')}" placeholder="${selected.kind === 'openai' ? 'deepseek-chat' : 'qwen2.5:3b'}">
+      <label>模型（从服务地址自动获取）
+        <div class="model-select-row">
+          <select id="model-name">${modelNameOptions(selected)}</select>
+          <button type="button" class="model-action" id="model-refresh">刷新列表</button>
+        </div>
       </label>
+      <p class="model-list-status" id="model-list-status" role="status"></p>
       ${selected.kind === 'openai' ? `<label>API Key
         <input id="model-key" type="password" autocomplete="new-password" value="" placeholder="${escapeHtml(keyHint)}">
       </label>` : ''}
@@ -953,18 +1113,20 @@ async function showSettings() {
           <input id="model-vision" type="text" autocomplete="off" spellcheck="false" value="${escapeHtml(selected.visionModel || '')}" placeholder="qwen2.5vl:3b">
         </label>
       </div>
-      <p class="model-form-note">远端模型必须使用 HTTPS；只有本机 localhost 可用 HTTP。Key 只保存在本机 <code>data/model-config.json</code>（0600），不会回显到页面。</p>
+      <p class="model-form-note">模型列表从服务地址读取，不需要手工填写。远端必须使用 HTTPS；只有本机 localhost 可用 HTTP。Key 只保存在本机 <code>data/model-config.json</code>（0600），不会回显到页面。</p>
       <div class="model-form-actions">
         <button type="button" class="model-action" id="model-test">测试连接</button>
         <button type="button" class="model-action primary" id="model-apply">保存并切换</button>
       </div>
       <p class="model-result" id="model-result" role="status"></p>
     </div>
+    <h3>语音模型 <span class="model-section-note">ASR 默认 WebSocket 流式；本地/远端独立切换</span></h3>
+    ${voice && state.voiceSettings ? voiceSettingsHtml(state.voiceSettings) : '<p class="model-error">语音设置暂不可用。</p>'}
     <h3>本地运行时</h3>
     <div class="setting-row"><span>当前模型</span><span>${escapeHtml(status.model || selected.model || '—')} · ${status.provider === 'remote' ? '远端' : '本地'}</span></div>
     <div class="setting-row"><span>模型就绪</span><span>${status.modelReady ? '是' : '否'}</span></div>
     <div class="setting-row"><span>语音识别</span><span>${voiceLabel()}</span></div>
-    <div class="setting-row"><span>语音合成</span><span>${state.voice.tts ? '就绪' : '未就绪'}</span></div>
+    <div class="setting-row"><span>语音合成</span><span>${ttsLabel()}</span></div>
     <div class="setting-row"><span>注意力状态</span><span>${escapeHtml(state.attention.state || 'idle')}</span></div>
     <div class="setting-row"><span>专注模式</span><span>${state.focus ? '开' : '关'}</span></div>
     <h3>设备</h3>
@@ -989,7 +1151,9 @@ async function showSettings() {
     <div class="privacy-actions"><button class="model-action" id="onboard-again" type="button">重新查看首次引导</button></div>
   `)
   bindModelSettings(selected, settings)
+  if (state.voiceSettings) bindVoiceSettings(state.voiceSettings)
   void refreshDevices()
+  if (selected.kind !== 'openai' || selected.hasKey) void refreshModelOptions(selected, { silent: true })
 }
 
 async function refreshDevices() {
@@ -1013,6 +1177,58 @@ async function refreshDevices() {
     }))
   } catch (error) {
     list.innerHTML = `<span class="muted small">读取设备失败：${escapeHtml(error.message)}</span>`
+  }
+}
+
+function renderModelSelect(selected, names) {
+  const select = $('#model-name')
+  if (!select || !names.length) return
+  const unique = [...new Set(names.filter(Boolean))]
+  state.modelOptions[selected.id] = unique
+  const current = select.value || selected.model
+  select.innerHTML = unique.map(name => `<option value="${escapeHtml(name)}">${escapeHtml(name)}</option>`).join('')
+  select.value = unique.includes(current) ? current : unique[0]
+}
+
+async function refreshModelOptions(selected, options = {}) {
+  const status = $('#model-list-status')
+  const base = $('#model-base')?.value.trim() ?? selected.baseUrl ?? ''
+  if (!base) {
+    if (status) status.textContent = '先填写 Base URL。'
+    return
+  }
+  const localBase = /^https?:\/\/(localhost|127\.0\.0\.1|\[::1\])/i.test(base)
+  const hasKey = selected.hasKey || Boolean($('#model-key')?.value.trim())
+  if (selected.kind === 'openai' && !hasKey && !localBase) {
+    if (status) status.textContent = '填写 API Key 后自动获取模型列表。'
+    return
+  }
+  if (status && !options.silent) status.textContent = '正在从服务地址读取模型列表…'
+  try {
+    const data = await api('/api/model/list', {
+      method: 'POST',
+      body: JSON.stringify({
+        id: selected.id,
+        label: selected.label,
+        kind: selected.kind,
+        protocol: $('#model-protocol')?.value || selected.protocol || 'chat-completions',
+        baseUrl: base,
+        apiKey: $('#model-key')?.value.trim() || '',
+        model: selected.model || '',
+        embedModel: $('#model-embed')?.value.trim() || '',
+        visionModel: $('#model-vision')?.value.trim() || '',
+        keepAlive: selected.keepAlive || '24h',
+      }),
+    })
+    const names = (data.models || []).map(item => typeof item === 'string' ? item : item.name).filter(Boolean)
+    if (names.length) {
+      renderModelSelect(selected, names)
+      if (status) status.textContent = `已自动获取 ${names.length} 个模型。`
+    } else if (status) {
+      status.textContent = data.error || '服务没有返回模型；仍可使用当前模型。'
+    }
+  } catch (error) {
+    if (status) status.textContent = `自动获取失败：${error.message}`
   }
 }
 
@@ -1093,6 +1309,10 @@ function bindModelSettings(selected, settings) {
   })
   $('#sense-explain')?.addEventListener('click', () => showSenseConsent())
   $('#onboard-again')?.addEventListener('click', () => { closeModal(); localStorage.removeItem('jarvis_onboarded'); showOnboarding() })
+  $('#model-refresh')?.addEventListener('click', () => void refreshModelOptions(selected))
+  $('#model-protocol')?.addEventListener('change', () => void refreshModelOptions(selected))
+  $('#model-base')?.addEventListener('change', () => void refreshModelOptions(selected))
+  $('#model-key')?.addEventListener('change', () => void refreshModelOptions(selected))
   $('#model-test')?.addEventListener('click', async () => {
     const button = $('#model-test')
     const result = $('#model-result')
@@ -1101,6 +1321,7 @@ function bindModelSettings(selected, settings) {
     try {
       const payload = modelPayload(selected)
       const data = await api('/api/model/test', { method: 'POST', body: JSON.stringify(payload) })
+      if (Array.isArray(data.models) && data.models.length) renderModelSelect(selected, data.models)
       result.textContent = `${data.ok ? '连接成功' : '连接失败'} · ${data.latencyMs} ms · ${data.message || ''}`
       result.className = `model-result ${data.ok ? 'ok' : 'bad'}`
     } catch (error) {
@@ -1136,8 +1357,9 @@ function modelPayload(selected) {
     id: selected.id,
     label: selected.label,
     kind: selected.kind,
+    protocol: $('#model-protocol')?.value || selected.protocol || 'chat-completions',
     baseUrl: $('#model-base')?.value.trim() || '',
-    model: $('#model-name')?.value.trim() || '',
+    model: $('#model-name')?.value || selected.model || '',
     apiKey: $('#model-key')?.value.trim() || '',
     embedModel: $('#model-embed')?.value.trim() || '',
     visionModel: $('#model-vision')?.value.trim() || '',

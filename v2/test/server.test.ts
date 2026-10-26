@@ -67,7 +67,7 @@ test('server enforces proxy auth, CSRF and serves the shell', async () => {
     reconfigureVoice: async () => {},
   } as unknown as Conversation
   const localProfile = {
-    id: 'local', label: '本地 Ollama', kind: 'ollama' as const,
+    id: 'local', label: '本地 Ollama', kind: 'ollama' as const, protocol: 'chat-completions' as const,
     baseUrl: config.ollama.url, model: config.ollama.model, apiKey: '',
     visionModel: config.ollama.visionModel, embedModel: config.ollama.embedModel, keepAlive: '24h',
   }

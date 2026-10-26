@@ -51,3 +51,48 @@ test('OpenAI-compatible client streams, normalizes model ids and embeds', async 
     server.close()
   }
 })
+
+test('OpenAI Responses protocol streams output_text deltas', async () => {
+  const bodies: Array<Record<string, unknown>> = []
+  const server = createServer((request, response) => {
+    let raw = ''
+    request.on('data', chunk => { raw += chunk })
+    request.on('end', () => {
+      if (request.url === '/v1/models') {
+        response.writeHead(200, { 'content-type': 'application/json' })
+        response.end(JSON.stringify({ data: [{ id: 'gpt-5' }, { id: 'gpt-5-mini' }] }))
+        return
+      }
+      bodies.push(JSON.parse(raw) as Record<string, unknown>)
+      response.writeHead(200, { 'content-type': 'text/event-stream' })
+      for (const text of ['你', '好']) {
+        response.write(`event: response.output_text.delta\ndata: ${JSON.stringify({ type: 'response.output_text.delta', delta: text })}\n\n`)
+      }
+      response.write(`data: ${JSON.stringify({ type: 'response.completed' })}\n\n`)
+      response.end()
+    })
+  })
+  await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve))
+  const address = server.address()
+  if (!address || typeof address === 'string') throw new Error('no port')
+  const client = new OpenAICompatibleClient({
+    baseUrl: `http://127.0.0.1:${address.port}/v1`,
+    model: 'gpt-5',
+    apiKey: 'sk-test',
+    protocol: 'responses',
+  })
+  try {
+    assert.equal(await client.chatOnce([
+      { role: 'system', content: '简短回答' },
+      { role: 'user', content: 'hello' },
+    ]), '你好')
+    assert.equal((await client.health()).models.map(item => item.name).join(','), 'gpt-5,gpt-5-mini')
+    assert.equal(bodies.length, 1)
+    assert.equal(bodies[0].model, 'gpt-5')
+    assert.equal(bodies[0].stream, true)
+    assert.equal(bodies[0].instructions, '简短回答')
+    assert.ok(Array.isArray(bodies[0].input))
+  } finally {
+    server.close()
+  }
+})

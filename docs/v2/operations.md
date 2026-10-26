@@ -76,8 +76,8 @@ journalctl --user -u jarvis -f
 ```bash
 cd ~/jarvis/v2
 npm run backup -- ~/jarvis-backup.tar.gz
-# 归档含 jarvis.db、tuning.json、manifest.json；不含 auth-token、secret.key、音频、画面、telemetry、日志
-# 需要连模型 Key 一起备份时加 --include-secrets（文件仍是 0600）
+# 归档含 jarvis.db、tuning.json、manifest.json；不含 auth-token、secret.key、音频、画面、telemetry、日志。
+# 需要连模型/语音 Key 一起备份时加 --include-secrets（含 model-config.json、voice-config.json，仍是 0600）
 ```
 
 恢复（会覆盖本机数据，必须先停服务）：
@@ -104,25 +104,51 @@ OLLAMA_MODELS=$HOME/.local/share/jarvis/ollama-models \
 
 ## 4. 模型来源：本地 / 远端，一键切换
 
-设置入口有两个：右上角的模型徽标，或“设置 → 模型来源”。不需要改 `.env`、不需要重启服务。
+设置入口：右上角模型徽标，或“设置 → 模型来源”。不需要改 `.env`、不需要重启。
 
-- **本地 Ollama**：默认 `http://127.0.0.1:11434` + `qwen2.5:3b`。适合隐私优先、离线、低延迟。
-- **远端 OpenAI 兼容**：支持 `POST /v1/chat/completions` 和 `GET /v1/models` 的服务，例如 DeepSeek、OpenAI、OpenRouter、vLLM、LM Studio、Ollama 的 `/v1` 兼容层。Base URL 要包含 `/v1`（只填域名时客户端会补 `/v1`）。
+### 4.1 LLM 三种远端协议
 
-操作：
+- **本地 Ollama**：默认 `http://127.0.0.1:11434` + `qwen2.5:3b`。
+- **OpenAI Chat Completions**：`POST /chat/completions`，例如 DeepSeek、OpenAI、OpenRouter、vLLM、LM Studio、Ollama `/v1`。
+- **OpenAI Responses**：`POST /responses`，解析 `response.output_text.delta`。
+- **Anthropic Messages**：`POST /messages`，`x-api-key` + `anthropic-version: 2023-06-01`，解析 `content_block_delta`。
 
-1. 点模型卡片，编辑 Base URL、模型名和 API Key。
-2. 点 **测试连接**，确认返回的延迟和模型列表。
-3. 点 **保存并切换**：先测试，成功后才原子写入并切换；失败不会破坏当前配置。
-4. 已经配置过的卡片可以直接点 **切换**，下一轮对话立即使用，不用重启。
+Base URL 只填域名、填 `/v1`、或填完整端点都可以；客户端会归一化，不会重复拼
+`/v1`。远端非 loopback 强制 HTTPS；只有 localhost 可用 HTTP。
+
+### 4.2 模型列表自动获取
+
+设置页的模型名是**下拉框**，不是自由文本：
+
+1. 打开卡片、改 Base URL / 接口协议 / Key；
+2. 页面调用 `POST /api/model/list`；
+3. 服务端按来源读取 `GET /api/tags`（Ollama）、`GET /models`（OpenAI 兼容）或
+   `GET /v1/models`（Anthropic）；
+4. 返回的模型 id 自动填入选择器；当前模型预选中。
+
+没有 `/models` 的兼容网关会明确提示“无法自动列出模型”；本版不退回手填。
+完整说明见 [models.md](models.md)。
+
+### 4.3 操作
+
+1. 点模型卡片，编辑 Base URL、接口协议和 API Key；模型从自动列表选。
+2. 点 **测试连接**：`/models` 探测 + 一句 `只回复：ok` 的极小请求；测试结果
+   也会补齐模型列表。
+3. 点 **保存并切换**：测试成功后才原子写入 `data/model-config.json` 并替换
+   客户端；失败不破坏当前配置。
+4. 已配置卡片可直接 **切换**，下一轮对话立即生效，不用重启。
 
 安全与存储：
 
-- 远端地址非 loopback 时强制 HTTPS；只有 `localhost` / `127.0.0.1` 可以用 HTTP。
-- API Key 只写入 `~/.local/share/jarvis/data/model-config.json`，权限 `0600`；`GET /api/model` 永远不返回 Key，只返回 `hasKey`。
-- 页面留空 Key 表示保留已保存的 Key；如果更换 Base URL 而留空，服务端会拒绝，避免把旧密钥发给新地址。
-- 远端模型会收到当前对话和按需检索到的记忆上下文；敏感记忆仍按本机策略过滤。切换前请确认服务商隐私政策。
-- 远端配置没有填 `embedModel` / `visionModel` 时，记忆向量和摄像头视觉自动复用本地 Ollama；本地不可用时记忆退化为词法召回，视觉路径会明确报错。
+- API Key 只写入 `~/.local/share/jarvis/data/model-config.json`，权限 `0600`；
+  `GET /api/model` 永远不返回 Key，只返回 `hasKey`。
+- 页面留空 Key 表示保留已保存的 Key；如果更换 Base URL 而留空，服务端会拒绝，
+  避免把旧密钥发给新地址。
+- 远端模型会收到当前对话和按需检索到的记忆上下文；`sensitive` / `secret`
+  记忆在构建上下文时被过滤。切换前请确认服务商隐私政策。
+- 远端没有填 `embedModel` / `visionModel` 时，记忆向量和摄像头视觉自动复用
+  本地 Ollama；本地不可用时记忆退化为词法召回，视觉路径会明确报错。
+- Anthropic 没有第一方 embedding；`embed()` 返回 null，由路由器回退本地。
 - 启动时使用上次激活的配置；远端不可达时服务仍会启动，打开设置切回本地即可。
 
 同样的操作也可以用 API：
@@ -130,19 +156,57 @@ OLLAMA_MODELS=$HOME/.local/share/jarvis/ollama-models \
 ```bash
 curl -s http://127.0.0.1:3081/api/model
 
+# 自动列模型（不会保存）
+curl -s -X POST http://127.0.0.1:3081/api/model/list \
+  -H 'content-type: application/json' \
+  -d '{"id":"remote","kind":"openai","protocol":"anthropic","baseUrl":"https://api.anthropic.com/v1","apiKey":"sk-ant-..."}'
+
 curl -s -X POST http://127.0.0.1:3081/api/model/test \
   -H 'content-type: application/json' \
-  -d '{"id":"remote","baseUrl":"https://api.deepseek.com/v1","model":"deepseek-chat","apiKey":"sk-..."}'
+  -d '{"id":"remote","protocol":"responses","baseUrl":"https://api.openai.com/v1","model":"gpt-5","apiKey":"sk-..."}'
 
 curl -s -X POST http://127.0.0.1:3081/api/model/apply \
   -H 'content-type: application/json' \
-  -d '{"id":"remote","baseUrl":"https://api.deepseek.com/v1","model":"deepseek-chat","apiKey":"sk-..."}'
+  -d '{"id":"remote","protocol":"responses","baseUrl":"https://api.openai.com/v1","model":"gpt-5","apiKey":"sk-..."}'
 
 curl -s -X POST http://127.0.0.1:3081/api/model/activate \
   -H 'content-type: application/json' -d '{"id":"local"}'
 ```
 
 `test` 只测试不保存；`apply` 测试成功后保存并切换；`activate` 切换已保存配置。
+
+### 4.4 ASR / TTS：本地 / 远端独立切换
+
+“设置 → 语音模型”有两张卡；ASR 和 TTS 各自选择本地或远端，保存后
+`VoiceRuntime` 立即重建，不重启服务：
+
+- **本地 ASR**：faster-whisper `tiny` 持久 worker（或 whisper.cpp），启动预热，
+  热路径约 1–2 秒。
+- **远端 ASR HTTP**：OpenAI 兼容 `POST /audio/transcriptions`；浏览器音频先由
+  本机 ffmpeg 转 16 kHz 单声道 WAV，再 multipart 上传。
+- **远端 ASR WebSocket（默认）**：完整 WS 地址；Jarvis 先发 `start`，再发
+  16 kHz PCM s16le 分片，最后 `end`，服务端回 `partial` / `final` / `error`。
+  这是本项目的 **Jarvis Streaming ASR v1** 契约，不是 OpenAI Realtime 的别名；
+  精确报文见 [voice.md](voice.md)。
+- **本地 TTS**：Piper 常驻 worker，按短句流式合成。
+- **远端 TTS**：OpenAI 兼容 `POST /audio/speech`，请求 WAV；输出仍在本机加密。
+
+配置持久化在 `data/voice-config.json`（0600）；Key 不回显。远端非 loopback
+必须 TLS（`https` / `wss`），TTS 不接受 `ws`。默认全部本地；不配置远端就不出网。
+浏览器目前是松手后上传整段语音，**后端 → ASR 服务**才走 WebSocket 流式，尚未
+显示逐字字幕；端到端麦克风分片是后续工作。
+
+```bash
+curl -s http://127.0.0.1:3081/api/voice
+
+curl -s -X POST http://127.0.0.1:3081/api/voice/apply \
+  -H 'content-type: application/json' \
+  -d '{"activeAsr":"remote","activeTts":"remote",
+       "asr":{"remote":{"transport":"websocket","baseUrl":"wss://asr.example.com/v1/stream","model":"whisper-1","language":"zh","apiKey":"..."}},
+       "tts":{"remote":{"baseUrl":"https://api.openai.com/v1","model":"tts-1","voice":"alloy","apiKey":"..."}}}'
+```
+
+切回本地只需 `{"activeAsr":"local","activeTts":"local"}`，远端字段省略会保留。
 
 ## 5. 远程访问（手机 / 另一台电脑）
 

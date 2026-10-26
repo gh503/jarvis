@@ -15,13 +15,14 @@ import type { ScreenCapture } from './senses/screen.ts'
 import { describeCapture } from './senses/vision.ts'
 import type { OcrClient } from './senses/ocr.ts'
 import type { ActionManager } from './actions.ts'
-import type { PiperSynthesizer } from './voice/tts.ts'
+import type { Synthesizer } from './voice/tts.ts'
 import type { Transcriber } from './voice/asr.ts'
 import type { Reminder, ReminderStore } from './proactive/reminders.ts'
 import type { ProactivePolicy } from './proactive/policy.ts'
 import type { Capture } from './senses/screen.ts'
 import type { TuningStore } from './tuning.ts'
 import type { SecureFiles } from './secure-files.ts'
+import type { VoiceRuntimeStatus } from './voice/runtime.ts'
 
 export interface ConversationDeps {
   config: JarvisConfig
@@ -30,7 +31,7 @@ export interface ConversationDeps {
   memory: MemoryStore
   model: ModelClient
   transcriber: Transcriber
-  synthesizer: PiperSynthesizer
+  synthesizer: Synthesizer
   screen: ScreenCapture
   camera: CameraCapture
   ocr: OcrClient
@@ -39,6 +40,7 @@ export interface ConversationDeps {
   policy: ProactivePolicy
   tuning: TuningStore
   secure: SecureFiles
+  voice?: { status(): VoiceRuntimeStatus }
   logger: Logger
 }
 
@@ -137,7 +139,7 @@ export class Conversation {
     }
     if (this.voiceReady.tts) {
       try {
-        await this.deps.synthesizer.warmup()
+        await this.deps.synthesizer.warmup?.()
       } catch (error) {
         this.deps.logger.warn('tts warm-up failed', { error: String(error) })
       }
@@ -163,6 +165,7 @@ export class Conversation {
 
   status(): Record<string, unknown> {
     const modelStatus = this.deps.model.status?.()
+    const voiceDetail = this.deps.voice?.status()
     return {
       modelReady: this.modelReady,
       model: this.deps.model.model,
@@ -173,8 +176,13 @@ export class Conversation {
       models: this.lastHealth.models,
       voice: {
         ...this.voiceReady,
-        asrState: this.deps.transcriber.state?.().state ?? (this.voiceReady.asr ? 'ready' : 'unavailable'),
-        asrError: this.deps.transcriber.state?.().error ?? null,
+        asrState: voiceDetail?.asr.state ?? this.deps.transcriber.state?.().state ?? (this.voiceReady.asr ? 'ready' : 'unavailable'),
+        asrError: voiceDetail?.asr.error ?? this.deps.transcriber.state?.().error ?? null,
+        asrProvider: voiceDetail?.asr.kind ?? 'local',
+        asrTransport: voiceDetail?.asr.transport ?? 'http',
+        asrLabel: voiceDetail?.asr.label ?? '',
+        ttsProvider: voiceDetail?.tts.kind ?? 'local',
+        ttsLabel: voiceDetail?.tts.label ?? '',
       },
       ollamaOk: this.lastHealth.ok,
       ollamaError: this.lastHealth.error ?? null,
@@ -186,7 +194,21 @@ export class Conversation {
   }
 
   async reconfigureVoice(): Promise<void> {
-    await this.deps.synthesizer.reconfigure()
+    await this.deps.synthesizer.reconfigure?.()
+  }
+
+  async refreshVoiceReadiness(): Promise<void> {
+    this.voiceReady = {
+      asr: await this.deps.transcriber.available(),
+      tts: await this.deps.synthesizer.available(),
+    }
+    if (this.voiceReady.tts) {
+      try {
+        await this.deps.synthesizer.warmup?.()
+      } catch (error) {
+        this.deps.logger.warn('tts warm-up after voice switch failed', { error: String(error) })
+      }
+    }
   }
 
   async speakText(text: string): Promise<string | undefined> {

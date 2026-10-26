@@ -1,4 +1,5 @@
 import { chmod, mkdir, readFile, rename, writeFile } from 'node:fs/promises'
+import type { LlmProtocol } from './types.ts'
 import { dirname, join } from 'node:path'
 
 export type ProviderKind = 'ollama' | 'openai'
@@ -7,6 +8,7 @@ export interface ModelProfile {
   id: string
   label: string
   kind: ProviderKind
+  protocol: LlmProtocol
   baseUrl: string
   model: string
   apiKey: string
@@ -36,10 +38,14 @@ export interface ModelDefaults {
 function profile(value: Partial<ModelProfile>, fallback?: ModelProfile): ModelProfile {
   const id = String(value.id ?? fallback?.id ?? 'local')
   const kind = value.kind === 'openai' || value.kind === 'ollama' ? value.kind : fallback?.kind ?? 'ollama'
+  const protocol: LlmProtocol = value.protocol === 'responses' || value.protocol === 'anthropic' || value.protocol === 'chat-completions'
+    ? value.protocol
+    : fallback?.protocol ?? 'chat-completions'
   return {
     id,
     label: String(value.label ?? fallback?.label ?? (id === 'remote' ? '远端模型' : '本地 Ollama')).slice(0, 64),
     kind,
+    protocol,
     baseUrl: String(value.baseUrl ?? fallback?.baseUrl ?? '').trim(),
     model: String(value.model ?? fallback?.model ?? '').trim(),
     apiKey: String(value.apiKey ?? fallback?.apiKey ?? ''),
@@ -91,6 +97,7 @@ export class ModelSettingsStore {
       id: 'local',
       label: '本地 Ollama',
       kind: 'ollama',
+      protocol: 'chat-completions',
       baseUrl: this.defaults.local.baseUrl,
       model: this.defaults.local.model,
       apiKey: '',
@@ -100,8 +107,9 @@ export class ModelSettingsStore {
     }
     const remote: ModelProfile = {
       id: 'remote',
-      label: '远端 OpenAI 兼容',
+      label: '远端模型',
       kind: 'openai',
+      protocol: 'chat-completions',
       baseUrl: 'https://api.deepseek.com/v1',
       model: 'deepseek-chat',
       apiKey: '',
@@ -177,6 +185,7 @@ export class ModelSettingsStore {
         id: item.id,
         label: item.label,
         kind: item.kind,
+        protocol: item.protocol,
         baseUrl: item.baseUrl,
         model: item.model,
         visionModel: item.visionModel,

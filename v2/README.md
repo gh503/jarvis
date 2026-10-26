@@ -4,7 +4,9 @@ Local-first ambient assistant for Linux: text/voice conversation with barge-in,
 on-demand screen OCR, single-frame camera, SQLite memory with consolidation and
 a regression eval, reminders/daily brief, optional read-only ICS calendar,
 confirmation-gated actions, revocable device pairing, backup/restore, and a
-browser/PWA UI with a Studio observability surface.
+browser/PWA UI with a Studio observability surface. LLM providers support
+OpenAI Chat Completions, OpenAI Responses and Anthropic Messages with automatic
+model discovery; ASR/TTS can switch between local and remote independently.
 
 ## Quick start
 
@@ -41,12 +43,14 @@ bash scripts/gen-tls.sh 100.x.y.z            # optional self-signed LAN cert
 See [operations.md](../docs/v2/operations.md) for privacy, remote/TLS, failure
 modes and the actual latency measurements on this machine.
 See [implementation-status.md](../docs/v2/implementation-status.md) for what is
-implemented vs. deliberately deferred.
+implemented vs. deliberately deferred. Model protocols are documented in
+[models.md](../docs/v2/models.md); voice transports and the WebSocket contract
+are in [voice.md](../docs/v2/voice.md).
 
 ## Tests
 
-62 tests cover attention, memory, server auth/CSRF, at-rest encryption,
-telemetry, voice cancellation and the daily brief. `npm run memory:eval` is a
+73 tests cover attention, memory, server auth/CSRF, at-rest encryption,
+telemetry, voice cancellation, LLM protocols/model discovery and voice routing. `npm run memory:eval` is a
 separate deterministic recall/abstention/privacy regression gate.
 
 ## Layout
@@ -55,9 +59,9 @@ separate deterministic recall/abstention/privacy regression gate.
 src/attention.ts      explicit attention FSM (no LLM gate)
 src/conversation.ts   turn orchestration, intents, voice, memory grounding
 src/memory/           SQLite source, FTS/vector recall, extraction
-src/model/ollama.ts   local LLM / embedding / vision adapter
+src/model/            Ollama + OpenAI Chat/Responses + Anthropic adapters, routing
+src/voice/             local faster-whisper/Piper plus remote ASR HTTP/WS and TTS
 src/senses/           portal screen capture, camera frame, OCR-first vision
-src/voice/            faster-whisper worker client, Piper TTS
 src/proactive/        reminders, interruption policy, read-only ICS
 src/brief.ts           deterministic daily brief + scheduler
 src/devices.ts         hashed, revocable device tokens

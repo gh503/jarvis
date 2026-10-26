@@ -31,7 +31,7 @@ try {
   if (statSync(archive).size > 1_000_000_000) throw new Error('backup archive is too large')
   const listing = spawnSync('tar', ['-tvzf', archive], { encoding: 'utf8', maxBuffer: 8 * 1024 * 1024 })
   if (listing.status !== 0) throw new Error(`cannot list backup archive: ${listing.stderr || 'tar failed'}`)
-  const allowed = new Set(['', 'jarvis.db', 'manifest.json', 'tuning.json', 'model-config.json'])
+  const allowed = new Set(['', 'jarvis.db', 'manifest.json', 'tuning.json', 'model-config.json', 'voice-config.json'])
   for (const line of listing.stdout.split('\n').filter(Boolean)) {
     const type = line[0]
     const name = line.trim().split(/\s+/).pop()?.replace(/^\.\//, '') ?? ''
@@ -59,7 +59,7 @@ try {
   const safety = `${dataDir}.pre-restore-${stamp}`
   await runProcess('mkdir', ['-p', dataDir, join(safety)], { timeoutMs: 10_000 })
   await chmod(safety, 0o700).catch(() => undefined)
-  for (const name of ['jarvis.db', 'jarvis.db-wal', 'jarvis.db-shm', 'tuning.json', 'model-config.json']) {
+  for (const name of ['jarvis.db', 'jarvis.db-wal', 'jarvis.db-shm', 'tuning.json', 'model-config.json', 'voice-config.json']) {
     if (existsSync(join(dataDir, name))) await copyFile(join(dataDir, name), join(safety, name)).catch(() => undefined)
   }
 
@@ -67,7 +67,7 @@ try {
   await rm(join(dataDir, 'jarvis.db-shm'), { force: true })
   await copyFile(dbFile, join(dataDir, 'jarvis.db'))
   await chmod(join(dataDir, 'jarvis.db'), 0o600)
-  for (const name of ['tuning.json', 'model-config.json']) {
+  for (const name of ['tuning.json', 'model-config.json', 'voice-config.json']) {
     if (existsSync(join(work, name))) {
       await copyFile(join(work, name), join(dataDir, name))
       await chmod(join(dataDir, name), 0o600)

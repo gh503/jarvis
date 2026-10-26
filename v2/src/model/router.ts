@@ -1,10 +1,21 @@
 import type { Logger } from '../logger.ts'
+import { AnthropicClient } from './anthropic.ts'
 import { OllamaClient } from './ollama.ts'
 import { OpenAICompatibleClient } from './openai.ts'
 import type { ModelProfile } from './settings.ts'
 import type { ChatMessage, ChatOptions, ModelClient, ModelHealth, ModelStatus } from './types.ts'
 
 export function createModelClient(profile: ModelProfile): ModelClient {
+  if (profile.kind === 'openai' && profile.protocol === 'anthropic') {
+    return new AnthropicClient({
+      baseUrl: profile.baseUrl,
+      model: profile.model,
+      apiKey: profile.apiKey,
+      visionModel: profile.visionModel,
+      id: profile.id,
+      label: profile.label,
+    })
+  }
   if (profile.kind === 'openai') {
     return new OpenAICompatibleClient({
       baseUrl: profile.baseUrl,
@@ -14,6 +25,7 @@ export function createModelClient(profile: ModelProfile): ModelClient {
       embedModel: profile.embedModel,
       id: profile.id,
       label: profile.label,
+      protocol: profile.protocol === 'responses' ? 'responses' : 'chat-completions',
     })
   }
   return new OllamaClient(profile.baseUrl, {
@@ -68,6 +80,7 @@ export class ModelRouter implements ModelClient {
       id: this.current.id,
       label: this.current.label,
       kind: this.current.kind,
+      protocol: this.current.protocol,
       model: this.client.model,
       baseUrl: this.current.baseUrl,
       hasKey: Boolean(this.current.apiKey),
@@ -98,6 +111,16 @@ export class ModelRouter implements ModelClient {
   async embed(text: string): Promise<Float32Array | null> {
     if (!this.client.embedModel && this.fallback?.embedding) return await this.fallback.embedding.embed(text)
     return await this.client.embed(text)
+  }
+
+  async list(profile: ModelProfile): Promise<{ ok: boolean; models: string[]; error?: string }> {
+    const client = createModelClient(profile)
+    const health = await client.health(8000)
+    return {
+      ok: health.ok,
+      models: health.models.map(item => item.name).filter(Boolean).slice(0, 200),
+      error: health.error,
+    }
   }
 
   async test(profile: ModelProfile): Promise<ModelTestResult> {

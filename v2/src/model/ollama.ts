@@ -37,7 +37,7 @@ export class OllamaClient implements ModelClient, Embedder {
   }
 
   status(): ModelStatus {
-    return { id: this.id, label: this.label, kind: 'ollama', model: this.model, baseUrl: this.baseUrl, hasKey: false }
+    return { id: this.id, label: this.label, kind: 'ollama', protocol: 'ollama', model: this.model, baseUrl: this.baseUrl, hasKey: false }
   }
 
   async health(timeoutMs = 3000): Promise<ModelHealth> {

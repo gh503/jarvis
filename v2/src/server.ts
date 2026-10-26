@@ -22,6 +22,8 @@ import type { ProactivePolicy } from './proactive/policy.ts'
 import type { TuningStore } from './tuning.ts'
 import type { MemoryInput } from './memory/types.ts'
 import type { TelemetryCollector } from './telemetry.ts'
+import type { VoiceRuntime } from './voice/runtime.ts'
+import { mergeVoiceUpdate, type VoiceSettingsStore, type VoiceUpdate } from './voice/settings.ts'
 
 export interface ServerDeps {
   config: JarvisConfig
@@ -30,6 +32,8 @@ export interface ServerDeps {
   conversation: Conversation
   models: ModelRouter
   modelSettings: ModelSettingsStore
+  voiceSettings?: VoiceSettingsStore
+  voice?: VoiceRuntime
   tuning: TuningStore
   telemetry: TelemetryCollector
   actions: ActionManager
@@ -559,6 +563,18 @@ export class JarvisServer {
       return
     }
 
+    if (request.method === 'POST' && path === '/api/model/list') {
+      try {
+        const body = await readJson<Partial<ModelProfile>>(request)
+        const profile = await this.profileFromBody(body)
+        const result = await this.deps.models.list(profile)
+        sendJson(response, result.ok ? 200 : 502, result)
+      } catch (error) {
+        sendJson(response, 400, { ok: false, models: [], error: error instanceof Error ? error.message : String(error) })
+      }
+      return
+    }
+
     if (request.method === 'POST' && path === '/api/model/test') {
       try {
         const body = await readJson<Partial<ModelProfile>>(request)
@@ -620,6 +636,40 @@ export class JarvisServer {
       }
       const result = await this.deps.conversation.handleText(body.text, { source: 'text' })
       sendJson(response, 200, result)
+      return
+    }
+
+    if (request.method === 'GET' && path === '/api/voice') {
+      if (!this.deps.voice || !this.deps.voiceSettings) {
+        sendJson(response, 503, { error: '语音运行时未启用' })
+        return
+      }
+      const settings = await this.deps.voiceSettings.load()
+      sendJson(response, 200, {
+        settings: this.deps.voice.settingsView(),
+        status: this.deps.voice.status(),
+        local: settings.tts.local.kind,
+      })
+      return
+    }
+
+    if (request.method === 'POST' && path === '/api/voice/apply') {
+      if (!this.deps.voice || !this.deps.voiceSettings) {
+        sendJson(response, 503, { error: '语音运行时未启用' })
+        return
+      }
+      try {
+        const body = await readJson<VoiceUpdate>(request)
+        const current = await this.deps.voiceSettings.load()
+        const next = mergeVoiceUpdate(current, body)
+        const settings = await this.deps.voice.apply(next)
+        await this.deps.conversation.refreshVoiceReadiness()
+        const status = this.deps.voice.status()
+        this.deps.bus.emit('voice.changed', { asr: status.asr, tts: status.tts })
+        sendJson(response, 200, { settings, status })
+      } catch (error) {
+        sendJson(response, 409, { error: error instanceof Error ? error.message : String(error) })
+      }
       return
     }
 
@@ -877,11 +927,15 @@ export class JarvisServer {
     if (existing.kind === 'openai' && nextBase !== existing.baseUrl.replace(/\/+$/, '') && !body.apiKey?.trim()) {
       throw new Error('更换远端地址时请重新输入 API Key，避免把旧密钥发给新地址')
     }
+    const protocol = body.protocol === 'responses' || body.protocol === 'anthropic' || body.protocol === 'chat-completions'
+      ? body.protocol
+      : existing.protocol
     const merged: ModelProfile = {
       ...existing,
       ...body,
       id,
       kind: body.kind === 'openai' ? 'openai' : body.kind === 'ollama' ? 'ollama' : existing.kind,
+      protocol,
       apiKey: body.apiKey?.trim() ? body.apiKey.trim() : existing.apiKey,
     }
     return validateProfile(merged)
