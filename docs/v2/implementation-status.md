@@ -26,7 +26,7 @@
 | 提醒解析 / 调度 / 打扰策略 | `v2/src/proactive/*` | `test/reminders.test.ts`；15 s tick |
 | HTTP + WebSocket + 静态 PWA | `v2/src/server.ts` | `curl` + headless Chrome DOM |
 | 记忆/提醒/运行状态面板 | `v2/web/*` | 浏览器实时事件、搜索、确认/拒绝/删除 |
-| Jarvis Studio 总览（延迟/事件/系统） | `v2/src/telemetry.ts`, `v2/web/studio.js` | `/api/observatory` + headless Chrome 截图；41 tests |
+| Jarvis Studio 总览（延迟/事件/系统） | `v2/src/telemetry.ts`, `v2/web/studio.js` | `/api/observatory` + headless Chrome 截图；42 tests |
 | 记忆星座 / Inspector / 召回实验台 | `v2/src/memory/store.ts` (`graph`), `v2/web/studio.js` | 演示 13 节点 / 22 边；点击、筛选、召回解释 |
 | 效果与行为调参（32 项 / 预设 / 实时预览） | `v2/src/tuning.ts`, `v2/web/studio.js`, `v2/web/visual.js` | `test/tuning.test.ts`；UI 拖动/保存/重置实测 |
 | 脱敏配置浏览器 | `v2/src/server.ts` (`/api/config`) | 测试断言不含 auth token / API key |
