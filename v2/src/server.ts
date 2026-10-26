@@ -688,7 +688,7 @@ export class JarvisServer {
 
     if (request.method === 'POST' && path === '/api/chat') {
       const body = await readJson<{ text?: string }>(request)
-      if (!body.text?.trim()) {
+      if (typeof body.text !== 'string' || !body.text.trim()) {
         sendJson(response, 400, { error: 'text is required' })
         return
       }
@@ -810,7 +810,7 @@ export class JarvisServer {
 
     if (request.method === 'POST' && path === '/api/memory') {
       const body = await readJson<{ content?: string; kind?: string; sensitivity?: string }>(request)
-      if (!body.content?.trim()) {
+      if (typeof body.content !== 'string' || !body.content.trim()) {
         sendJson(response, 400, { error: 'content is required' })
         return
       }
@@ -894,7 +894,7 @@ export class JarvisServer {
 
     if (request.method === 'POST' && path === '/api/reminders') {
       const body = await readJson<{ text?: string; dueAt?: string }>(request)
-      if (!body.text?.trim() || !body.dueAt) {
+      if (typeof body.text !== 'string' || !body.text.trim() || typeof body.dueAt !== 'string' || !body.dueAt.trim()) {
         sendJson(response, 400, { error: 'text and dueAt are required' })
         return
       }

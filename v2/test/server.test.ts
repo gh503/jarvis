@@ -242,6 +242,11 @@ test('server enforces proxy auth, CSRF and serves the shell', async () => {
     assert.equal(longChat.status, 400)
     assert.match(await longChat.text(), /消息太长/)
 
+    const nonStringChat = await fetch(`${url}/api/chat`, {
+      method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ text: 123 }),
+    })
+    assert.equal(nonStringChat.status, 400)
+
     const longMemory = await fetch(`${url}/api/memory`, {
       method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ content: 'x'.repeat(8001) }),
     })
@@ -253,6 +258,16 @@ test('server enforces proxy auth, CSRF and serves the shell', async () => {
     })
     assert.equal(longReminder.status, 400)
     assert.match(await longReminder.text(), /提醒太长/)
+
+    const nonStringMemory = await fetch(`${url}/api/memory`, {
+      method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ content: 123 }),
+    })
+    assert.equal(nonStringMemory.status, 400)
+
+    const nonStringReminder = await fetch(`${url}/api/reminders`, {
+      method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ text: 123, dueAt: new Date(Date.now() + 60_000).toISOString() }),
+    })
+    assert.equal(nonStringReminder.status, 400)
 
     const unknownProfile = await fetch(`${url}/api/model/test`, {
       method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ id: 'foo' }),
