@@ -226,7 +226,49 @@ curl -s http://127.0.0.1:3081/api/reminders
 | 远程 401 | 用 `/?token=...` 设置 cookie；确认 TLS 与令牌同时配置 |
 | 端口占用 | `JARVIS_PORT=3082 npm start`；桌面脚本读同一个变量 |
 
-## 10. 已知缺口
+## 10. 观察台与调参（开发期）
+
+顶栏波形图标打开 **Jarvis Studio**，或直接访问 `http://127.0.0.1:3081/` 后点开。
+
+| 页 | 用途 | 关键 API |
+|---|---|---|
+| 总览 | 当前注意力、首字/整轮、延迟趋势、最新回合瀑布、事件、系统负载 | `GET /api/observatory` |
+| 记忆 | 星座图、筛选、Inspector、时间线、召回实验台 | `GET /api/memory/graph`, `GET /api/memory?query=` |
+| 调参 | 32 项效果/行为参数，预设、实时预览、保存/重置 | `GET/PUT /api/tuning`, `POST /api/tuning/reset`, `POST /api/tuning/preset` |
+| 配置 | 只读脱敏运行时配置 | `GET /api/config` |
+| 事件 | 完整事件流与 JSON payload | `GET /api/observatory` |
+
+调参写入 `~/.local/share/jarvis/data/tuning.json`（0600，原子写）。界面参数实时生效；
+对话/记忆参数下一轮生效；声音参数会重启 Piper worker，正在播放的音频不受影响。
+端口、TLS、认证令牌、模型 API Key 不在调参页，仍由环境变量或模型设置管理。
+
+开发演示记忆：
+
+```bash
+# 仅 loopback 可用，必须显式带 header
+curl -s -X POST http://127.0.0.1:3081/api/dev/demo-memory \
+  -H 'content-type: application/json' -H 'x-jarvis-demo: 1' -d '{}'
+curl -s -X DELETE http://127.0.0.1:3081/api/dev/demo-memory -H 'x-jarvis-demo: 1'
+```
+
+演示项 `sourceRef` 以 `demo:` 开头，只删除这些，不会触碰真实记忆。
+
+### 排查“为什么慢”
+
+1. 总览看最近回合的 `首字` 与 `整轮`；首字大 → 模型冷加载/上下文太长/远端网络。
+2. 看“最新回合 · 追踪”的 ASR、召回条数、语音首段；ASR 大 → faster-whisper；语音首段大 → Piper。
+3. 事件流展开 `assistant.done`，核对 `durationMs` 与错误。
+4. 调参页把 `conversation.maxContextMessages` / `recallLimit` 调小，观察下一轮；确认后再保存。
+
+### 安全说明
+
+- `/api/config`、`/api/observatory` 不返回 token/私钥/API Key。
+- Studio 走既有认证与同源 CSRF；远端访问仍需 HTTPS + Bearer。
+- `data/tuning.json`、`jarvis.db`（含 `-wal`/`-shm`）均为 0600；进程以 `umask 077` 启动，新增音频/截图/日志继承私有权限。
+- 不要把这些文件提交到 git 或发到公开 issue。
+- 演示数据接口仅回环 + `x-jarvis-demo: 1`；不要在生产反向代理后面暴露。
+
+## 11. 已知缺口
 
 - 没有唤醒词常听；第一版是按住说话。音频只在按住期间采集。
 - 没有 WebRTC；远程是 PWA + WebSocket。
@@ -234,3 +276,5 @@ curl -s http://127.0.0.1:3081/api/reminders
 - 视觉模型在 4 GB 显存上不具备实时性；已降级为显式可选路径。
 - 记忆巩固目前是确定性去重/过期/索引重建，不含 LLM 摘要。
 - 屏幕捕获的窗口级黑名单在原生 Wayland 下不可用；portal 授权是实际边界。
+- Studio 的 telemetry 只在内存保留最近 80 个 turn / 240 条事件，重启归零；未做按天落盘。
+- 记忆图暂不支持手动连线/取消连线；`memory_links` 表已存在，API 仅服务端演示/巩固可写。

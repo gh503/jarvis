@@ -18,6 +18,7 @@ function usage(): never {
 }
 
 async function main(): Promise<void> {
+  process.umask(0o077)
   const config = loadConfig()
   ensureRuntimeDirs(config)
   const dbFile = join(config.dataDir, 'jarvis.db')

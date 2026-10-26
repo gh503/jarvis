@@ -9,6 +9,7 @@
 | 能力 | 代码 | 验证 |
 |---|---|---|
 | 配置、目录、令牌、TLS fail-closed | `v2/src/config.ts` | `npm run typecheck`；远端配置缺 TLS 会抛错 |
+| 数据文件私有权限 | `v2/src/main.ts` (`umask 077`), `v2/src/memory/store.ts` | `test/memory-file.test.ts`；DB/WAL 0600 |
 | 事件总线 / 脱敏日志 | `v2/src/events.ts`, `v2/src/logger.ts` | 单元测试 + 运行时日志 |
 | 注意力状态机 + 上下文决策 | `v2/src/attention.ts` | `test/attention.test.ts` |
 | SQLite 记忆源、FTS5、向量投影 | `v2/src/memory/store.ts` | `test/memory.test.ts` |
@@ -25,6 +26,11 @@
 | 提醒解析 / 调度 / 打扰策略 | `v2/src/proactive/*` | `test/reminders.test.ts`；15 s tick |
 | HTTP + WebSocket + 静态 PWA | `v2/src/server.ts` | `curl` + headless Chrome DOM |
 | 记忆/提醒/运行状态面板 | `v2/web/*` | 浏览器实时事件、搜索、确认/拒绝/删除 |
+| Jarvis Studio 总览（延迟/事件/系统） | `v2/src/telemetry.ts`, `v2/web/studio.js` | `/api/observatory` + headless Chrome 截图；41 tests |
+| 记忆星座 / Inspector / 召回实验台 | `v2/src/memory/store.ts` (`graph`), `v2/web/studio.js` | 演示 13 节点 / 22 边；点击、筛选、召回解释 |
+| 效果与行为调参（32 项 / 预设 / 实时预览） | `v2/src/tuning.ts`, `v2/web/studio.js`, `v2/web/visual.js` | `test/tuning.test.ts`；UI 拖动/保存/重置实测 |
+| 脱敏配置浏览器 | `v2/src/server.ts` (`/api/config`) | 测试断言不含 auth token / API key |
+| 开发演示记忆（仅 loopback） | `v2/src/server.ts` (`/api/dev/demo-memory`) | 显式 header + 一键清除；未混入真实记忆 |
 | v1 `memory.json` 导入 | `v2/src/memory/store.ts` + `src/cli.ts` | CLI 可跑；字段保留 id/时间/来源 |
 | 桌面入口 / systemd user service | `v2/scripts/install-*.sh` | 生成 `.desktop` / `jarvis.service` |
 | 本地安装脚本 | `v2/scripts/setup-models.sh` | 用户目录安装，无 sudo |
@@ -40,6 +46,7 @@
 | M4 主动性 | 提醒、预算、专注、静默时段 | 无日历/任务触发；无会议检测 |
 | M5 远程 | 令牌 + TLS + PWA + WS | 无 WebRTC；无设备配对/撤销 UI |
 | 模型来源 | 本地 Ollama / 远端 OpenAI-compatible 运行时切换 | 远端协议未覆盖 Anthropic/Azure 专有头；向量模型切换需重建索引 |
+| 可视化 | 总览、记忆星座、事件流、调参、脱敏配置 | 无持久化 trace、无时间回放、无手动连线 UI |
 | 工具执行 | 打开网页/文件管理器（一次性确认 + 审计） | 无任意文件写入/终端/日历 |
 
 ## 3. 明确不做（本版）
@@ -50,6 +57,8 @@
 - 在 4 GB 显存机器上把 3B 视觉模型当实时主路径。
 
 ## 4. 下一步（按收益排序）
+
+0. Studio 的真实使用反馈：哪些图真正被看、哪些参数值得保留；再决定是否把 trace 落盘。
 
 1. 真实屏幕 Portal 验收 + 选区裁剪（需要人在场授权）。
 2. PWA 按住说话在手机上的真机验收；iOS Safari MediaRecorder 兼容。

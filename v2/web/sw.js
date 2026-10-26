@@ -1,8 +1,8 @@
 /* A deliberately small shell cache. API responses and media are never cached.
    The shell is network-first so a local update is visible on the next load;
    the cache is only an offline fallback. */
-const CACHE = 'jarvis-shell-v3'
-const SHELL = ['/', '/styles.css', '/app.js', '/manifest.webmanifest', '/icons/jarvis.svg']
+const CACHE = 'jarvis-shell-v5'
+const SHELL = ['/', '/styles.css', '/studio.css', '/app.js', '/studio.js', '/visual.js', '/manifest.webmanifest', '/icons/jarvis.svg']
 
 self.addEventListener('install', event => {
   event.waitUntil(caches.open(CACHE).then(cache => cache.addAll(SHELL)).then(() => self.skipWaiting()))

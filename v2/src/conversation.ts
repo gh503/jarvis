@@ -19,6 +19,7 @@ import type { Transcriber } from './voice/asr.ts'
 import type { Reminder, ReminderStore } from './proactive/reminders.ts'
 import type { ProactivePolicy } from './proactive/policy.ts'
 import type { Capture } from './senses/screen.ts'
+import type { TuningStore } from './tuning.ts'
 
 export interface ConversationDeps {
   config: JarvisConfig
@@ -34,6 +35,7 @@ export interface ConversationDeps {
   actions: ActionManager
   reminders: ReminderStore
   policy: ProactivePolicy
+  tuning: TuningStore
   logger: Logger
 }
 
@@ -42,6 +44,7 @@ export interface TurnOptions {
   voice?: boolean
   skipAttention?: boolean
   signal?: AbortSignal
+  turnId?: string
 }
 
 export interface TurnResult {
@@ -107,6 +110,8 @@ export class Conversation {
   private modelReady = false
   private voiceReady = { asr: false, tts: false }
   private lastHealth: { ok: boolean; models: string[]; error?: string } = { ok: false, models: [] }
+  private turnId = ''
+  private turnStartedAt = 0
 
   constructor(private readonly deps: ConversationDeps) {
     this.extractor = new MemoryExtractor(deps.model, deps.memory, deps.logger)
@@ -167,6 +172,10 @@ export class Conversation {
     }
   }
 
+  async reconfigureVoice(): Promise<void> {
+    await this.deps.synthesizer.reconfigure()
+  }
+
   async refreshModel(): Promise<boolean> {
     const health = await this.deps.model.health(5000)
     // A remote OpenAI-compatible endpoint may not expose /models; a successful
@@ -213,8 +222,16 @@ export class Conversation {
     this.busy = true
     this.abort = new AbortController()
     this.turnAudioUrls = []
+    this.turnId = options.turnId ?? randomUUID()
+    if (!options.turnId) this.turnStartedAt = Date.now()
     this.deps.policy.noteInteraction()
     this.clearFollowup()
+    this.deps.bus.emit('turn.start', {
+      turnId: this.turnId,
+      source: options.source ?? 'text',
+      text: text.slice(0, 500),
+      at: new Date(this.turnStartedAt).toISOString(),
+    })
     try {
       if (!options.skipAttention) await this.prepareUnderstanding()
       this.deps.bus.emit('user.message', { text, source: options.source ?? 'text' })
@@ -225,7 +242,8 @@ export class Conversation {
       const audioUrl = wantsVoice && !result.audioSpoken ? await this.speak(reply) : undefined
       this.history.push({ role: 'user', content: text })
       this.history.push({ role: 'assistant', content: reply })
-      while (this.history.length > 16) this.history.shift()
+      const maxHistory = Math.max(2, Math.round(this.deps.tuning.number('conversation.maxHistory')))
+      while (this.history.length > maxHistory) this.history.shift()
       this.deps.memory.addEpisode({
         startedAt: new Date(Date.now() - 1000).toISOString(),
         endedAt: new Date().toISOString(),
@@ -234,10 +252,12 @@ export class Conversation {
       })
       void this.extractor.maybeExtract(text, reply, `turn:${randomUUID()}`)
       this.deps.bus.emit('assistant.done', {
+        turnId: this.turnId,
         text: reply,
         audioUrl,
         contextUsed: result.contextUsed ?? [],
         memoryIds: result.memoryIds ?? [],
+        durationMs: Date.now() - this.turnStartedAt,
       })
       this.finishAttention()
       return { ...result, reply, audioUrl }
@@ -245,7 +265,7 @@ export class Conversation {
       const message = error instanceof Error ? error.message : String(error)
       this.deps.logger.error('turn failed', { error: message })
       const reply = message.includes('aborted') ? '好，停了。' : `我这边出了点问题：${message}`
-      this.deps.bus.emit('assistant.done', { text: reply, error: message })
+      this.deps.bus.emit('assistant.done', { turnId: this.turnId, text: reply, error: message, durationMs: Date.now() - this.turnStartedAt })
       this.deps.attention.reset('error')
       this.clearFollowup()
       return { reply, error: message }
@@ -366,14 +386,15 @@ export class Conversation {
         contextUsed: [],
       }
     }
-    const recall = await this.deps.memory.recall(text, { limit: 6 })
-    const memoryBlock = this.deps.memory.contextFor(recall.items)
+    const recall = await this.deps.memory.recall(text, { limit: Math.round(this.deps.tuning.number('conversation.recallLimit')) })
+    const memoryBlock = this.deps.memory.contextFor(recall.items, Math.round(this.deps.tuning.number('conversation.contextChars')))
     const contextUsed = recall.items.map(item => item.gist)
     const messages: ChatMessage[] = [
       { role: 'system', content: `${SYSTEM_PROMPT}\n\n当前本地时间：${new Date().toLocaleString('zh-CN', { hour12: false })}` },
     ]
     if (memoryBlock) messages.push({ role: 'system', content: memoryBlock })
-    messages.push(...this.history.slice(-10))
+    const maxContext = Math.max(0, Math.round(this.deps.tuning.number('conversation.maxContextMessages')))
+    if (maxContext > 0) messages.push(...this.history.slice(-maxContext))
     messages.push({ role: 'user', content: text })
 
     let reply = ''
@@ -384,9 +405,10 @@ export class Conversation {
       if (!options.voice) return
       while (speechBuffer.length > 0) {
         const boundary = speechBuffer.search(/[。！？!?；;，,、\n]/)
-        // If the model emits one long clause without punctuation, speak the
-        // first 20 characters instead of waiting for the whole paragraph.
-        const end = boundary >= 0 ? boundary + 1 : speechBuffer.length >= 20 ? 20 : -1
+        // If the model emits one long clause without punctuation, speak an
+        // early chunk instead of waiting for the whole paragraph.
+        const chunkChars = Math.max(6, Math.round(this.deps.tuning.number('conversation.speechChunkChars')))
+        const end = boundary >= 0 ? boundary + 1 : speechBuffer.length >= chunkChars ? chunkChars : -1
         if (end < 0) break
         const sentence = speechBuffer.slice(0, end).trim()
         speechBuffer = speechBuffer.slice(end)
@@ -399,13 +421,13 @@ export class Conversation {
     try {
       for await (const delta of this.deps.model.chatStream(messages, {
         signal: options.signal ?? this.abort?.signal,
-        temperature: 0.45,
-        timeoutMs: 120_000,
+        temperature: this.deps.tuning.number('conversation.temperature'),
+        timeoutMs: Math.round(this.deps.tuning.number('conversation.streamTimeoutMs')),
       })) {
         reply += delta
         emitted = true
         if (options.voice) speechBuffer += delta
-        this.deps.bus.emit('assistant.delta', { text: delta, full: reply })
+        this.deps.bus.emit('assistant.delta', { turnId: this.turnId, text: delta, full: reply })
         flushSpeech()
       }
     } catch (error) {
@@ -454,13 +476,14 @@ export class Conversation {
 
   private enqueueSpeech(text: string): void {
     const clean = text.trim()
+    const turnId = this.turnId
     if (!clean) return
     this.speechQueue = this.speechQueue
       .then(async () => {
         const url = await this.speak(clean)
         if (url) {
           this.turnAudioUrls.push(url)
-          this.deps.bus.emit('assistant.audio', { url, text: clean })
+          this.deps.bus.emit('assistant.audio', { turnId, url, text: clean })
         }
       })
       .catch(error => {
@@ -483,21 +506,30 @@ export class Conversation {
 
   async handleAudio(buffer: Buffer, mimeType: string): Promise<TurnResult> {
     const extension = mimeType.includes('wav') ? 'wav' : mimeType.includes('ogg') ? 'ogg' : mimeType.includes('mp4') ? 'm4a' : 'webm'
+    const turnId = randomUUID()
+    this.turnId = turnId
+    this.turnStartedAt = Date.now()
     await this.prepareUnderstanding()
     let transcript = ''
+    const asrStarted = Date.now()
+    this.deps.bus.emit('voice.asr.start', { turnId })
     try {
       const result = await this.deps.transcriber.transcribe(buffer, extension)
       transcript = result.text
-      this.deps.bus.emit('voice.transcribed', { text: transcript, durationMs: result.durationMs })
+      this.deps.bus.emit('voice.transcribed', { turnId, text: transcript, durationMs: result.durationMs, asrMs: Date.now() - asrStarted })
     } catch (error) {
       this.deps.attention.reset('asr_error')
-      return { reply: `没听清：${error instanceof Error ? error.message : String(error)}` }
+      const reply = `没听清：${error instanceof Error ? error.message : String(error)}`
+      this.deps.bus.emit('assistant.done', { turnId, text: reply, error: reply, durationMs: Date.now() - this.turnStartedAt })
+      return { reply }
     }
     if (!transcript) {
       this.deps.attention.reset('empty_asr')
-      return { reply: '我没听到声音，再说一次？' }
+      const reply = '我没听到声音，再说一次？'
+      this.deps.bus.emit('assistant.done', { turnId, text: reply, error: 'empty_asr', durationMs: Date.now() - this.turnStartedAt })
+      return { reply }
     }
-    const result = await this.handleText(transcript, { source: 'voice', voice: true, skipAttention: true })
+    const result = await this.handleText(transcript, { source: 'voice', voice: true, skipAttention: true, turnId })
     await this.speechQueue
     return { ...result, transcript, audioUrl: result.audioUrl ?? this.turnAudioUrls[0] }
   }
@@ -519,7 +551,7 @@ export class Conversation {
       if (this.deps.attention.getState() === 'followup') {
         this.deps.attention.send({ type: 'followup_expired', reason: 'silence' })
       }
-    }, 8000)
+    }, Math.max(1000, Math.round(this.deps.tuning.number('conversation.followupMs'))))
     this.followupTimer.unref()
   }
 

@@ -1,3 +1,6 @@
+import { initStudio } from './studio.js'
+import { loadVisualTuning } from './visual.js'
+
 const $ = (selector, root = document) => root.querySelector(selector)
 const $$ = (selector, root = document) => [...root.querySelectorAll(selector)]
 
@@ -124,7 +127,12 @@ function setConnection(kind) {
   label.textContent = kind === 'online' ? '本机连接' : kind === 'offline' ? '重连中' : '连接中'
 }
 
+window.addEventListener('jarvis:memory-changed', () => {
+  if (state.wsReady) void refreshMemory()
+})
+
 function handleEvent(event) {
+  window.dispatchEvent(new CustomEvent('jarvis:ws-event', { detail: event }))
   const data = event.data || {}
   switch (event.type) {
     case 'attention.state':
@@ -1055,6 +1063,8 @@ function tickClock() {
 
 async function main() {
   bind()
+  initStudio()
+  await loadVisualTuning()
   tickClock()
   setInterval(tickClock, 15000)
   await bootstrap()

@@ -15,6 +15,9 @@ import type { Logger } from './logger.ts'
 import type { MemoryStore } from './memory/store.ts'
 import type { ReminderStore } from './proactive/reminders.ts'
 import type { ProactivePolicy } from './proactive/policy.ts'
+import type { TuningStore } from './tuning.ts'
+import type { MemoryInput } from './memory/types.ts'
+import type { TelemetryCollector } from './telemetry.ts'
 
 export interface ServerDeps {
   config: JarvisConfig
@@ -23,6 +26,8 @@ export interface ServerDeps {
   conversation: Conversation
   models: ModelRouter
   modelSettings: ModelSettingsStore
+  tuning: TuningStore
+  telemetry: TelemetryCollector
   actions: ActionManager
   memory: MemoryStore
   reminders: ReminderStore
@@ -326,6 +331,136 @@ export class JarvisServer {
       return
     }
 
+    if (request.method === 'GET' && path === '/api/observatory') {
+      const status = this.deps.conversation.status()
+      const items = this.deps.memory.list({ includeSensitive: true, includeInactive: true, limit: 200 })
+      const byKind: Record<string, number> = {}
+      const byStatus: Record<string, number> = {}
+      const bySensitivity: Record<string, number> = {}
+      for (const item of items) {
+        byKind[item.kind] = (byKind[item.kind] ?? 0) + 1
+        byStatus[item.status] = (byStatus[item.status] ?? 0) + 1
+        bySensitivity[item.sensitivity] = (bySensitivity[item.sensitivity] ?? 0) + 1
+      }
+      sendJson(response, 200, {
+        now: new Date().toISOString(),
+        version: this.deps.config.version,
+        uptimeMs: Date.now() - this.startedAt,
+        status,
+        attention: this.deps.attention.snapshot(),
+        model: this.deps.models.status(),
+        voice: status.voice,
+        telemetry: this.deps.telemetry.snapshot(),
+        memory: {
+          stats: this.deps.memory.stats(),
+          byKind,
+          byStatus,
+          bySensitivity,
+          episodes: this.deps.memory.listEpisodes(30).slice(0, 12),
+        },
+        tuning: this.deps.tuning.current(),
+        config: this.publicConfig(),
+      })
+      return
+    }
+
+    if (request.method === 'GET' && path === '/api/config') {
+      sendJson(response, 200, { config: this.publicConfig(), tuning: this.deps.tuning.snapshot() })
+      return
+    }
+
+    if (request.method === 'GET' && path === '/api/tuning') {
+      sendJson(response, 200, this.deps.tuning.snapshot())
+      return
+    }
+
+    if (request.method === 'PUT' && path === '/api/tuning') {
+      try {
+        const body = await readJson<{ values?: Record<string, unknown> }>(request)
+        if (!body.values || typeof body.values !== 'object') throw new Error('values is required')
+        const result = await this.deps.tuning.update(body.values)
+        if (result.changed.some(key => key.startsWith('voice.'))) await this.deps.conversation.reconfigureVoice()
+        this.deps.bus.emit('tuning.changed', { changed: result.changed, values: result.values })
+        sendJson(response, 200, { ...result, tuning: this.deps.tuning.snapshot() })
+      } catch (error) {
+        sendJson(response, 400, { error: error instanceof Error ? error.message : String(error) })
+      }
+      return
+    }
+
+    if (request.method === 'POST' && path === '/api/tuning/reset') {
+      try {
+        const body = await readJson<{ group?: string }>(request)
+        const result = await this.deps.tuning.reset(body.group)
+        if (result.changed.some(key => key.startsWith('voice.'))) await this.deps.conversation.reconfigureVoice()
+        this.deps.bus.emit('tuning.changed', { changed: result.changed, values: result.values })
+        sendJson(response, 200, { ...result, tuning: this.deps.tuning.snapshot() })
+      } catch (error) {
+        sendJson(response, 400, { error: error instanceof Error ? error.message : String(error) })
+      }
+      return
+    }
+
+    if (request.method === 'POST' && path === '/api/tuning/preset') {
+      try {
+        const body = await readJson<{ id?: string }>(request)
+        const result = await this.deps.tuning.preset(String(body.id ?? ''))
+        if (result.changed.some(key => key.startsWith('voice.'))) await this.deps.conversation.reconfigureVoice()
+        this.deps.bus.emit('tuning.changed', { preset: result.preset.id, values: result.values })
+        sendJson(response, 200, { ...result, tuning: this.deps.tuning.snapshot() })
+      } catch (error) {
+        sendJson(response, 400, { error: error instanceof Error ? error.message : String(error) })
+      }
+      return
+    }
+
+    if (path === '/api/dev/demo-memory' && (request.method === 'POST' || request.method === 'DELETE')) {
+      if (!this.isLoopback(request) || request.headers['x-jarvis-demo'] !== '1') {
+        sendJson(response, 403, { error: 'demo data is only available from loopback with x-jarvis-demo: 1' })
+        return
+      }
+      if (request.method === 'DELETE') {
+        const list = this.deps.memory.list({ includeSensitive: true, includeInactive: true, limit: 200 })
+        let removed = 0
+        for (const item of list) {
+          if (item.sourceRef.startsWith('demo:')) removed += this.deps.memory.delete(item.id) ? 1 : 0
+        }
+        sendJson(response, 200, { removed, graph: this.deps.memory.graph(160) })
+        return
+      }
+      const items: MemoryInput[] = [
+        { id: 'demo-semantic-review-old', kind: 'semantic', content: '用户以前把周复盘放在周五上午，后来改到了下午。', gist: '周复盘（旧时间）', sourceKind: 'user-stated', sourceRef: 'demo:seed', trust: 'medium', confidence: 0.7, importance: { explicit: 0.5 }, sensitivity: 'standard', status: 'superseded' },
+        { id: 'demo-semantic-review', kind: 'semantic', content: '用户偏好把周复盘放在周五下午，先看结果，再决定下周重点。', gist: '周五下午做周复盘', sourceKind: 'user-confirmed', sourceRef: 'demo:seed', trust: 'authoritative', confidence: 0.96, importance: { explicit: 0.9, repetition: 0.7, goal: 0.8 }, sensitivity: 'standard', status: 'confirmed', supersedesId: 'demo-semantic-review-old' },
+        { id: 'demo-semantic-style', kind: 'semantic', content: '用户偏好先给结论，再给一两个理由；不喜欢客套和长开场。', gist: '先结论，后理由', sourceKind: 'user-stated', sourceRef: 'demo:seed', trust: 'high', confidence: 0.9, importance: { explicit: 0.85, social: 0.2 }, sensitivity: 'standard', status: 'confirmed' },
+        { id: 'demo-semantic-privacy', kind: 'semantic', content: 'Jarvis 的屏幕与摄像头只在明确需要时读取；不保留连续录制。', gist: '感知按需，不连续录制', sourceKind: 'user-confirmed', sourceRef: 'demo:seed', trust: 'authoritative', confidence: 0.99, importance: { goal: 1, explicit: 1 }, sensitivity: 'sensitive', status: 'confirmed', pinned: true },
+        { id: 'demo-episodic-arch', kind: 'episodic', content: '10 月 20 日和团队讨论了 v2 的模块化单体方案，确定 SQLite + 本地模型优先。', gist: 'v2 架构评审', sourceKind: 'system-observed', sourceRef: 'demo:seed', trust: 'high', confidence: 0.84, importance: { novelty: 0.7, social: 0.6, goal: 0.5 }, sensitivity: 'standard', status: 'confirmed' },
+        { id: 'demo-episodic-latency', kind: 'episodic', content: '10 月 22 日排查语音首响：模型冷加载和逐句 Piper 是主要瓶颈，改为常驻 worker 后降到一秒级。', gist: '语音延迟排查', sourceKind: 'system-observed', sourceRef: 'demo:seed', trust: 'high', confidence: 0.88, importance: { novelty: 0.8, goal: 0.7 }, sensitivity: 'standard', status: 'confirmed' },
+        { id: 'demo-episodic-acceptance', kind: 'episodic', content: '10 月 24 日跑通首次端到端验收，文本、语音、记忆和提醒均可工作。', gist: '首次端到端验收', sourceKind: 'system-observed', sourceRef: 'demo:seed', trust: 'high', confidence: 0.9, importance: { goal: 0.8, novelty: 0.6 }, sensitivity: 'standard', status: 'confirmed' },
+        { id: 'demo-procedural-start', kind: 'procedural', content: '启动 Jarvis：进入 v2，npm start；服务监听 127.0.0.1:3081，日志在 /tmp/jarvis-v2.log。', gist: '启动 Jarvis 的步骤', sourceKind: 'user-confirmed', sourceRef: 'demo:seed', trust: 'authoritative', confidence: 0.99, importance: { explicit: 0.9, repetition: 0.9 }, sensitivity: 'standard', status: 'confirmed' },
+        { id: 'demo-procedural-model', kind: 'procedural', content: '切换模型：打开设置 → 模型来源 → 选择本地或远端 → 测试 → 应用；远端地址必须 HTTPS。', gist: '切换模型来源', sourceKind: 'user-confirmed', sourceRef: 'demo:seed', trust: 'authoritative', confidence: 0.95, importance: { explicit: 0.8, goal: 0.6 }, sensitivity: 'standard', status: 'confirmed' },
+        { id: 'demo-prospective-report', kind: 'prospective', content: '周五 17:00 前提交本周周报，重点写清三个阻塞和下周的一个实验。', gist: '周五提交周报', sourceKind: 'user-stated', sourceRef: 'demo:seed', trust: 'high', confidence: 0.92, importance: { deadline: 1, goal: 0.9, explicit: 0.9 }, sensitivity: 'standard', status: 'confirmed', retention: 'until-deleted' },
+        { id: 'demo-prospective-checkup', kind: 'prospective', content: '下周二 10:00 复诊，带上上次的化验单。', gist: '周二复诊', sourceKind: 'user-stated', sourceRef: 'demo:seed', trust: 'high', confidence: 0.9, importance: { deadline: 0.9, explicit: 0.8 }, sensitivity: 'sensitive', status: 'confirmed' },
+        { id: 'demo-proposed-coffee', kind: 'semantic', content: '用户可能更喜欢浅烘焙咖啡；这是从对话里推断的，尚未确认。', gist: '可能偏好浅烘焙', sourceKind: 'inferred', sourceRef: 'demo:seed', trust: 'low', confidence: 0.55, importance: { novelty: 0.4, social: 0.2 }, sensitivity: 'standard', status: 'proposed' },
+        { id: 'demo-proposed-desk', kind: 'semantic', content: '用户可能计划把工作台移到窗边；来自一次未确认的提及。', gist: '可能想移动工作台', sourceKind: 'inferred', sourceRef: 'demo:seed', trust: 'low', confidence: 0.48, importance: { novelty: 0.5 }, sensitivity: 'standard', status: 'proposed' },
+      ]
+      const created = []
+      for (const item of items) {
+        this.deps.memory.delete(item.id ?? '')
+        created.push(await this.deps.memory.add(item))
+      }
+      this.deps.memory.link('demo-semantic-review', 'demo-prospective-report', 'related', 0.9)
+      this.deps.memory.link('demo-episodic-latency', 'demo-procedural-start', 'related', 0.65)
+      this.deps.memory.link('demo-procedural-model', 'demo-semantic-privacy', 'related', 0.6)
+      sendJson(response, 200, { items: created.length, graph: this.deps.memory.graph(160) })
+      return
+    }
+
+    if (request.method === 'GET' && path === '/api/memory/graph') {
+      const limit = Number(url.searchParams.get('limit') ?? 140)
+      sendJson(response, 200, this.deps.memory.graph(Number.isFinite(limit) ? limit : 140))
+      return
+    }
+
     if (request.method === 'GET' && path === '/api/model') {
       const settings = await this.deps.modelSettings.load()
       sendJson(response, 200, {
@@ -563,6 +698,37 @@ export class JarvisServer {
     sendJson(response, 405, { error: 'method not allowed' })
   }
 
+  private isLoopback(request: IncomingMessage): boolean {
+    const address = request.socket.remoteAddress ?? ''
+    return address === '127.0.0.1' || address === '::1' || address === '::ffff:127.0.0.1'
+  }
+
+  private publicConfig(): Record<string, unknown> {
+    return {
+      version: this.deps.config.version,
+      host: this.deps.config.host,
+      port: this.deps.config.port,
+      dataDir: this.deps.config.dataDir,
+      webDir: this.deps.config.webDir,
+      auth: { required: Boolean(this.deps.config.authToken), tokenConfigured: Boolean(this.deps.config.authToken), tokenLength: this.deps.config.authToken.length },
+      tls: { enabled: Boolean(this.deps.config.tlsCert), cert: this.deps.config.tlsCert || null, keyConfigured: Boolean(this.deps.config.tlsKey), key: null },
+      ollama: { ...this.deps.config.ollama },
+      voice: { ...this.deps.config.voice },
+      quiet: { ...this.deps.config.quiet },
+      dailySpeakBudget: this.deps.config.dailySpeakBudget,
+      screenTimeoutMs: this.deps.config.screenTimeoutMs,
+      screenBlocklist: [...this.deps.config.screenBlocklist],
+      model: this.deps.models.status(),
+      runtime: {
+        pid: process.pid,
+        node: process.version,
+        platform: process.platform,
+        arch: process.arch,
+        startedAt: new Date(this.startedAt).toISOString(),
+      },
+    }
+  }
+
   private async profileFromBody(body: Partial<ModelProfile>): Promise<ModelProfile> {
     const settings = await this.deps.modelSettings.load()
     const id = body.id === 'remote' ? 'remote' : body.id === 'local' ? 'local' : 'local'
@@ -623,7 +789,9 @@ export class JarvisServer {
       if (!info.isFile()) throw new Error('not a file')
       response.statusCode = 200
       response.setHeader('content-type', MIME[extname(file).toLowerCase()] ?? 'application/octet-stream')
-      response.setHeader('cache-control', relative === 'index.html' ? 'no-cache' : 'public, max-age=300')
+      const extension = extname(file).toLowerCase()
+      const revalidate = ['.html', '.js', '.css', '.webmanifest', '.json'].includes(extension)
+      response.setHeader('cache-control', revalidate ? 'no-cache' : 'public, max-age=300')
       response.end(await readFile(file))
     } catch {
       sendText(response, 404, 'not found')

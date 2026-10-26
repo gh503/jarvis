@@ -5,10 +5,18 @@ import { dirname, resolve } from 'node:path'
 import type { Logger } from '../logger.ts'
 import { fileExists } from './media.ts'
 
+export interface VoiceParams {
+  lengthScale: number
+  noiseScale: number
+  noiseW: number
+  maxChars: number
+}
+
 export interface SynthesizerOptions {
   piperBin: string
   voice: string
   logger?: Logger
+  getVoiceParams?: () => VoiceParams
 }
 
 interface PendingSynthesis {
@@ -36,7 +44,15 @@ export class PiperSynthesizer {
   async start(): Promise<void> {
     if (this.child) return
     if (!(await this.available())) throw new Error('Piper or its voice model is missing')
-    const child = spawn(this.options.piperBin, ['--model', this.options.voice, '--json-input', '--quiet'], {
+    const voice = this.options.getVoiceParams?.() ?? { lengthScale: 1, noiseScale: 0.667, noiseW: 0.8, maxChars: 4000 }
+    const child = spawn(this.options.piperBin, [
+      '--model', this.options.voice,
+      '--json-input',
+      '--quiet',
+      '--length_scale', String(voice.lengthScale),
+      '--noise_scale', String(voice.noiseScale),
+      '--noise_w', String(voice.noiseW),
+    ], {
       stdio: ['pipe', 'pipe', 'pipe'],
     })
     this.child = child
@@ -96,7 +112,8 @@ export class PiperSynthesizer {
       }, 120_000)
       timer.unref()
       this.pending.set(path, { resolve: resolvePromise, reject: rejectPromise, timer })
-      child.stdin.write(`${JSON.stringify({ text: clean.slice(0, 4000), output_file: path })}\n`, error => {
+      const maxChars = this.options.getVoiceParams?.().maxChars ?? 4000
+      child.stdin.write(`${JSON.stringify({ text: clean.slice(0, maxChars), output_file: path })}\n`, error => {
         if (!error) return
         const pending = this.pending.get(path)
         if (pending) clearTimeout(pending.timer)
@@ -115,6 +132,11 @@ export class PiperSynthesizer {
     } finally {
       await rm(path, { force: true }).catch(() => undefined)
     }
+  }
+
+  async reconfigure(): Promise<void> {
+    if (!this.child) return
+    await this.close()
   }
 
   async close(): Promise<void> {

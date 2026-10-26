@@ -8,8 +8,15 @@
   --text: #e9eef4;
   --muted: #8b97a6;
   --faint: #5b6674;
-  --cyan: #7ee7d5;
-  --cyan-dim: rgba(126, 231, 213, 0.14);
+  --accent-h: 168;
+  --cyan: hsl(var(--accent-h) 63% 70%);
+  --cyan-dim: hsl(var(--accent-h) 63% 70% / 0.14);
+  --orb-glow: 0.9;
+  --orb-speed: 1;
+  --ambient-strength: 0.55;
+  --glass-blur: 18px;
+  --ui-text-scale: 1;
+  --ui-inverse-scale: 1;
   --amber: #f3b36a;
   --amber-dim: rgba(243, 179, 106, 0.14);
   --danger: #f07984;
@@ -50,18 +57,18 @@ svg { width: 18px; height: 18px; fill: currentColor; }
   height: 44vw;
   border-radius: 50%;
   filter: blur(100px);
-  opacity: 0.16;
+  opacity: calc(0.29 * var(--ambient-strength));
   pointer-events: none;
 }
 .ambient-a { top: -16vw; left: 18vw; background: #256f68; }
-.ambient-b { right: -16vw; bottom: -20vw; background: #8c5b2a; opacity: 0.1; }
+.ambient-b { right: -16vw; bottom: -20vw; background: #8c5b2a; opacity: calc(0.18 * var(--ambient-strength)); }
 
 .app-shell {
   position: relative;
-  z-index: 1;
+  z-index: 2;
   display: flex;
   flex-direction: column;
-  height: 100dvh;
+  height: calc(100dvh * var(--ui-inverse-scale, 1));
   min-height: 560px;
 }
 
@@ -73,7 +80,7 @@ svg { width: 18px; height: 18px; fill: currentColor; }
   padding: 0 28px;
   border-bottom: 1px solid var(--line);
   background: rgba(8, 11, 15, 0.72);
-  backdrop-filter: blur(18px);
+  backdrop-filter: blur(var(--glass-blur));
 }
 
 .brand { display: flex; align-items: center; gap: 12px; min-width: 218px; }
@@ -159,7 +166,7 @@ svg { width: 18px; height: 18px; fill: currentColor; }
   inset: 0;
   border-radius: 50%;
   border: 1px solid rgba(126, 231, 213, 0.13);
-  animation: breathe 6s ease-in-out infinite;
+  animation: breathe calc(6s / var(--orb-speed)) ease-in-out infinite;
 }
 .orb-ring::after {
   content: "";
@@ -198,14 +205,14 @@ svg { width: 18px; height: 18px; fill: currentColor; }
   transform: translate(-50%, -50%);
   border-radius: 50%;
   background: var(--cyan);
-  box-shadow: 0 0 30px rgba(126, 231, 213, 0.75);
-  animation: core-pulse 3.4s ease-in-out infinite;
+  box-shadow: 0 0 calc(30px * var(--orb-glow)) hsl(var(--accent-h) 63% 70% / 0.75);
+  animation: core-pulse calc(3.4s / var(--orb-speed)) ease-in-out infinite;
 }
 .orb-scan {
   position: absolute;
   inset: 0;
   background: linear-gradient(transparent 44%, rgba(126, 231, 213, 0.34) 50%, transparent 56%);
-  animation: scan 4.6s linear infinite;
+  animation: scan calc(4.6s / var(--orb-speed)) linear infinite;
   opacity: 0.65;
 }
 .orb-level {

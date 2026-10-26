@@ -1,8 +1,9 @@
 import { DatabaseSync } from 'node:sqlite'
 import { randomUUID } from 'node:crypto'
-import { readFileSync } from 'node:fs'
+import { chmodSync, readFileSync } from 'node:fs'
 import type { Logger } from '../logger.ts'
 import type { EventBus } from '../events.ts'
+import type { TuningStore } from '../tuning.ts'
 import { NullEmbedder, cosineSimilarity, decodeEmbedding, encodeEmbedding } from './embedding.ts'
 import {
   classifyQuery,
@@ -36,12 +37,12 @@ const MIN_VECTOR_SIMILARITY = 0.32
 
 const QUERY_STOP_CHARS = new Set([...'我你他她它的了吗呢吧啊是在有和就都这那哪个什么怎么', ' ', '\n', '\t', '？', '?', '。', '.', '，', ',', '！', '!'])
 
-function lexicallyRelated(query: string, item: MemoryItem): boolean {
+function lexicallyRelated(query: string, item: MemoryItem, threshold = 0.34): boolean {
   const haystack = `${item.content} ${item.gist}`
   const chars = [...query].filter(char => !QUERY_STOP_CHARS.has(char))
   if (chars.length === 0) return false
   const overlap = chars.filter(char => haystack.includes(char)).length
-  return overlap / chars.length >= 0.34
+  return overlap / chars.length >= threshold
 }
 
 export interface MemoryStoreOptions {
@@ -50,6 +51,7 @@ export interface MemoryStoreOptions {
   now?: () => Date
   logger?: Logger
   bus?: EventBus
+  tuning?: TuningStore
 }
 
 interface Row {
@@ -103,6 +105,7 @@ export class MemoryStore {
   private readonly now: () => Date
   private readonly logger?: Logger
   private readonly bus?: EventBus
+  private readonly tuning?: TuningStore
 
   constructor(options: MemoryStoreOptions) {
     this.db = new DatabaseSync(options.file)
@@ -110,7 +113,13 @@ export class MemoryStore {
     this.now = options.now ?? (() => new Date())
     this.logger = options.logger
     this.bus = options.bus
+    this.tuning = options.tuning
     this.migrate()
+    if (options.file !== ':memory:') {
+      for (const suffix of ['', '-wal', '-shm']) {
+        try { chmodSync(`${options.file}${suffix}`, 0o600) } catch { /* file may not exist yet */ }
+      }
+    }
   }
 
   private migrate(): void {
@@ -424,6 +433,12 @@ export class MemoryStore {
     const now = options.now ?? this.now()
     const queryType = classifyQuery(query)
     const limit = Math.max(1, Math.min(20, options.limit ?? 6))
+    const effectiveOptions: RecallOptions = {
+      ...options,
+      includeProposed: options.includeProposed ?? this.tuning?.boolean('memory.includeProposed') ?? false,
+    }
+    const minVectorSimilarity = this.tuning?.number('memory.minVectorSimilarity') ?? MIN_VECTOR_SIMILARITY
+    const lexicalThreshold = this.tuning?.number('memory.lexicalOverlap') ?? 0.34
     const candidates = new Map<string, { item: MemoryItem; semantic: number; why: string[] }>()
 
     const fts = this.searchFts(query, Math.max(30, limit * 6))
@@ -445,18 +460,18 @@ export class MemoryStore {
         const vector = this.embeddingOf(row)
         if (!vector) continue
         const semantic = Math.max(0, cosineSimilarity(queryVector, vector))
-        if (semantic < MIN_VECTOR_SIMILARITY) continue
+        if (semantic < minVectorSimilarity) continue
         const existing = candidates.get(item.id)
         if (existing) {
           existing.semantic = Math.max(existing.semantic, semantic)
           if (semantic > 0.3) existing.why.push('vector')
-        } else if (lexicallyRelated(query, item)) {
+        } else if (lexicallyRelated(query, item, lexicalThreshold)) {
           candidates.set(item.id, { item, semantic, why: ['vector'] })
         }
       }
     }
 
-    const pool = filterActive([...candidates.values()].map(value => value.item), options, now)
+    const pool = filterActive([...candidates.values()].map(value => value.item), effectiveOptions, now)
     if (pool.length === 0) {
       return {
         items: [],
@@ -469,13 +484,13 @@ export class MemoryStore {
     const scored: RecalledMemory[] = []
     for (const item of pool) {
       const candidate = candidates.get(item.id)
-      const recalled = toRecalled(item, candidate?.semantic ?? 0.2, queryType, options, now)
+      const recalled = toRecalled(item, candidate?.semantic ?? 0.2, queryType, effectiveOptions, now)
       if (candidate?.why.includes('fts') && !recalled.why.includes('fts')) recalled.why.push('fts')
       scored.push(recalled)
     }
     scored.sort((a, b) => b.score - a.score || b.updatedAt.localeCompare(a.updatedAt))
     const items = scored.slice(0, limit)
-    this.markUsed(items.map(item => item.id))
+    if (this.tuning?.boolean('memory.markUsed') ?? true) this.markUsed(items.map(item => item.id))
 
     const confidence = confidenceFrom(items)
     const why = items.flatMap(item => item.why)
@@ -642,6 +657,119 @@ export class MemoryStore {
     const stats = { expired, deduped, projected, durationMs: Date.now() - started }
     this.bus?.emit('memory.consolidated', stats)
     return stats
+  }
+
+  link(fromId: string, toId: string, relation = 'related', weight = 0.8): void {
+    if (fromId === toId || !this.get(fromId) || !this.get(toId)) return
+    this.db.prepare(
+      `INSERT INTO memory_links (from_id, to_id, relation, weight, created_at)
+       VALUES (?, ?, ?, ?, ?)
+       ON CONFLICT(from_id, to_id, relation) DO UPDATE SET weight = excluded.weight`,
+    ).run(fromId, toId, relation, Math.max(0.05, Math.min(1, weight)), this.at())
+    this.bus?.emit('memory.linked', { fromId, toId, relation, weight })
+  }
+
+  graph(limit = 140): {
+    nodes: Array<{
+      id: string; gist: string; content: string; kind: MemoryKind; status: MemoryStatus;
+      sensitivity: MemorySensitivity; trust: string; confidence: number; importance: number;
+      importanceDetail: { goal: number; novelty: number; social: number; repetition: number; explicit: number; deadline: number };
+      score: number; pinned: boolean; createdAt: string; updatedAt: string; useCount: number;
+      sourceKind: string; sourceRef: string; supersedesId: string | null; embedded: boolean;
+      degree: number;
+    }>
+    edges: Array<{ source: string; target: string; type: 'supersedes' | 'similar' | 'link'; weight: number }>
+    counts: Record<string, number>
+    generatedAt: string
+  } {
+    const cap = Math.max(10, Math.min(200, limit))
+    const rows = this.db.prepare(
+      'SELECT * FROM memory_items ORDER BY pinned DESC, updated_at DESC LIMIT ?',
+    ).all(cap) as Row[]
+    const items = rows.map(row => this.rowToItem(row))
+    const vectors = new Map<string, Float32Array | null>()
+    for (const row of rows) vectors.set(text(row.id), this.embeddingOf(row))
+    const nodes = items.map(item => ({
+      id: item.id,
+      gist: item.gist,
+      content: item.content.slice(0, 4000),
+      kind: item.kind,
+      status: item.status,
+      sensitivity: item.sensitivity,
+      trust: item.trust,
+      confidence: item.confidence,
+      importance: Number(importanceScore(item.importance).toFixed(3)),
+      importanceDetail: { ...item.importance },
+      score: Number((importanceScore(item.importance) * 0.65 + item.confidence * 0.35).toFixed(3)),
+      pinned: item.pinned,
+      createdAt: item.createdAt,
+      updatedAt: item.updatedAt,
+      useCount: item.useCount,
+      sourceKind: item.sourceKind,
+      sourceRef: item.sourceRef,
+      supersedesId: item.supersedesId,
+      embedded: vectors.get(item.id) !== null,
+      degree: 0,
+    }))
+    const byId = new Map(nodes.map(node => [node.id, node]))
+    const edges: Array<{ source: string; target: string; type: 'supersedes' | 'similar' | 'link'; weight: number }> = []
+    const seen = new Set<string>()
+    const addEdge = (source: string, target: string, type: 'supersedes' | 'similar' | 'link', weight: number): void => {
+      if (!byId.has(source) || !byId.has(target) || source === target) return
+      const key = `${source}:${target}:${type}`
+      if (seen.has(key)) return
+      seen.add(key)
+      edges.push({ source, target, type, weight: Number(Math.max(0.05, Math.min(1, weight)).toFixed(3)) })
+      const a = byId.get(source)
+      const b = byId.get(target)
+      if (a) a.degree += 1
+      if (b) b.degree += 1
+    }
+
+    for (const node of nodes) {
+      if (node.supersedesId) addEdge(node.id, node.supersedesId, 'supersedes', 1)
+    }
+    const linkRows = this.db.prepare('SELECT from_id, to_id, relation, weight FROM memory_links').all() as Row[]
+    for (const row of linkRows) addEdge(text(row.from_id), text(row.to_id), 'link', num(row.weight, 0.8))
+
+    // Local embedding cosine + a lexical fallback for unembedded memories.
+    const pairLimit = nodes.length
+    const similar: Array<{ a: string; b: string; weight: number }> = []
+    for (let i = 0; i < pairLimit; i += 1) {
+      for (let j = i + 1; j < pairLimit; j += 1) {
+        const a = nodes[i]
+        const b = nodes[j]
+        const va = vectors.get(a.id)
+        const vb = vectors.get(b.id)
+        let score = 0
+        if (va && vb) score = Math.max(0, cosineSimilarity(va, vb))
+        else {
+          const setA = new Set([...`${a.gist}${a.content}`].slice(0, 160))
+          const setB = new Set([...`${b.gist}${b.content}`].slice(0, 160))
+          if (setA.size && setB.size) {
+            let overlap = 0
+            for (const char of setA) if (setB.has(char)) overlap += 1
+            score = overlap / Math.min(setA.size, setB.size)
+          }
+        }
+        if (score >= 0.58) similar.push({ a: a.id, b: b.id, weight: score })
+      }
+    }
+    similar.sort((left, right) => right.weight - left.weight)
+    const perNode = new Map<string, number>()
+    for (const candidate of similar) {
+      if (edges.length >= 320) break
+      const countA = perNode.get(candidate.a) ?? 0
+      const countB = perNode.get(candidate.b) ?? 0
+      if (countA >= 3 || countB >= 3) continue
+      perNode.set(candidate.a, countA + 1)
+      perNode.set(candidate.b, countB + 1)
+      addEdge(candidate.a, candidate.b, 'similar', candidate.weight)
+    }
+
+    const counts: Record<string, number> = {}
+    for (const item of items) counts[item.kind] = (counts[item.kind] ?? 0) + 1
+    return { nodes, edges, counts, generatedAt: this.at() }
   }
 
   stats(): MemoryStats {

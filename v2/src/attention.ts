@@ -1,4 +1,5 @@
 import type { EventBus } from './events.ts'
+import type { TuningStore } from './tuning.ts'
 
 export const ATTENTION_STATES = [
   'idle',
@@ -127,7 +128,10 @@ export class AttentionManager {
   private lastEvent: AttentionEvent | null = null
   private readonly listeners = new Set<(snapshot: AttentionSnapshot) => void>()
 
-  constructor(private readonly bus: EventBus) {}
+  constructor(
+    private readonly bus: EventBus,
+    private readonly tuning?: TuningStore,
+  ) {}
 
   getState(): AttentionState {
     return this.state
@@ -179,7 +183,7 @@ export class AttentionManager {
     if (camera && !screen) return { target: 'camera', confidence: 0.8, reason: 'deictic_camera' }
     if (screen && !camera) return { target: 'screen', confidence: 0.8, reason: 'deictic_screen' }
     if (camera && screen) return { target: 'ask', confidence: 0.4, reason: 'ambiguous_deictic' }
-    if (/(看|看看|瞧)/.test(normalized) && /(这个|那个|它)/.test(normalized)) {
+    if (/(看|看看|瞧)/.test(normalized) && /(这个|那个|它)/.test(normalized) && (this.tuning?.boolean('attention.workDefaultScreen') ?? true)) {
       return { target: 'screen', confidence: 0.55, reason: 'work_default_screen' }
     }
     return { target: 'none', confidence: 0, reason: 'no_context_cue' }

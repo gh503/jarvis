@@ -5,6 +5,8 @@ import { ActionManager } from './actions.ts'
 import { Conversation } from './conversation.ts'
 import { EventBus } from './events.ts'
 import { createLogger, defaultLogFile } from './logger.ts'
+import { TuningStore } from './tuning.ts'
+import { TelemetryCollector } from './telemetry.ts'
 import { MemoryStore } from './memory/store.ts'
 import { ModelRouter, createModelClient } from './model/router.ts'
 import { ModelSettingsStore } from './model/settings.ts'
@@ -19,11 +21,15 @@ import { FasterWhisperTranscriber } from './voice/faster-whisper.ts'
 import { PiperSynthesizer } from './voice/tts.ts'
 
 async function main(): Promise<void> {
+  process.umask(0o077)
   const config = loadConfig()
   ensureRuntimeDirs(config)
   const logger = createLogger((process.env.JARVIS_LOG_LEVEL as 'debug' | 'info' | 'warn' | 'error' | undefined) ?? 'info', defaultLogFile(config.dataDir))
   const bus = new EventBus(300)
-  const attention = new AttentionManager(bus)
+  const tuning = new TuningStore(join(config.dataDir, 'tuning.json'), config)
+  await tuning.load()
+  const attention = new AttentionManager(bus, tuning)
+  const telemetry = new TelemetryCollector(bus)
   const modelSettings = new ModelSettingsStore(join(config.dataDir, 'model-config.json'), {
     local: {
       baseUrl: config.ollama.url,
@@ -47,6 +53,7 @@ async function main(): Promise<void> {
     file: join(config.dataDir, 'jarvis.db'),
     embedder: model,
     bus,
+    tuning,
     logger: logger.child('memory'),
   })
   const reminders = new ReminderStore(join(config.dataDir, 'jarvis.db'), bus)
@@ -70,6 +77,12 @@ async function main(): Promise<void> {
     piperBin: config.voice.piperBin,
     voice: config.voice.piperVoice,
     logger: logger.child('tts'),
+    getVoiceParams: () => ({
+      lengthScale: tuning.number('voice.lengthScale'),
+      noiseScale: tuning.number('voice.noiseScale'),
+      noiseW: tuning.number('voice.noiseW'),
+      maxChars: Math.round(tuning.number('voice.maxChars')),
+    }),
   })
   const screen = new ScreenCapture(config, logger.child('screen'))
   const camera = new CameraCapture(config, logger.child('camera'))
@@ -94,6 +107,7 @@ async function main(): Promise<void> {
     actions,
     reminders,
     policy,
+    tuning,
     logger: logger.child('conversation'),
   })
 
@@ -116,6 +130,8 @@ async function main(): Promise<void> {
     conversation,
     models: model,
     modelSettings,
+    tuning,
+    telemetry,
     actions,
     memory,
     reminders,
@@ -153,6 +169,7 @@ async function main(): Promise<void> {
     await ocr.close().catch(() => undefined)
     reminders.close()
     memory.close()
+    telemetry.close()
     process.exit(0)
   }
   process.on('SIGINT', () => void shutdown('SIGINT'))

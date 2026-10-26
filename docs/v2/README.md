@@ -4,6 +4,14 @@
 
 ![模型来源：本地 / 远端一键切换](screenshots/model-sources.png)
 
+### Jarvis Studio：一屏看清注意力、延迟、记忆与参数
+
+![总览：注意力、延迟趋势与回合追踪](screenshots/studio-overview.png)
+
+![记忆星座：节点、关系、召回解释](screenshots/studio-memory.png)
+
+![调参实验室：实时预览、预设与生效范围](screenshots/studio-tuning.png)
+
 - Status: **v2 baseline accepted; a working vertical slice is implemented under `v2/`**
 - Branch: `feat/jarvis-v2`
 - Date: 2026-10-26
@@ -40,6 +48,7 @@ v2 不再从“给 agent 加一个聊天窗口”出发，而是从下面这个�
 | [implementation-plan.md](implementation-plan.md) | v2 的实现切片与验收顺序 | Draft；已按纵向切片推进 |
 | [implementation-status.md](implementation-status.md) | 已实现 / 部分实现 / 缺口 / 验证方式 | Implemented baseline |
 | [operations.md](operations.md) | 安装、启动、远程、隐私、验收、故障排查 | Implemented baseline |
+| [observatory.md](observatory.md) | Studio 的信息架构、指标定义、记忆图、调参架构与安全 | Implemented |
 
 ## v2 范围
 
@@ -96,5 +105,7 @@ npm start       # http://127.0.0.1:3081
 npm test
 npm run doctor
 ```
+
+Studio（总览 / 记忆星座 / 调参 / 脱敏配置 / 事件流）已经可打开：顶栏波形图标，或见 [observatory.md](observatory.md)。
 
 下一步按 [implementation-status.md](implementation-status.md) §4 的收益排序推进：真实 Portal 验收、手机 PWA 真机、记忆评测、工具执行。
