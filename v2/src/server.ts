@@ -6,7 +6,7 @@ import { extname, join, resolve, sep } from 'node:path'
 import { WebSocket, WebSocketServer } from 'ws'
 import type { ActionManager } from './actions.ts'
 import type { ModelRouter } from './model/router.ts'
-import type { ModelProfile, ModelSettingsStore } from './model/settings.ts'
+import { validateProfile, type ModelProfile, type ModelSettingsStore } from './model/settings.ts'
 import type { AttentionManager } from './attention.ts'
 import type { JarvisConfig } from './config.ts'
 import type { Conversation } from './conversation.ts'
@@ -374,8 +374,9 @@ export class JarvisServer {
         const id = body.id === 'remote' ? 'remote' : body.id === 'local' ? 'local' : ''
         if (!id) throw new Error('只能切换 local 或 remote')
         const loaded = await this.deps.modelSettings.load()
-        const profile = loaded.profiles.find(item => item.id === id)
-        if (!profile) throw new Error('没有这个模型配置')
+        const found = loaded.profiles.find(item => item.id === id)
+        if (!found) throw new Error('没有这个模型配置')
+        const profile = validateProfile(found)
         const switched = await this.deps.models.switchTo(profile)
         const { settings } = await this.deps.modelSettings.activate(id)
         await this.deps.conversation.refreshModel()
@@ -578,7 +579,7 @@ export class JarvisServer {
       kind: body.kind === 'openai' ? 'openai' : body.kind === 'ollama' ? 'ollama' : existing.kind,
       apiKey: body.apiKey?.trim() ? body.apiKey.trim() : existing.apiKey,
     }
-    return merged
+    return validateProfile(merged)
   }
 
   private async serveDataFile(response: ServerResponse, root: string, requested: string): Promise<void> {

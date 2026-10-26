@@ -171,7 +171,8 @@ export class Conversation {
     const health = await this.deps.model.health(5000)
     // A remote OpenAI-compatible endpoint may not expose /models; a successful
     // health check with an empty list is still usable for chat.
-    this.modelReady = health.ok && (health.models.length === 0 || health.models.some(model => {
+    const providerKind = this.deps.model.status?.().kind
+    this.modelReady = health.ok && (providerKind === 'openai' || health.models.length === 0 || health.models.some(model => {
       const name = typeof model.name === 'string' ? model.name : ''
       return name === this.deps.model.model || name.startsWith(`${this.deps.model.model}:`)
     }))

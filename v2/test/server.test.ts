@@ -115,6 +115,13 @@ test('server enforces proxy auth, CSRF and serves the shell', async () => {
       body: JSON.stringify({ id: 'remote' }),
     })
     assert.equal(noKeyRemote.status, 409)
+    const plainRemote = await fetch(`${url}/api/model/test`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ id: 'remote', kind: 'openai', baseUrl: 'http://example.com/v1', model: 'm', apiKey: 'sk-secret' }),
+    })
+    assert.equal(plainRemote.status, 400)
+    assert.match(await plainRemote.text(), /HTTPS/)
 
     const ws = new WebSocket(`${url.replace('http', 'ws')}/ws?token=${config.authToken}`)
     const hello = await new Promise<{ kind: string }>((resolve, reject) => {

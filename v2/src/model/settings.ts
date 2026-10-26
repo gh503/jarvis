@@ -65,6 +65,7 @@ export function validateProfile(value: ModelProfile): ModelProfile {
   }
   if (url.protocol !== 'http:' && url.protocol !== 'https:') throw new Error('Base URL 只支持 http/https')
   if (url.username || url.password) throw new Error('Base URL 不能包含用户名或密码')
+  if (url.search || url.hash) throw new Error('Base URL 不要带查询参数或锚点，避免密钥出现在地址里')
   if (url.hostname === '169.254.169.254' || url.hostname.toLowerCase() === 'metadata.google.internal') {
     throw new Error('不允许把模型地址指向云主机元数据服务')
   }
