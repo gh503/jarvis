@@ -4,6 +4,7 @@ import { createHash, timingSafeEqual } from 'node:crypto'
 import { readFile, stat } from 'node:fs/promises'
 import { extname, join, resolve, sep } from 'node:path'
 import { WebSocket, WebSocketServer } from 'ws'
+import type { ActionManager } from './actions.ts'
 import type { AttentionManager } from './attention.ts'
 import type { JarvisConfig } from './config.ts'
 import type { Conversation } from './conversation.ts'
@@ -18,6 +19,7 @@ export interface ServerDeps {
   bus: EventBus
   attention: AttentionManager
   conversation: Conversation
+  actions: ActionManager
   memory: MemoryStore
   reminders: ReminderStore
   policy: ProactivePolicy
@@ -400,6 +402,25 @@ export class JarvisServer {
         sendJson(response, 200, { item: this.deps.memory.reject(id) })
         return
       }
+    }
+
+    if (request.method === 'GET' && path === '/api/actions') {
+      sendJson(response, 200, { items: this.deps.actions.list() })
+      return
+    }
+
+    const actionMatch = path.match(/^\/api\/actions\/([^/]+)\/(approve|deny)$/)
+    if (actionMatch && request.method === 'POST') {
+      try {
+        if (actionMatch[2] === 'approve') {
+          sendJson(response, 200, { action: await this.deps.actions.approve(actionMatch[1]) })
+        } else {
+          sendJson(response, 200, { action: this.deps.actions.deny(actionMatch[1]) })
+        }
+      } catch (error) {
+        sendJson(response, 409, { error: error instanceof Error ? error.message : String(error) })
+      }
+      return
     }
 
     if (request.method === 'GET' && path === '/api/reminders') {

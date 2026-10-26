@@ -28,6 +28,8 @@ const state = {
   levelTimer: null,
   captureUrl: '',
   tokenPrompted: false,
+  actions: [],
+  seenActions: new Set(),
 }
 
 const labels = {
@@ -160,6 +162,21 @@ function handleEvent(event) {
     case 'reminder.added':
     case 'reminder.due':
       refreshReminders()
+      break
+    case 'action.proposed':
+      showAction(data.action)
+      break
+    case 'action.executed':
+      noteAction(data.action, `已执行：${data.action?.label || '动作'}`)
+      closeModal()
+      break
+    case 'action.denied':
+      noteAction(data.action, `已拒绝：${data.action?.label || '动作'}`)
+      closeModal()
+      break
+    case 'action.failed':
+      noteAction(data.action, `执行失败：${data.action?.error || '未知错误'}`)
+      closeModal()
       break
     case 'proactive.message':
       appendMessage('assistant', `⏰ ${data.reminder?.text || '提醒你一件事'}`)
@@ -335,11 +352,13 @@ async function bootstrap() {
     const data = await api('/api/bootstrap')
     state.memory = data.memory || []
     state.reminders = data.reminders || []
+    state.actions = data.actions || []
     applyStatus(data.status)
     updateAttention(data.attention)
     renderMemory()
     renderReminders()
     renderRuntime()
+    if (state.actions.length) setTimeout(() => showAction(state.actions[0]), 450)
   } catch (error) {
     appendMessage('system', `初始化失败：${error.message}`)
   }
@@ -461,6 +480,54 @@ async function refreshReminders() {
   } catch {
     // Keep the last known list.
   }
+}
+
+function noteAction(action, text) {
+  const id = action?.id || `${Date.now()}`
+  if (state.seenActions.has(id)) return
+  state.seenActions.add(id)
+  appendMessage('system', text)
+}
+
+function showAction(action) {
+  if (!action || action.status !== 'proposed') return
+  const title = action.kind === 'open-url' ? '打开网页' : '打开应用'
+  const target = escapeHtml(action.target)
+  const label = escapeHtml(action.label || action.target)
+  openModal(`
+    <h3>需要你确认的一次性动作</h3>
+    <p>${title}：<strong>${label}</strong></p>
+    <div class="action-target">${target}</div>
+    <p>只有你点“允许一次”才会执行；确认 60 秒后过期，不会自动重试。</p>
+    <div class="modal-actions">
+      <button class="primary" id="action-approve" type="button">允许一次</button>
+      <button id="action-deny" type="button">拒绝</button>
+    </div>
+  `)
+  const approve = $('#action-approve')
+  const deny = $('#action-deny')
+  approve.addEventListener('click', async () => {
+    approve.disabled = true
+    deny.disabled = true
+    try {
+      const result = await api(`/api/actions/${encodeURIComponent(action.id)}/approve`, { method: 'POST', body: '{}' })
+      noteAction(result.action || action, `已执行：${action.label}`)
+    } catch (error) {
+      noteAction(action, `执行失败：${error.message}`)
+    }
+    closeModal()
+  })
+  deny.addEventListener('click', async () => {
+    approve.disabled = true
+    deny.disabled = true
+    try {
+      await api(`/api/actions/${encodeURIComponent(action.id)}/deny`, { method: 'POST', body: '{}' })
+      noteAction(action, `已拒绝：${action.label}`)
+    } catch (error) {
+      appendMessage('system', error.message)
+    }
+    closeModal()
+  })
 }
 
 function renderRuntime() {

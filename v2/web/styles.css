@@ -593,3 +593,27 @@ kbd { font-family: var(--mono); font-size: 9px; border: 1px solid var(--line); b
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { animation-duration: 0.01ms !important; animation-iteration-count: 1 !important; transition-duration: 0.01ms !important; }
 }
+.modal-actions { display: flex; gap: 8px; margin-top: 16px; }
+.modal-actions button {
+  border: 1px solid var(--line);
+  background: rgba(255, 255, 255, 0.03);
+  border-radius: 9px;
+  padding: 8px 14px;
+  color: var(--text);
+  font-size: 12px;
+}
+.modal-actions button:hover { border-color: var(--line-strong); background: rgba(255, 255, 255, 0.06); }
+.modal-actions button.primary { background: var(--cyan); color: #07110f; border-color: var(--cyan); font-weight: 600; }
+.modal-actions button:disabled { opacity: 0.5; cursor: wait; }
+.action-target {
+  margin: 10px 0 4px;
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.025);
+  color: var(--cyan);
+  font-family: var(--mono);
+  font-size: 10.5px;
+  line-height: 1.5;
+  word-break: break-all;
+}

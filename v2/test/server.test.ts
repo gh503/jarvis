@@ -3,6 +3,7 @@ import assert from 'node:assert/strict'
 import { mkdtemp, rm } from 'node:fs/promises'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
+import { ActionManager } from '../src/actions.ts'
 import { AttentionManager } from '../src/attention.ts'
 import type { JarvisConfig } from '../src/config.ts'
 import type { Conversation } from '../src/conversation.ts'
@@ -45,6 +46,7 @@ test('server enforces proxy auth, CSRF and serves the shell', async () => {
   const bus = new EventBus()
   const memory = new MemoryStore({ file: join(dir, 'jarvis.db'), embedder: new NullEmbedder() })
   const reminders = new ReminderStore(join(dir, 'jarvis.db'))
+  const actions = new ActionManager({ auditFile: join(dir, 'audit', 'actions.jsonl'), runner: async () => {} })
   const conversation = {
     status: () => ({ modelReady: true, model: 'qwen2.5:3b' }),
     handleText: async (text: string) => ({ reply: `echo:${text}` }),
@@ -60,6 +62,7 @@ test('server enforces proxy auth, CSRF and serves the shell', async () => {
     bus,
     attention: new AttentionManager(bus),
     conversation,
+    actions,
     memory,
     reminders,
     policy: new ProactivePolicy(config),

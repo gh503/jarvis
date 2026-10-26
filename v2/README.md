@@ -1,7 +1,8 @@
 # Jarvis v2 runtime
 
 Local-first ambient assistant for Linux: text/voice conversation, on-demand
-screen OCR, single-frame camera, SQLite memory, reminders and a browser/PWA UI.
+screen OCR, single-frame camera, SQLite memory, reminders, confirmation-gated
+open actions, and a browser/PWA UI.
 
 ## Quick start
 

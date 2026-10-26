@@ -1,6 +1,7 @@
 import { join } from 'node:path'
 import { AttentionManager } from './attention.ts'
 import { loadConfig, ensureRuntimeDirs } from './config.ts'
+import { ActionManager } from './actions.ts'
 import { Conversation } from './conversation.ts'
 import { EventBus } from './events.ts'
 import { createLogger, defaultLogFile } from './logger.ts'
@@ -58,6 +59,11 @@ async function main(): Promise<void> {
   const screen = new ScreenCapture(config, logger.child('screen'))
   const camera = new CameraCapture(config, logger.child('camera'))
   const ocr = new OcrClient({ pythonBin: config.voice.pythonBin, script: config.voice.ocrScript, logger: logger.child('ocr') })
+  const actions = new ActionManager({
+    bus,
+    logger: logger.child('actions'),
+    auditFile: join(config.dataDir, 'audit', 'actions.jsonl'),
+  })
   const policy = new ProactivePolicy(config)
   const conversation = new Conversation({
     config,
@@ -70,6 +76,7 @@ async function main(): Promise<void> {
     screen,
     camera,
     ocr,
+    actions,
     reminders,
     policy,
     logger: logger.child('conversation'),
@@ -89,6 +96,7 @@ async function main(): Promise<void> {
     bus,
     attention,
     conversation,
+    actions,
     memory,
     reminders,
     policy,

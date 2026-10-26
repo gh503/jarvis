@@ -13,6 +13,7 @@ import type { CameraCapture } from './senses/camera.ts'
 import type { ScreenCapture } from './senses/screen.ts'
 import { describeCapture } from './senses/vision.ts'
 import type { OcrClient } from './senses/ocr.ts'
+import type { ActionManager } from './actions.ts'
 import type { PiperSynthesizer } from './voice/tts.ts'
 import type { Transcriber } from './voice/asr.ts'
 import type { Reminder, ReminderStore } from './proactive/reminders.ts'
@@ -30,6 +31,7 @@ export interface ConversationDeps {
   screen: ScreenCapture
   camera: CameraCapture
   ocr: OcrClient
+  actions: ActionManager
   reminders: ReminderStore
   policy: ProactivePolicy
   logger: Logger
@@ -52,7 +54,7 @@ export interface TurnResult {
 }
 
 interface Intent {
-  type: 'chat' | 'remember' | 'forget' | 'look' | 'reminder' | 'list-reminders' | 'memory' | 'help' | 'time'
+  type: 'chat' | 'remember' | 'forget' | 'look' | 'reminder' | 'list-reminders' | 'memory' | 'help' | 'time' | 'open'
   text?: string
   target?: 'screen' | 'camera'
   vision?: boolean
@@ -77,6 +79,7 @@ function intentOf(raw: string): Intent {
   if (lower === '/reminders' || text === '列出提醒' || text === '查看提醒') return { type: 'list-reminders' }
   if (lower === '/time' || /^(现在)?几点|现在时间|今天几号|今天日期/.test(text)) return { type: 'time' }
   if (/^(用视觉|视觉模型)(看|理解|看一下)?/.test(lower)) return { type: 'look', target: 'screen', vision: true, text }
+  if (/^(打开|帮我打开|开一下)\s*/.test(lower)) return { type: 'open', text: text.replace(/^(打开|帮我打开|开一下)\s*/, '').trim() }
   if (/^\/remember\s+/i.test(text)) return { type: 'remember', text: text.replace(/^\/remember\s+/i, '').trim() }
   if (/^记住[，,:：\s]*/.test(text)) return { type: 'remember', text: text.replace(/^记住[，,:：\s]*/, '').trim() }
   if (/^帮我记住[，,:：\s]*/.test(text)) return { type: 'remember', text: text.replace(/^帮我记住[，,:：\s]*/, '').trim() }
@@ -231,6 +234,8 @@ export class Conversation {
         return this.listMemory()
       case 'time':
         return { reply: new Date().toLocaleString('zh-CN', { hour12: false, timeZoneName: 'short' }) }
+      case 'open':
+        return this.proposeOpen(intent.text ?? '')
       case 'help':
         return {
           reply: [
@@ -239,6 +244,7 @@ export class Conversation {
             '“记住我对花生过敏”/“忘掉这件事”',
             '“提醒我明天 9 点开会”/“列一下提醒”',
             '“查看记忆”',
+            '“打开 https://…”/“打开文件管理器”（会先让你确认一次）',
             '也可以直接聊天。',
           ].join('\n'),
         }
@@ -261,6 +267,15 @@ export class Conversation {
     })
     this.deps.bus.emit('memory.pinned', { id: item.id })
     return { reply: `记住了：${item.gist}`, memoryIds: [item.id] }
+  }
+
+  private proposeOpen(target: string): TurnResult {
+    try {
+      const action = this.deps.actions.proposeText(target)
+      return { reply: `要打开“${action.label}”。这是需要你确认的一次性动作；确认后我再执行。` }
+    } catch (error) {
+      return { reply: `这次没安排：${error instanceof Error ? error.message : String(error)}` }
+    }
   }
 
   private async forget(query: string): Promise<TurnResult> {

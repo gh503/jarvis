@@ -38,6 +38,13 @@ LEFT="$(curl -fsS --noproxy '*' "$BASE/api/memory?query=ORBIT-42" | python3 -c '
 [ "$LEFT" -eq 0 ] || fail "memory still recalled after delete"
 echo "memory ok ($ID)"
 
+say "confirmation-gated action"
+curl -fsS --noproxy '*' -X POST "$BASE/api/chat" -H 'content-type: application/json'   -d '{"text":"打开 https://example.com/acceptance"}' >/dev/null
+ACTION_ID="$(curl -fsS --noproxy '*' "$BASE/api/actions" | python3 -c 'import json,sys; d=json.load(sys.stdin); print(d["items"][0]["id"] if d["items"] else "")')"
+[ -n "$ACTION_ID" ] || fail "action was not proposed"
+curl -fsS --noproxy '*' -X POST "$BASE/api/actions/$ACTION_ID/deny" -H 'content-type: application/json' -d '{}' >/dev/null
+echo "action ok ($ACTION_ID)"
+
 say "reminder add / complete"
 DUE="$(date -u -d '+1 hour' +%Y-%m-%dT%H:%M:%SZ)"
 RID="$(curl -fsS --noproxy '*' -X POST "$BASE/api/reminders" -H 'content-type: application/json' \
