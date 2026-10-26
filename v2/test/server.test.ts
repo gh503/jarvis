@@ -225,6 +225,56 @@ test('server enforces proxy auth, CSRF and serves the shell', async () => {
     assert.equal(plainRemote.status, 400)
     assert.match(await plainRemote.text(), /HTTPS/)
 
+    const malformed = await fetch(`${url}/api/chat`, {
+      method: 'POST', headers: { 'content-type': 'application/json' }, body: '{bad',
+    })
+    assert.equal(malformed.status, 400)
+    assert.match(await malformed.text(), /JSON/)
+
+    const oversized = await fetch(`${url}/api/chat`, {
+      method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ text: 'x'.repeat(1_100_000) }),
+    })
+    assert.equal(oversized.status, 413)
+
+    const longChat = await fetch(`${url}/api/chat`, {
+      method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ text: 'x'.repeat(8001) }),
+    })
+    assert.equal(longChat.status, 400)
+    assert.match(await longChat.text(), /消息太长/)
+
+    const longMemory = await fetch(`${url}/api/memory`, {
+      method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ content: 'x'.repeat(8001) }),
+    })
+    assert.equal(longMemory.status, 400)
+    assert.match(await longMemory.text(), /记忆太长/)
+
+    const longReminder = await fetch(`${url}/api/reminders`, {
+      method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ text: 'x'.repeat(501), dueAt: new Date(Date.now() + 60_000).toISOString() }),
+    })
+    assert.equal(longReminder.status, 400)
+    assert.match(await longReminder.text(), /提醒太长/)
+
+    const unknownProfile = await fetch(`${url}/api/model/test`, {
+      method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ id: 'foo' }),
+    })
+    assert.equal(unknownProfile.status, 400)
+    assert.match(await unknownProfile.text(), /local \/ remote/)
+
+    const malformedUri = await fetch(`${url}/%E0%A4%A`)
+    assert.equal(malformedUri.status, 400)
+
+    const missingMemory = await fetch(`${url}/api/memory/does-not-exist`, { method: 'DELETE' })
+    assert.equal(missingMemory.status, 404)
+    const missingConfirm = await fetch(`${url}/api/memory/does-not-exist/confirm`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: '{}' })
+    assert.equal(missingConfirm.status, 404)
+    const missingReminder = await fetch(`${url}/api/reminders/does-not-exist`, { method: 'DELETE' })
+    assert.equal(missingReminder.status, 404)
+    const missingClaim = await fetch(`${url}/api/devices/claim`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: '{bad' })
+    assert.equal(missingClaim.status, 400)
+
+    const configBody = await (await fetch(`${url}/api/config`)).json() as { config?: { auth?: { required?: boolean } } }
+    assert.equal(configBody.config?.auth?.required, false)
+
     const ws = new WebSocket(`${url.replace('http', 'ws')}/ws?token=${config.authToken}`)
     const hello = await new Promise<{ kind: string }>((resolve, reject) => {
       const timer = setTimeout(() => reject(new Error('websocket hello timeout')), 3000)

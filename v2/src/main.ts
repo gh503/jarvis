@@ -147,9 +147,7 @@ async function main(): Promise<void> {
   await conversation.initialize()
 
   const scheduler = new ReminderScheduler(reminders, reminder => conversation.handleReminder(reminder), bus)
-  scheduler.start()
   const briefScheduler = new BriefScheduler(memory, reminders, bus, process.env.JARVIS_BRIEF_TIME || '08:30', process.env.JARVIS_CALENDAR_ICS, logger.child('brief'))
-  briefScheduler.start()
   const notifier = new Notifier(logger.child('notify'))
   bus.on('reminder.due', event => {
     if (policy.isQuiet() || policy.isFocus()) return
@@ -181,6 +179,10 @@ async function main(): Promise<void> {
     logger: logger.child('server'),
   })
   const { url } = await server.start()
+  // Start schedulers only after the server and desktop-notification handlers are
+  // live. Otherwise an overdue reminder is consumed at boot with nobody listening.
+  scheduler.start()
+  briefScheduler.start()
   logger.info(`Jarvis v${config.version} listening`, {
     url,
     model: model.model,

@@ -31,10 +31,10 @@ say "memory write / recall / delete"
 MEM="验收记忆-$RANDOM：我的测试代号是 ORBIT-42。"
 ID="$(curl -fsS --noproxy '*' -X POST "$BASE/api/memory" -H 'content-type: application/json' \
   -d "{\"content\":\"$MEM\"}" | python3 -c 'import json,sys; print(json.load(sys.stdin)["item"]["id"])')"
-FOUND="$(curl -fsS --noproxy '*' "$BASE/api/memory?query=ORBIT-42" | python3 -c 'import json,sys; d=json.load(sys.stdin); print(len(d.get("items", [])))')"
+FOUND="$(curl -fsS --noproxy '*' "$BASE/api/memory?query=ORBIT-42" | python3 -c 'import json,sys; d=json.load(sys.stdin); print(sum(1 for item in d.get("items", []) if "ORBIT-42" in item.get("content", "")))')"
 [ "$FOUND" -ge 1 ] || fail "memory was not recalled"
 curl -fsS --noproxy '*' -X DELETE "$BASE/api/memory/$ID" >/dev/null
-LEFT="$(curl -fsS --noproxy '*' "$BASE/api/memory?query=ORBIT-42" | python3 -c 'import json,sys; print(len(json.load(sys.stdin).get("items", [])))')"
+LEFT="$(curl -fsS --noproxy '*' "$BASE/api/memory?query=ORBIT-42" | python3 -c 'import json,sys; d=json.load(sys.stdin); print(sum(1 for item in d.get("items", []) if "ORBIT-42" in item.get("content", "")))')"
 [ "$LEFT" -eq 0 ] || fail "memory still recalled after delete"
 echo "memory ok ($ID)"
 

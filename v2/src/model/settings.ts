@@ -172,7 +172,11 @@ export class ModelSettingsStore {
     const settings = await this.load()
     const profileItem = settings.profiles.find(item => item.id === id)
     if (!profileItem) throw new Error('没有这个模型配置')
-    if (profileItem.kind === 'openai' && !profileItem.apiKey) throw new Error('远端配置还没有 API Key')
+    if (profileItem.kind === 'openai' && !profileItem.apiKey) {
+      let loopback = false
+      try { loopback = isLoopbackHost(new URL(profileItem.baseUrl).hostname) } catch { /* validateProfile reports it */ }
+      if (!loopback) throw new Error('远端配置还没有 API Key')
+    }
     const next = { ...settings, active: id }
     await this.save(next)
     return { settings: next, profile: profileItem }

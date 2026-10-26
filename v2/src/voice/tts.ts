@@ -78,6 +78,14 @@ export class PiperSynthesizer implements Synthesizer {
     child.stderr.setEncoding('utf8')
     child.stdout.on('data', (chunk: string) => this.onStdout(chunk))
     child.stderr.on('data', (chunk: string) => this.options.logger?.debug('piper stderr', { text: chunk.trim().slice(0, 300) }))
+    // A crashed or missing Piper binary closes stdin; without this listener
+    // Node turns the resulting EPIPE into an uncaught process crash.
+    child.stdin.on('error', error => {
+      if (this.child === child) this.child = null
+      this.failAll(new Error(`Piper stdin failed: ${error.message}`))
+    })
+    child.stdout.on('error', error => this.failAll(new Error(`Piper stdout failed: ${error.message}`)))
+    child.stderr.on('error', error => this.options.logger?.debug('piper stderr failed', { error: error.message }))
     child.on('error', error => {
       if (this.child === child) this.child = null
       this.failAll(new Error(`Piper failed: ${error.message}`))
@@ -131,13 +139,19 @@ export class PiperSynthesizer implements Synthesizer {
       timer.unref()
       this.pending.set(path, { resolve: resolvePromise, reject: rejectPromise, timer })
       const maxChars = this.options.getVoiceParams?.().maxChars ?? 4000
-      child.stdin.write(`${JSON.stringify({ text: clean.slice(0, maxChars), output_file: path })}\n`, error => {
-        if (!error) return
-        const pending = this.pending.get(path)
-        if (pending) clearTimeout(pending.timer)
+      try {
+        child.stdin.write(`${JSON.stringify({ text: clean.slice(0, maxChars), output_file: path })}\n`, error => {
+          if (!error) return
+          const pending = this.pending.get(path)
+          if (pending) clearTimeout(pending.timer)
+          this.pending.delete(path)
+          rejectPromise(error)
+        })
+      } catch (error) {
+        clearTimeout(timer)
         this.pending.delete(path)
-        rejectPromise(error)
-      })
+        rejectPromise(error instanceof Error ? error : new Error(String(error)))
+      }
     })
     if (!(await fileExists(path))) throw new Error('Piper produced no audio')
     this.options.logger?.debug('tts synthesized', { chars: clean.length, output: path })

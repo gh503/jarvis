@@ -608,6 +608,28 @@ kbd { font-family: var(--mono); font-size: 9px; border: 1px solid var(--line); b
   .modal { max-height: 92vh; }
 }
 
+
+@media (max-width: 560px) {
+  /* Touch targets: keep icon controls at least 42 CSS px on phones. */
+  .icon-btn { width: 42px; height: 42px; }
+  .topbar-actions { gap: 4px; }
+  .quick { min-width: 42px; min-height: 42px; justify-content: center; }
+  .send-btn { width: 42px; height: 42px; }
+  .mic-btn { min-height: 42px; }
+  .side-tab { min-height: 42px; }
+  .settings-tab { min-height: 42px; }
+  .prompt-chips button { min-height: 42px; }
+  .text-btn { min-width: 42px; min-height: 42px; padding: 7px 4px; }
+  .memory-actions button,
+  .reminder-row button { min-width: 42px; min-height: 42px; padding: 6px 9px; }
+  .provider-foot .model-action { min-height: 38px; }
+  .modal-actions button { min-height: 42px; }
+  .device-pair-row input { min-height: 42px; }
+  .device-pair-row .model-action,
+  .settings-actions .model-action,
+  .erase-confirm button { min-height: 42px; padding-left: 12px; padding-right: 12px; }
+}
+
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { animation-duration: 0.01ms !important; animation-iteration-count: 1 !important; transition-duration: 0.01ms !important; }
 }
@@ -711,6 +733,20 @@ kbd { font-family: var(--mono); font-size: 9px; border: 1px solid var(--line); b
 .privacy-actions { display: flex; gap: 8px; flex-wrap: wrap; margin: 10px 0 4px; }
 .model-action.danger { border-color: rgba(255, 120, 120, 0.35); color: #ff9a9a; }
 .model-action.danger:hover { background: rgba(255, 90, 90, 0.08); }
+.device-pair-row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin-top: 12px; }
+.device-pair-row input {
+  flex: 1 1 180px; min-width: 0; height: 36px;
+  border: 1px solid var(--line); background: rgba(255,255,255,0.02);
+  border-radius: 8px; padding: 7px 10px; color: var(--text); font-size: 11.5px; outline: 0;
+}
+.device-pair-row input:focus { border-color: rgba(126, 231, 213, 0.32); }
+.erase-confirm {
+  margin-top: 12px; padding: 12px; border: 1px solid rgba(255, 120, 120, 0.22);
+  border-radius: 11px; background: rgba(255, 90, 90, 0.035);
+}
+.erase-confirm p { margin: 0 0 9px; color: var(--muted); font-size: 10.5px; line-height: 1.55; }
+.erase-confirm label { display: block; margin-bottom: 7px; color: var(--faint); font-size: 10px; }
+.erase-confirm .device-pair-row { margin-top: 0; }
 .device-list { display: grid; gap: 6px; margin: 8px 0 10px; }
 .device-row { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 9px 11px; border: 1px solid var(--line); border-radius: 10px; background: rgba(255,255,255,.02); }
 .device-row span { display: grid; gap: 2px; min-width: 0; }
@@ -919,5 +955,10 @@ kbd { font-family: var(--mono); font-size: 9px; border: 1px solid var(--line); b
   .settings-stat-grid { grid-template-columns: 1fr; }
   .settings-savebar { position: static; margin-bottom: -24px; }
   .settings-field input, .settings-field select, .source-switch select, .inline-control .model-action { height: 42px; }
-  .settings-actions .model-action, .settings-savebar .model-action { min-height: 40px; }
+  .settings-actions .model-action,
+  .settings-savebar .model-action,
+  .device-pair-row .model-action,
+  .device-row .model-action,
+  .provider-foot .model-action,
+  .erase-confirm button { min-height: 42px; }
 }

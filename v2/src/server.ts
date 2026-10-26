@@ -10,7 +10,7 @@ import { extname, join, resolve, sep } from 'node:path'
 import { WebSocket, WebSocketServer } from 'ws'
 import type { ActionManager } from './actions.ts'
 import type { ModelRouter } from './model/router.ts'
-import { validateProfile, type ModelProfile, type ModelSettingsStore } from './model/settings.ts'
+import { isLoopbackHost, validateProfile, type ModelProfile, type ModelSettings, type ModelSettingsStore } from './model/settings.ts'
 import type { AttentionManager } from './attention.ts'
 import type { JarvisConfig } from './config.ts'
 import type { Conversation } from './conversation.ts'
@@ -43,6 +43,10 @@ export interface ServerDeps {
   secure: SecureFiles
   logger: Logger
 }
+
+const MAX_CHAT_CHARS = 8000
+const MAX_MEMORY_CHARS = 8000
+const MAX_REMINDER_CHARS = 500
 
 const MIME: Record<string, string> = {
   '.html': 'text/html; charset=utf-8',
@@ -85,13 +89,26 @@ function sendText(response: ServerResponse, status: number, message: string): vo
   response.end(message)
 }
 
+class HttpError extends Error {
+  constructor(readonly status: number, message: string) {
+    super(message)
+  }
+}
+
+/** Keep deliberate 4xx errors distinct from unexpected 5xx failures. */
+function errorStatus(error: unknown, fallback = 500): number {
+  if (error instanceof HttpError) return error.status
+  if (error instanceof URIError) return 400
+  return fallback
+}
+
 async function readBody(request: IncomingMessage, limit: number): Promise<Buffer> {
   const chunks: Buffer[] = []
   let size = 0
   for await (const chunk of request) {
     const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk)
     size += buffer.byteLength
-    if (size > limit) throw new Error(`请求太大（上限 ${limit} 字节）`)
+    if (size > limit) throw new HttpError(413, `请求太大（上限 ${limit} 字节）`)
     chunks.push(buffer)
   }
   return Buffer.concat(chunks)
@@ -103,7 +120,7 @@ async function readJson<T = Record<string, unknown>>(request: IncomingMessage, l
   try {
     return JSON.parse(body.toString('utf8')) as T
   } catch {
-    throw new Error('请求不是合法 JSON')
+    throw new HttpError(400, '请求不是合法 JSON')
   }
 }
 
@@ -112,7 +129,12 @@ function parseCookies(header: string | undefined): Record<string, string> {
   for (const part of (header ?? '').split(';')) {
     const index = part.indexOf('=')
     if (index < 1) continue
-    out[part.slice(0, index).trim()] = decodeURIComponent(part.slice(index + 1).trim())
+    const raw = part.slice(index + 1).trim()
+    try {
+      out[part.slice(0, index).trim()] = decodeURIComponent(raw)
+    } catch {
+      out[part.slice(0, index).trim()] = raw
+    }
   }
   return out
 }
@@ -160,9 +182,13 @@ export class JarvisServer {
   async start(): Promise<{ url: string }> {
     const handler = (request: IncomingMessage, response: ServerResponse): void => {
       void this.handle(request, response).catch(error => {
-        this.deps.logger.error('request failed', { error: String(error) })
-        if (!response.headersSent) sendJson(response, 500, { error: 'internal error' })
-        else response.end()
+        const status = errorStatus(error)
+        if (status >= 500) this.deps.logger.error('request failed', { error: String(error) })
+        if (!response.headersSent) {
+          sendJson(response, status, { error: status >= 500 ? 'internal error' : error instanceof Error ? error.message : String(error) })
+        } else {
+          response.end()
+        }
       })
     }
 
@@ -176,7 +202,7 @@ export class JarvisServer {
       this.server = createHttpServer(handler)
     }
 
-    this.wss = new WebSocketServer({ noServer: true })
+    this.wss = new WebSocketServer({ noServer: true, maxPayload: 256 * 1024 })
     this.server.on('upgrade', (request, socket, head) => {
       const url = new URL(request.url ?? '/', 'http://localhost')
       if (url.pathname !== '/ws') {
@@ -263,6 +289,10 @@ export class JarvisServer {
     if (message.kind === 'chat') {
       const text = String(message.text ?? '').trim()
       if (!text) return
+      if (text.length > MAX_CHAT_CHARS) {
+        this.send(ws, { kind: 'error', error: `消息太长（上限 ${MAX_CHAT_CHARS} 字）` })
+        return
+      }
       await this.deps.conversation.handleText(text, { source: 'text' })
       return
     }
@@ -284,7 +314,12 @@ export class JarvisServer {
     securityHeaders(response)
     if (this.deps.config.tlsCert) response.setHeader('Strict-Transport-Security', 'max-age=15552000')
     const url = new URL(request.url ?? '/', 'http://localhost')
-    const path = decodeURIComponent(url.pathname)
+    let path: string
+    try {
+      path = decodeURIComponent(url.pathname)
+    } catch {
+      throw new HttpError(400, '请求路径编码无效')
+    }
 
     if (path === '/' && url.searchParams.has('token')) {
       const token = url.searchParams.get('token') ?? ''
@@ -353,7 +388,13 @@ export class JarvisServer {
     }
 
     if (request.method === 'POST' && path === '/api/devices/pair') {
-      const body = await readJson<{ name?: string }>(request).catch((): { name?: string } => ({}))
+      let body: { name?: string }
+      try {
+        body = await readJson<{ name?: string }>(request)
+      } catch (error) {
+        sendJson(response, errorStatus(error, 400), { error: error instanceof Error ? error.message : String(error) })
+        return
+      }
       const code = String(randomInt(100000, 1000000))
       this.pairing.set(code, { expiresAt: Date.now() + 5 * 60 * 1000 })
       for (const [key, value] of this.pairing) {
@@ -463,7 +504,7 @@ export class JarvisServer {
         this.deps.bus.emit('tuning.changed', { changed: result.changed, values: result.values })
         sendJson(response, 200, { ...result, tuning: this.deps.tuning.snapshot() })
       } catch (error) {
-        sendJson(response, 400, { error: error instanceof Error ? error.message : String(error) })
+        sendJson(response, errorStatus(error, 400), { error: error instanceof Error ? error.message : String(error) })
       }
       return
     }
@@ -476,7 +517,7 @@ export class JarvisServer {
         this.deps.bus.emit('tuning.changed', { changed: result.changed, values: result.values })
         sendJson(response, 200, { ...result, tuning: this.deps.tuning.snapshot() })
       } catch (error) {
-        sendJson(response, 400, { error: error instanceof Error ? error.message : String(error) })
+        sendJson(response, errorStatus(error, 400), { error: error instanceof Error ? error.message : String(error) })
       }
       return
     }
@@ -489,7 +530,7 @@ export class JarvisServer {
         this.deps.bus.emit('tuning.changed', { preset: result.preset.id, values: result.values })
         sendJson(response, 200, { ...result, tuning: this.deps.tuning.snapshot() })
       } catch (error) {
-        sendJson(response, 400, { error: error instanceof Error ? error.message : String(error) })
+        sendJson(response, errorStatus(error, 400), { error: error instanceof Error ? error.message : String(error) })
       }
       return
     }
@@ -582,7 +623,7 @@ export class JarvisServer {
         const result = await this.deps.models.test(profile)
         sendJson(response, result.ok ? 200 : 502, { ...result, error: result.ok ? undefined : result.message })
       } catch (error) {
-        sendJson(response, 400, { error: error instanceof Error ? error.message : String(error) })
+        sendJson(response, errorStatus(error, 400), { error: error instanceof Error ? error.message : String(error) })
       }
       return
     }
@@ -591,18 +632,27 @@ export class JarvisServer {
       try {
         const body = await readJson<Partial<ModelProfile>>(request)
         const profile = await this.profileFromBody(body)
-        const switched = await this.deps.models.switchTo(profile)
-        const settings = await this.deps.modelSettings.upsert(profile, true)
-        await this.deps.conversation.refreshModel()
-        const active = this.deps.models.status()
-        this.deps.bus.emit('model.changed', { active, test: switched.test })
-        sendJson(response, 200, {
-          settings: this.deps.modelSettings.publicView(settings),
-          active,
-          test: switched.test,
-        })
+        this.assertActivatable(profile)
+        const previous = await this.deps.modelSettings.load()
+        await this.deps.modelSettings.upsert(profile, false)
+        try {
+          const switched = await this.deps.models.switchTo(profile)
+          const { settings } = await this.deps.modelSettings.activate(profile.id)
+          await this.deps.conversation.refreshModel()
+          const active = this.deps.models.status()
+          this.deps.bus.emit('model.changed', { active, test: switched.test })
+          sendJson(response, 200, {
+            settings: this.deps.modelSettings.publicView(settings),
+            active,
+            test: switched.test,
+          })
+        } catch (error) {
+          await this.deps.modelSettings.save(previous).catch(() => undefined)
+          await this.restoreModelRuntime(previous)
+          throw error
+        }
       } catch (error) {
-        sendJson(response, 409, { error: error instanceof Error ? error.message : String(error) })
+        sendJson(response, errorStatus(error, 409), { error: error instanceof Error ? error.message : String(error) })
       }
       return
     }
@@ -616,14 +666,22 @@ export class JarvisServer {
         const found = loaded.profiles.find(item => item.id === id)
         if (!found) throw new Error('没有这个模型配置')
         const profile = validateProfile(found)
-        const switched = await this.deps.models.switchTo(profile)
-        const { settings } = await this.deps.modelSettings.activate(id)
-        await this.deps.conversation.refreshModel()
-        const active = this.deps.models.status()
-        this.deps.bus.emit('model.changed', { active, test: switched.test })
-        sendJson(response, 200, { settings: this.deps.modelSettings.publicView(settings), active, test: switched.test })
+        this.assertActivatable(profile)
+        const previous = loaded
+        try {
+          const switched = await this.deps.models.switchTo(profile)
+          const { settings } = await this.deps.modelSettings.activate(id)
+          await this.deps.conversation.refreshModel()
+          const active = this.deps.models.status()
+          this.deps.bus.emit('model.changed', { active, test: switched.test })
+          sendJson(response, 200, { settings: this.deps.modelSettings.publicView(settings), active, test: switched.test })
+        } catch (error) {
+          await this.deps.modelSettings.save(previous).catch(() => undefined)
+          await this.restoreModelRuntime(previous)
+          throw error
+        }
       } catch (error) {
-        sendJson(response, 409, { error: error instanceof Error ? error.message : String(error) })
+        sendJson(response, errorStatus(error, 409), { error: error instanceof Error ? error.message : String(error) })
       }
       return
     }
@@ -632,6 +690,10 @@ export class JarvisServer {
       const body = await readJson<{ text?: string }>(request)
       if (!body.text?.trim()) {
         sendJson(response, 400, { error: 'text is required' })
+        return
+      }
+      if (body.text.length > MAX_CHAT_CHARS) {
+        sendJson(response, 400, { error: `消息太长（上限 ${MAX_CHAT_CHARS} 字）` })
         return
       }
       const result = await this.deps.conversation.handleText(body.text, { source: 'text' })
@@ -668,7 +730,7 @@ export class JarvisServer {
         this.deps.bus.emit('voice.changed', { asr: status.asr, tts: status.tts })
         sendJson(response, 200, { settings, status })
       } catch (error) {
-        sendJson(response, 409, { error: error instanceof Error ? error.message : String(error) })
+        sendJson(response, errorStatus(error, 409), { error: error instanceof Error ? error.message : String(error) })
       }
       return
     }
@@ -717,6 +779,7 @@ export class JarvisServer {
       }
       await rm(join(this.deps.config.dataDir, 'audit', 'actions.jsonl'), { force: true })
       await rm(join(this.deps.config.dataDir, 'telemetry.jsonl'), { force: true })
+      await rm(join(this.deps.config.dataDir, 'telemetry.jsonl.1'), { force: true })
       // Rotate only after the files that used the old key are gone.
       this.deps.secure.rotate()
       sendJson(response, 200, { ok: true, erased: counts })
@@ -751,6 +814,10 @@ export class JarvisServer {
         sendJson(response, 400, { error: 'content is required' })
         return
       }
+      if (body.content.length > MAX_MEMORY_CHARS) {
+        sendJson(response, 400, { error: `记忆太长（上限 ${MAX_MEMORY_CHARS} 字）` })
+        return
+      }
       const kind = ['semantic', 'episodic', 'procedural', 'prospective'].includes(body.kind ?? '')
         ? (body.kind as 'semantic' | 'episodic' | 'procedural' | 'prospective')
         : 'semantic'
@@ -774,15 +841,29 @@ export class JarvisServer {
     if (memoryMatch) {
       const id = memoryMatch[1]
       if (request.method === 'DELETE' && !memoryMatch[2]) {
-        sendJson(response, this.deps.memory.delete(id) ? 200 : 404, { ok: true })
+        if (!this.deps.memory.delete(id)) {
+          sendJson(response, 404, { ok: false, error: 'memory not found' })
+          return
+        }
+        sendJson(response, 200, { ok: true })
         return
       }
       if (request.method === 'POST' && memoryMatch[2] === 'confirm') {
-        sendJson(response, 200, { item: this.deps.memory.confirm(id) })
+        const item = this.deps.memory.confirm(id)
+        if (!item) {
+          sendJson(response, 404, { error: 'memory not found' })
+          return
+        }
+        sendJson(response, 200, { item })
         return
       }
       if (request.method === 'POST' && memoryMatch[2] === 'reject') {
-        sendJson(response, 200, { item: this.deps.memory.reject(id) })
+        const item = this.deps.memory.reject(id)
+        if (!item) {
+          sendJson(response, 404, { error: 'memory not found' })
+          return
+        }
+        sendJson(response, 200, { item })
         return
       }
     }
@@ -801,7 +882,7 @@ export class JarvisServer {
           sendJson(response, 200, { action: this.deps.actions.deny(actionMatch[1]) })
         }
       } catch (error) {
-        sendJson(response, 409, { error: error instanceof Error ? error.message : String(error) })
+        sendJson(response, errorStatus(error, 409), { error: error instanceof Error ? error.message : String(error) })
       }
       return
     }
@@ -815,6 +896,10 @@ export class JarvisServer {
       const body = await readJson<{ text?: string; dueAt?: string }>(request)
       if (!body.text?.trim() || !body.dueAt) {
         sendJson(response, 400, { error: 'text and dueAt are required' })
+        return
+      }
+      if (body.text.length > MAX_REMINDER_CHARS) {
+        sendJson(response, 400, { error: `提醒太长（上限 ${MAX_REMINDER_CHARS} 字）` })
         return
       }
       const date = new Date(body.dueAt)
@@ -841,7 +926,11 @@ export class JarvisServer {
         return
       }
       if (request.method === 'DELETE' && !reminderMatch[2]) {
-        sendJson(response, this.deps.reminders.remove(id) ? 200 : 404, { ok: true })
+        if (!this.deps.reminders.remove(id)) {
+          sendJson(response, 404, { ok: false, error: 'reminder not found' })
+          return
+        }
+        sendJson(response, 200, { ok: true })
         return
       }
     }
@@ -899,7 +988,7 @@ export class JarvisServer {
       port: this.deps.config.port,
       dataDir: this.deps.config.dataDir,
       webDir: this.deps.config.webDir,
-      auth: { required: Boolean(this.deps.config.authToken), tokenConfigured: Boolean(this.deps.config.authToken), tokenLength: this.deps.config.authToken.length },
+      auth: { required: !isLoopbackHost(this.deps.config.host), tokenConfigured: Boolean(this.deps.config.authToken), tokenLength: this.deps.config.authToken.length },
       tls: { enabled: Boolean(this.deps.config.tlsCert), cert: this.deps.config.tlsCert || null, keyConfigured: Boolean(this.deps.config.tlsKey), key: null },
       ollama: { ...this.deps.config.ollama },
       voice: { ...this.deps.config.voice },
@@ -918,14 +1007,36 @@ export class JarvisServer {
     }
   }
 
+  private assertActivatable(profile: ModelProfile): void {
+    if (profile.kind !== 'openai' || profile.apiKey) return
+    let loopback = false
+    try { loopback = isLoopbackHost(new URL(profile.baseUrl).hostname) } catch { /* validated elsewhere */ }
+    if (!loopback) throw new Error('远端配置还没有 API Key')
+  }
+
+  private async restoreModelRuntime(previous: ModelSettings): Promise<void> {
+    const profile = previous.profiles.find(item => item.id === previous.active)
+    if (!profile) return
+    try {
+      await this.deps.models.switchTo(validateProfile(profile))
+      await this.deps.conversation.refreshModel()
+    } catch {
+      // The previous runtime may itself be unreachable. The persisted config is
+      // still rolled back, so the next restart starts from a consistent state.
+    }
+  }
+
   private async profileFromBody(body: Partial<ModelProfile>): Promise<ModelProfile> {
     const settings = await this.deps.modelSettings.load()
+    if (body.id !== undefined && body.id !== 'local' && body.id !== 'remote') throw new Error('只能配置 local / remote')
     const id = body.id === 'remote' ? 'remote' : body.id === 'local' ? 'local' : 'local'
     const existing = settings.profiles.find(item => item.id === id)
     if (!existing) throw new Error('只能配置 local / remote')
     const nextBase = String(body.baseUrl ?? existing.baseUrl).trim().replace(/\/+$/, '')
     if (existing.kind === 'openai' && nextBase !== existing.baseUrl.replace(/\/+$/, '') && !body.apiKey?.trim()) {
-      throw new Error('更换远端地址时请重新输入 API Key，避免把旧密钥发给新地址')
+      let loopback = false
+      try { loopback = isLoopbackHost(new URL(nextBase).hostname) } catch { /* validateProfile reports it */ }
+      if (!loopback) throw new Error('更换远端地址时请重新输入 API Key，避免把旧密钥发给新地址')
     }
     const protocol = body.protocol === 'responses' || body.protocol === 'anthropic' || body.protocol === 'chat-completions'
       ? body.protocol
@@ -992,11 +1103,24 @@ export class JarvisServer {
   }
 
   async close(): Promise<void> {
-    for (const client of this.clients) client.close()
+    for (const client of this.clients) {
+      try {
+        client.close()
+        // A stalled client must not hold the process open on SIGTERM.
+        setTimeout(() => { try { client.terminate() } catch { /* already gone */ } }, 1000).unref()
+      } catch {
+        // Already closed.
+      }
+    }
     this.clients.clear()
     await new Promise<void>(resolvePromise => {
       if (!this.server) return resolvePromise()
-      this.server.close(() => resolvePromise())
+      const timer = setTimeout(resolvePromise, 3000)
+      timer.unref()
+      this.server.close(() => {
+        clearTimeout(timer)
+        resolvePromise()
+      })
     })
     this.wss?.close()
   }

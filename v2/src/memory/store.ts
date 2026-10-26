@@ -893,12 +893,24 @@ export class MemoryStore {
   }
 
   exportAll(): { version: 2; exportedAt: string; items: MemoryItem[]; episodes: Episode[] } {
-    return {
-      version: 2,
-      exportedAt: this.at(),
-      items: this.list({ includeSensitive: true, includeInactive: true, limit: MAX_LIST }),
-      episodes: this.listEpisodes(MAX_LIST),
-    }
+    // Export is a user-requested full copy: never route it through the
+    // paginated UI queries, which silently stop at 200 rows.
+    const items = (this.db.prepare('SELECT * FROM memory_items ORDER BY updated_at DESC').all() as Row[])
+      .map(row => this.rowToItem(row))
+    const episodes = (this.db.prepare('SELECT * FROM memory_episodes ORDER BY started_at DESC').all() as Row[])
+      .map(row => ({
+        id: text(row.id),
+        startedAt: text(row.started_at),
+        endedAt: text(row.ended_at),
+        app: text(row.app),
+        window: text(row.window),
+        participants: JSON.parse(text(row.participants, '[]')) as string[],
+        summary: text(row.summary),
+        sourceRef: text(row.source_ref),
+        sensitivity: text(row.sensitivity, 'standard') as MemorySensitivity,
+        createdAt: text(row.created_at),
+      }))
+    return { version: 2, exportedAt: this.at(), items, episodes }
   }
 
   migrateV1(file: string): { imported: number; skipped: number } {

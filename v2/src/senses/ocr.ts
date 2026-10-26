@@ -25,6 +25,7 @@ export class OcrClient {
   private nextId = 1
   private ready: Promise<void> | null = null
   private queue: Promise<unknown> = Promise.resolve()
+  private stopped = false
 
   constructor(
     private readonly options: {
@@ -39,6 +40,7 @@ export class OcrClient {
   }
 
   start(): Promise<void> {
+    if (this.stopped) return Promise.reject(new Error('OCR worker is closed'))
     if (this.ready) return this.ready
     this.ready = new Promise<void>((resolve, reject) => {
       const child = spawn(this.options.pythonBin, [this.options.script], {
@@ -87,14 +89,28 @@ export class OcrClient {
       })
       child.stderr.setEncoding('utf8')
       child.stderr.on('data', chunk => this.options.logger?.debug('ocr worker stderr', { chunk: String(chunk).trim().slice(0, 400) }))
+      const workerFailure = (error: Error): void => {
+        if (this.stopped) return
+        if (this.child === child) this.child = null
+        this.ready = null
+        fail(error)
+        for (const pending of this.pending.values()) {
+          clearTimeout(pending.timer)
+          pending.reject(error)
+        }
+        this.pending.clear()
+      }
+      child.stdin.on('error', error => workerFailure(new Error(`OCR stdin failed: ${error.message}`)))
+      child.stdout.on('error', error => workerFailure(new Error(`OCR stdout failed: ${error.message}`)))
       child.on('error', error => {
         clearTimeout(timer)
-        fail(error)
+        workerFailure(error)
       })
       child.on('close', code => {
         clearTimeout(timer)
         if (!settled) fail(new Error(`OCR worker exited with code ${code}`))
         this.child = null
+        this.ready = null
         for (const pending of this.pending.values()) {
           clearTimeout(pending.timer)
           pending.reject(new Error(`OCR worker exited with code ${code}`))
@@ -131,14 +147,22 @@ export class OcrClient {
       const header = Buffer.alloc(8)
       header.writeUInt32BE(id, 0)
       header.writeUInt32BE(data.byteLength, 4)
-      child.stdin.write(header)
-      child.stdin.write(data)
+      try {
+        child.stdin.write(header)
+        child.stdin.write(data)
+      } catch (error) {
+        const pending = this.pending.get(id)
+        if (pending) clearTimeout(pending.timer)
+        this.pending.delete(id)
+        reject(error instanceof Error ? error : new Error(String(error)))
+      }
     })
   }
 
   async close(): Promise<void> {
+    this.stopped = true
     this.lines?.close()
-    this.child?.stdin.end()
+    try { this.child?.stdin.end() } catch { /* already closed */ }
     this.child?.kill('SIGTERM')
     this.child = null
     this.ready = null

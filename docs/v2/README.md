@@ -50,6 +50,7 @@ v2 不再从“给 agent 加一个聊天窗口”出发，而是从下面这个�
 | [voice.md](voice.md) | ASR WebSocket/HTTP 契约、TTS、本地/远端切换 | Implemented |
 | [implementation-status.md](implementation-status.md) | 已实现 / 部分实现 / 缺口 / 验证方式 | Implemented baseline |
 | [operations.md](operations.md) | 安装、启动、远程、隐私、验收、故障排查 | Implemented baseline |
+| [release-acceptance-2026-10-26.md](release-acceptance-2026-10-26.md) | 发布验收报告：测试矩阵、修复清单、残余风险与放行结论 | Accepted |
 | [observatory.md](observatory.md) | Studio 的信息架构、指标定义、记忆图、调参架构与安全 | Implemented |
 | [security.md](security.md) | 信任边界、凭据、静态加密范围、残余风险、导出/擦除 | Implemented baseline |
 

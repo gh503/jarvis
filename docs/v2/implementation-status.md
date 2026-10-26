@@ -3,7 +3,8 @@
 - Date: 2026-10-26
 - Branch: `feat/jarvis-v2`
 - Runtime: `v2/`（TypeScript / Node 24 / SQLite / 本地 Web UI）
-- Tests: 73 passing (`TZ=Asia/Shanghai npm test`), typecheck clean
+- Tests: 77 passing (`TZ=Asia/Shanghai npm test`), typecheck clean
+- Release acceptance: [release-acceptance-2026-10-26.md](release-acceptance-2026-10-26.md)
 
 ## 1. 已实现并跑通
 

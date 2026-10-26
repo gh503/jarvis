@@ -18,6 +18,10 @@ const state = {
   focus: false,
   muted: localStorage.getItem('jarvis_muted') === '1',
   busy: false,
+  cancelling: false,
+  cancelTimer: 0,
+  turnViaWs: false,
+  turnWatchdog: 0,
   streamEl: null,
   streamText: '',
   pendingUserEcho: '',
@@ -108,10 +112,32 @@ function connect() {
     if (payload.kind === 'hello') {
       applyStatus(payload.status)
       if (payload.attention) updateAttention(payload.attention)
+      clearTurnWatchdog()
+      // A reconnect can land after the server finished, while the last
+      // assistant.done event was lost with the old socket. Never leave the
+      // composer stuck in a permanent busy state.
+      if (state.busy && state.turnViaWs && !payload.status?.busy) {
+        finishStreaming('连接中断，未收到完整回答；请重试。', true)
+        setBusy(false)
+        state.turnViaWs = false
+      } else if (state.busy && state.turnViaWs && payload.status?.busy) {
+        state.turnWatchdog = setTimeout(() => {
+          if (!state.busy || !state.turnViaWs) return
+          finishStreaming('连接中断，未收到完整回答；请重试。', true)
+          setBusy(false)
+          state.turnViaWs = false
+        }, 130000)
+      }
     } else if (payload.kind === 'event') {
       handleEvent(payload.event)
     } else if (payload.kind === 'error') {
-      appendMessage('system', payload.error)
+      if (state.busy && state.turnViaWs) {
+        finishStreaming(payload.error || '连接出错，请重试。', true)
+        setBusy(false)
+        state.turnViaWs = false
+      } else {
+        appendMessage('system', payload.error)
+      }
     }
   })
   ws.addEventListener('close', () => {
@@ -121,6 +147,15 @@ function connect() {
     state.reconnect += 1
     const delay = Math.min(12000, 1200 * state.reconnect)
     setTimeout(connect, delay)
+    if (state.busy && state.turnViaWs) {
+      clearTurnWatchdog()
+      state.turnWatchdog = setTimeout(() => {
+        if (!state.busy || !state.turnViaWs) return
+        finishStreaming('连接中断，未收到完整回答；请重试。', true)
+        setBusy(false)
+        state.turnViaWs = false
+      }, 130000)
+    }
   })
   ws.addEventListener('error', () => {
     state.wsReady = false
@@ -132,7 +167,7 @@ function setConnection(kind) {
   const dot = $('#connection-dot')
   const label = $('#connection-label')
   dot.className = `dot ${kind === 'online' ? 'online' : kind === 'offline' ? 'offline' : ''}`
-  label.textContent = kind === 'online' ? '本机连接' : kind === 'offline' ? '重连中' : '连接中'
+  label.textContent = kind === 'online' ? '已连接' : kind === 'offline' ? '重连中' : '连接中'
 }
 
 window.addEventListener('jarvis:memory-changed', () => {
@@ -165,12 +200,18 @@ function handleEvent(event) {
       break
     case 'assistant.done':
       state.sawAssistantEvent = true
+      clearCancelTimer()
+      clearTurnWatchdog()
+      state.turnViaWs = false
       finishStreaming(data.text, Boolean(data.error))
       if (data.audioUrl) playAudio(data.audioUrl)
       setBusy(false)
       updateLatency()
       break
     case 'assistant.cancelled':
+      clearCancelTimer()
+      clearTurnWatchdog()
+      state.turnViaWs = false
       stopAudio()
       finishStreaming('（已停止）')
       setBusy(false)
@@ -361,6 +402,17 @@ function scrollToBottom() {
   if (distance < 220) transcript.scrollTop = transcript.scrollHeight
 }
 
+function clearTurnWatchdog() {
+  if (state.turnWatchdog) clearTimeout(state.turnWatchdog)
+  state.turnWatchdog = 0
+}
+
+function clearCancelTimer() {
+  if (state.cancelTimer) clearTimeout(state.cancelTimer)
+  state.cancelTimer = 0
+  state.cancelling = false
+}
+
 function setBusy(busy) {
   state.busy = Boolean(busy)
   $('#send-btn').disabled = state.busy
@@ -385,6 +437,7 @@ function showSenseConsent(pendingText = '') {
     <p class="eyebrow">SENSES / CONSENT</p>
     <h3>只在需要时看，不连续录制</h3>
     <p>屏幕通过系统门户单次截取；摄像头只取一张画面。画面保存在本机，1 小时后自动清理，你可以随时删除。</p>
+    ${state.status?.provider === 'remote' ? '<p class="settings-error" role="alert">当前对话模型在远端。屏幕/摄像头画面可能发送到服务商；Jarvis 默认会阻止这次采集，除非服务端显式设置 JARVIS_ALLOW_REMOTE_VISION=1。切回本地模型后再看更安全。</p>' : ''}
     <ul class="brief-list">
       <li><b>屏幕</b>会先经过 GNOME 的共享确认；拒绝后我不会绕过。</li>
       <li><b>摄像头</b>只取单帧，不录视频、不留连续画面。</li>
@@ -421,11 +474,14 @@ function sendText(text, options = {}) {
   input.value = ''
   autoGrow(input)
   stopAudio()
+  clearCancelTimer()
+  clearTurnWatchdog()
   state.sawAssistantEvent = false
   state.pendingUserEcho = clean
   appendMessage('user', clean)
   setBusy(true)
   const sent = sendWs({ kind: 'chat', text: clean })
+  state.turnViaWs = sent
   if (!sent) {
     state.pendingUserEcho = ''
     api('/api/chat', { method: 'POST', body: JSON.stringify({ text: clean }) })
@@ -443,6 +499,9 @@ function handleHttpResult(result) {
     finishStreaming(result.reply || result.error || '', Boolean(result.error))
   }
   if (result.audioUrl && !result.audioSpoken) playAudio(result.audioUrl)
+  clearCancelTimer()
+  clearTurnWatchdog()
+  state.turnViaWs = false
   setBusy(false)
   updateLatency()
 }
@@ -855,17 +914,27 @@ function promptForToken() {
   state.tokenPrompted = true
   openModal(`
     <h3>需要访问令牌</h3>
-    <p>这台机器不是本机回环访问。输入 <code>~/.local/share/jarvis/data/auth-token</code> 里的令牌。</p>
+    <p>这台机器不是本机回环访问。输入服务端配置的 <code>JARVIS_AUTH_TOKEN</code>；如果启动时没有设置该环境变量，再使用 <code>~/.local/share/jarvis/data/auth-token</code> 里的令牌。</p>
     <div class="search-row"><input id="token-input" type="password" placeholder="粘贴令牌" autocomplete="off"></div>
     <button class="send-btn" id="token-save" type="button" style="width:auto;padding:0 14px;height:34px">保存并重连</button>
   `, '访问令牌')
-  $('#token-save').addEventListener('click', () => {
+  const saveToken = () => {
     const value = $('#token-input').value.trim()
     if (!value) return
     state.token = value
     localStorage.setItem('jarvis_token', value)
-    location.reload()
+    // Media elements (<audio>/<img>) cannot attach a Bearer header. The
+    // server's token route sets the HttpOnly cookie those requests need.
+    location.replace(`/?token=${encodeURIComponent(value)}`)
+  }
+  $('#token-save').addEventListener('click', saveToken)
+  $('#token-input').addEventListener('keydown', event => {
+    if (event.key === 'Enter') {
+      event.preventDefault()
+      saveToken()
+    }
   })
+  $('#token-input').focus()
 }
 
 async function showBrief() {
@@ -902,7 +971,7 @@ async function showBrief() {
 }
 
 function openModal(html, title = '设置', options = {}) {
-  if ($('#modal').hidden) state.modalOpener = document.activeElement
+  if ($('#modal').hidden) state.modalOpener = options.opener || document.activeElement
   $('#modal-title').textContent = title
   $('#modal-body').innerHTML = html
   $('#modal').hidden = false
@@ -965,12 +1034,25 @@ function protocolLabel(protocol) {
   return 'OpenAI Chat Completions'
 }
 
+function isLoopbackUrl(value) {
+  try {
+    const host = new URL(value).hostname
+    return host === '127.0.0.1' || host === 'localhost' || host === '::1' || host === '[::1]'
+  } catch {
+    return false
+  }
+}
+
+function profileReachable(profile) {
+  return profile.kind !== 'openai' || profile.hasKey || isLoopbackUrl(profile.baseUrl)
+}
+
 function modelNameOptions(selected) {
   const names = [...new Set([
     ...(selected.model ? [selected.model] : []),
     ...((state.modelOptions[selected.id] || []).map(item => typeof item === 'string' ? item : item.name).filter(Boolean)),
   ])]
-  if (!names.length) return `<option value="">${selected.kind === 'openai' && !selected.hasKey ? '填写 Key 后获取模型' : '正在获取模型列表…'}</option>`
+  if (!names.length) return `<option value="">${selected.kind === 'openai' && !profileReachable(selected) ? '填写 Key 后获取模型' : '正在获取模型列表…'}</option>`
   return names.map(name => `<option value="${escapeHtml(name)}" ${name === selected.model ? 'selected' : ''}>${escapeHtml(name)}</option>`).join('')
 }
 
@@ -1033,7 +1115,7 @@ function providerCardsHtml(settings, selectedId) {
   return (settings.profiles || []).map(profile => {
     const current = profile.id === settings.active
     const selected = profile.id === selectedId
-    const reachable = profile.kind !== 'openai' || profile.hasKey
+    const reachable = profileReachable(profile)
     const kind = profile.kind === 'openai' ? protocolLabel(profile.protocol) : 'OLLAMA · 本机'
     return `<div class="provider-card${selected ? ' selected' : ''}${current ? ' active' : ''}" data-model-card="${escapeHtml(profile.id)}">
       <button type="button" class="provider-main" data-model-select="${escapeHtml(profile.id)}" aria-pressed="${selected}" title="编辑 ${escapeHtml(profile.label)}">
@@ -1054,7 +1136,7 @@ function providerCardsHtml(settings, selectedId) {
 
 function modelFormHtml(selected) {
   const remote = selected.kind === 'openai'
-  const keyHint = selected.hasKey ? '已保存；留空保持不变' : '粘贴 API Key'
+  const keyHint = selected.hasKey ? '已保存；留空保持不变' : isLoopbackUrl(selected.baseUrl) ? '可选（localhost 服务）' : '粘贴 API Key'
   const advancedOpen = Boolean(selected.embedModel || selected.visionModel)
   return `<div class="settings-card" id="model-form" data-model-form="${escapeHtml(selected.id)}">
     <div class="settings-card-head">
@@ -1200,11 +1282,12 @@ function settingsPanelsHtml(selected, settings) {
       <div class="settings-card">
         <div class="settings-card-head"><div><h4>已配对设备</h4><p>设备令牌只保存 SHA-256 哈希；撤销后立即失效。</p></div></div>
         <div class="device-list" id="device-list"><span class="muted small">读取中…</span></div>
-        <div class="settings-actions">
+        <div class="device-pair-row">
+          <input id="device-name" type="text" maxlength="40" value="我的手机" aria-label="新设备名称" autocomplete="off">
           <button class="model-action primary" id="device-pair" type="button">生成配对码</button>
           <a class="model-action" href="/pair" target="_blank" rel="noopener">打开配对页</a>
         </div>
-        <div id="pair-result" class="pair-result" hidden></div>
+        <div id="pair-result" class="pair-result" hidden aria-live="polite"></div>
       </div>
       <div class="settings-card">
         <div class="settings-card-head"><div><h4>远程访问</h4><p>默认只监听 loopback。跨设备访问必须同时启用 TLS 和至少 24 字符的访问令牌。</p></div></div>
@@ -1219,16 +1302,31 @@ function settingsPanelsHtml(selected, settings) {
       <div class="settings-stat-grid" id="settings-runtime">${settingsRuntimeHtml()}</div>
       <div class="settings-card">
         <div class="settings-card-head"><div><h4>隐私与数据</h4><p>屏幕按次授权，摄像头只取单帧，记忆默认只存本机。</p></div></div>
-        <p class="settings-hint">模型上下文不包含标记为 sensitive / secret 的记忆。远端模型仍会收到当前对话和普通记忆，切换前请确认服务商政策。</p>
+        <p class="settings-hint">模型上下文不包含标记为 sensitive / secret 的记忆。远端模型仍会收到当前对话和普通记忆；屏幕/摄像头画面默认不会发往远端（需服务端显式 JARVIS_ALLOW_REMOTE_VISION=1），切换前请确认服务商政策。</p>
         <details class="settings-advanced">
           <summary>感官权限说明</summary>
           <p class="settings-hint">屏幕走 XDG Desktop Portal，每次按需授权；摄像头只取单帧；原生 Wayland 不读取帧缓冲、不持续录屏。采集前会显示状态，原图不进入长期记忆。</p>
         </details>
         <div class="settings-actions">
-          <button class="model-action" id="privacy-export" type="button">导出全部数据</button>
-          <button class="model-action danger" id="privacy-erase" type="button">删除全部对话与记忆</button>
+          <button class="model-action" id="privacy-export" type="button" aria-expanded="false" aria-controls="export-confirm">导出全部数据</button>
+          <button class="model-action danger" id="privacy-erase" type="button" aria-expanded="false" aria-controls="erase-confirm">删除全部对话与记忆</button>
         </div>
-        <p class="settings-hint">删除会清空记忆、提醒、动作审计、语音与画面，并重置观察台历史；不可撤销，建议先导出。</p>
+        <div class="erase-confirm" id="export-confirm" hidden>
+          <p>导出文件包含全部记忆（包括 sensitive/secret）、提醒和回合摘要；只保存到可信位置。</p>
+          <div class="device-pair-row">
+            <button class="model-action primary" id="export-confirm-btn" type="button">确认导出</button>
+            <button class="model-action" id="export-cancel" type="button">取消</button>
+          </div>
+        </div>
+        <div class="erase-confirm" id="erase-confirm" hidden>
+          <p>删除会清空记忆、提醒、动作审计、语音与画面，并重置观察台历史；不可撤销，建议先导出。</p>
+          <label for="erase-phrase">输入“删除全部”确认</label>
+          <div class="device-pair-row">
+            <input id="erase-phrase" type="text" autocomplete="off" spellcheck="false" placeholder="删除全部">
+            <button class="model-action danger" id="erase-confirm-btn" type="button">确认删除</button>
+            <button class="model-action" id="erase-cancel" type="button">取消</button>
+          </div>
+        </div>
       </div>
       <div class="settings-card">
         <div class="settings-card-head"><div><h4>诊断与引导</h4><p>终端运行 <code>npm run doctor</code> 可检查模型、Whisper、Piper、屏幕门户和摄像头。</p></div></div>
@@ -1472,7 +1570,7 @@ function renderSettings(options = {}) {
   if (!selected) return
   state.modelFormId = selected.id
   const scrollTop = options.scrollTop ?? $('.settings-modal .modal-body')?.scrollTop ?? 0
-  openModal(settingsBodyHtml(selected, state.modelSettings), '设置', { className: 'settings-modal', focus: options.focus !== false })
+  openModal(settingsBodyHtml(selected, state.modelSettings), '设置', { className: 'settings-modal', focus: options.focus !== false, opener: $('#settings-btn') })
   bindSettingsTabs()
   activateSettingsTab(state.settingsTab)
   renderProviderCards()
@@ -1498,7 +1596,7 @@ function settingsLoadingHtml() {
 async function showSettings(options = {}) {
   const token = ++state.settingsLoadToken
   const wasOpen = !$('#modal').hidden
-  if (!wasOpen) openModal(settingsLoadingHtml(), '设置', { className: 'settings-modal' })
+  if (!wasOpen) openModal(settingsLoadingHtml(), '设置', { className: 'settings-modal', opener: $('#settings-btn') })
   const [voiceResult, modelResult] = await Promise.allSettled([
     api('/api/voice'),
     api('/api/model'),
@@ -1702,25 +1800,51 @@ function bindModelForm(selected) {
 }
 
 function bindSettingsActions() {
-  $('#device-pair')?.addEventListener('click', async event => {
-    const button = event.currentTarget
-    const name = window.prompt('给这台新设备起个名字（例如：我的手机）', '我的手机')
-    if (name === null) return
+  const pairNow = async button => {
+    const name = $('#device-name')?.value.trim() || '我的手机'
+    if (name.length > 40) {
+      appendMessage('system', '设备名称最多 40 个字符。')
+      return
+    }
     button.disabled = true
     try {
-      const result = await api('/api/devices/pair', { method: 'POST', body: JSON.stringify({ name: name.trim() }) })
+      const result = await api('/api/devices/pair', { method: 'POST', body: JSON.stringify({ name }) })
       const box = $('#pair-result')
       if (!box) return
       box.hidden = false
       box.innerHTML = `<strong>${escapeHtml(result.code)}</strong><span>5 分钟内有效；在另一台设备打开 <code>${escapeHtml(location.origin)}/pair</code> 输入它。</span>`
+      await refreshDevices()
     } catch (error) {
       appendMessage('system', `生成配对码失败：${error.message}`)
     } finally {
       button.disabled = false
     }
+  }
+  $('#device-pair')?.addEventListener('click', event => void pairNow(event.currentTarget))
+  $('#device-name')?.addEventListener('keydown', event => {
+    if (event.key !== 'Enter') return
+    event.preventDefault()
+    const button = $('#device-pair')
+    if (button && !button.disabled) void pairNow(button)
   })
-  $('#privacy-export')?.addEventListener('click', async event => {
-    if (!window.confirm('导出文件包含全部记忆（包括 sensitive/secret）、提醒和回合摘要。请只保存在可信位置。继续？')) return
+  const setExportPanel = open => {
+    const panel = $('#export-confirm')
+    const opener = $('#privacy-export')
+    if (!panel) return
+    panel.hidden = !open
+    opener?.setAttribute('aria-expanded', String(open))
+    if (open) {
+      const erase = $('#erase-confirm')
+      if (erase) erase.hidden = true
+      $('#privacy-erase')?.setAttribute('aria-expanded', 'false')
+      $('#export-confirm-btn')?.focus()
+    } else {
+      opener?.focus()
+    }
+  }
+  $('#privacy-export')?.addEventListener('click', () => setExportPanel(Boolean($('#export-confirm')?.hidden)))
+  $('#export-cancel')?.addEventListener('click', () => setExportPanel(false))
+  $('#export-confirm-btn')?.addEventListener('click', async event => {
     const button = event.currentTarget
     button.disabled = true
     try {
@@ -1731,16 +1855,42 @@ function bindSettingsActions() {
       link.href = url
       link.download = `jarvis-export-${new Date().toISOString().slice(0, 10)}.json`
       link.click()
-      URL.revokeObjectURL(url)
-      button.textContent = '已导出'
+      setTimeout(() => URL.revokeObjectURL(url), 1000)
+      button.disabled = false
+      setExportPanel(false)
+      const opener = $('#privacy-export')
+      if (opener) opener.textContent = '已导出'
     } catch (error) {
       button.disabled = false
-      button.textContent = `导出失败：${error.message}`
+      appendMessage('system', `导出失败：${error.message}`)
     }
   })
-  $('#privacy-erase')?.addEventListener('click', async event => {
-    const phrase = window.prompt('这会删除全部记忆、提醒、音频、画面、审计和观察台历史，并撤销已配对设备；不可撤销。\n输入“删除全部”确认。')
-    if (phrase !== '删除全部') return
+  $('#privacy-erase')?.addEventListener('click', event => {
+    const panel = $('#erase-confirm')
+    if (!panel) return
+    panel.hidden = !panel.hidden
+    event.currentTarget.setAttribute('aria-expanded', String(!panel.hidden))
+    if (!panel.hidden) {
+      const exportPanel = $('#export-confirm')
+      if (exportPanel) exportPanel.hidden = true
+      $('#privacy-export')?.setAttribute('aria-expanded', 'false')
+      $('#erase-phrase')?.focus()
+    }
+  })
+  $('#erase-cancel')?.addEventListener('click', () => {
+    const panel = $('#erase-confirm')
+    if (panel) panel.hidden = true
+    const opener = $('#privacy-erase')
+    opener?.setAttribute('aria-expanded', 'false')
+    $('#erase-phrase').value = ''
+    opener?.focus()
+  })
+  $('#erase-confirm-btn')?.addEventListener('click', async event => {
+    if (($('#erase-phrase')?.value || '').trim() !== '删除全部') {
+      appendMessage('system', '请准确输入“删除全部”后再确认。')
+      $('#erase-phrase')?.focus()
+      return
+    }
     const button = event.currentTarget
     button.disabled = true
     try {
@@ -1816,11 +1966,24 @@ function bind() {
     }
   })
   $('#input').addEventListener('input', event => autoGrow(event.target))
-  $('#stop-btn').addEventListener('click', async () => {
-    sendWs({ kind: 'cancel' })
-    await api('/api/cancel', { method: 'POST', body: '{}' }).catch(() => undefined)
-    finishStreaming('（已停止）')
-    setBusy(false)
+  $('#stop-btn').addEventListener('click', () => {
+    if (state.cancelling) return
+    state.cancelling = true
+    // Send exactly one cancel command. Sending both the WebSocket event and
+    // the HTTP endpoint used to produce two assistant.cancelled events.
+    if (!sendWs({ kind: 'cancel' })) {
+      api('/api/cancel', { method: 'POST', body: '{}' }).catch(() => undefined)
+    }
+    clearCancelTimer()
+    state.cancelling = true
+    state.cancelTimer = setTimeout(() => {
+      if (!state.busy || !state.cancelling) return
+      finishStreaming('（已停止）')
+      setBusy(false)
+      state.turnViaWs = false
+      state.cancelling = false
+      state.cancelTimer = 0
+    }, 5000)
   })
   $('#mute-btn').addEventListener('click', () => {
     state.muted = !state.muted

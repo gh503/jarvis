@@ -109,6 +109,7 @@ export class Conversation {
   private readonly history: ChatMessage[] = []
   private readonly extractor: MemoryExtractor
   private busy = false
+  private turnActive = false
   private abort: AbortController | null = null
   private followupTimer: NodeJS.Timeout | null = null
   private speechQueue: Promise<void> = Promise.resolve()
@@ -141,17 +142,34 @@ export class Conversation {
       try {
         await this.deps.synthesizer.warmup?.()
       } catch (error) {
+        this.voiceReady.tts = false
         this.deps.logger.warn('tts warm-up failed', { error: String(error) })
       }
     }
     // Load the chat and embedding models before the HTTP server starts. This
     // turns the first user turn from a cold model load into a warm reply.
     const warmStart = Date.now()
+    let warmTimer: NodeJS.Timeout | null = null
     try {
-      const warm = this.deps.model.warmup ? await this.deps.model.warmup() : { chatMs: 0, embedMs: 0 }
-      this.deps.logger.info('model warmed', { totalMs: Date.now() - warmStart, ...warm })
+      // A cold or busy Ollama can block warm-up for a full minute. The HTTP
+      // server must still come up so the user can see status and switch model.
+      const timeout = new Promise<null>(resolvePromise => {
+        warmTimer = setTimeout(() => resolvePromise(null), 8_000)
+        warmTimer.unref()
+      })
+      const warm = await Promise.race([
+        this.deps.model.warmup ? this.deps.model.warmup() : Promise.resolve({ chatMs: 0, embedMs: 0 }),
+        timeout,
+      ])
+      if (warm === null) {
+        this.deps.logger.warn('model warm-up deferred', { ms: Date.now() - warmStart })
+      } else {
+        this.deps.logger.info('model warmed', { totalMs: Date.now() - warmStart, ...warm })
+      }
     } catch (error) {
       this.deps.logger.warn('model warm-up failed', { error: String(error), ms: Date.now() - warmStart })
+    } finally {
+      if (warmTimer) clearTimeout(warmTimer)
     }
     this.deps.bus.emit('runtime.ready', {
       modelReady: this.modelReady,
@@ -206,6 +224,7 @@ export class Conversation {
       try {
         await this.deps.synthesizer.warmup?.()
       } catch (error) {
+        this.voiceReady.tts = false
         this.deps.logger.warn('tts warm-up after voice switch failed', { error: String(error) })
       }
     }
@@ -259,6 +278,7 @@ export class Conversation {
       return { reply }
     }
     this.busy = true
+    this.turnActive = true
     this.abort = new AbortController()
     this.turnAudioUrls = []
     const turnEpoch = ++this.speechEpoch
@@ -305,14 +325,23 @@ export class Conversation {
       return { ...result, reply, audioUrl }
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error)
+      // User cancellation is not a failure: cancel() already emitted
+      // assistant.cancelled, and a second assistant.done would create a
+      // duplicate bubble in the transcript.
+      if (this.abort?.signal.aborted) {
+        this.deps.attention.reset('cancel')
+        this.clearFollowup()
+        return { reply: '好，停了。', cancelled: true }
+      }
       this.deps.logger.error('turn failed', { error: message })
-      const reply = message.includes('aborted') ? '好，停了。' : `我这边出了点问题：${message}`
+      const reply = `我这边出了点问题：${message}`
       this.deps.bus.emit('assistant.done', { turnId: this.turnId, text: reply, error: message, durationMs: Date.now() - this.turnStartedAt })
       this.deps.attention.reset('error')
       this.clearFollowup()
       return { reply, error: message }
     } finally {
       this.busy = false
+      this.turnActive = false
       this.abort = null
     }
   }
@@ -516,6 +545,16 @@ export class Conversation {
   }
 
   private async look(target: 'screen' | 'camera', userText: string, forceVision = false): Promise<TurnResult> {
+    // A remote profile may advertise a vision model, but screen and camera
+    // pixels are the most sensitive context Jarvis has. Keep them local unless
+    // the operator explicitly opts in.
+    const activeModel = this.deps.model.status?.()
+    if (activeModel?.id === 'remote' && process.env.JARVIS_ALLOW_REMOTE_VISION !== '1') {
+      this.deps.attention.send({ type: 'context_denied', reason: 'remote_vision_blocked' })
+      return {
+        reply: '当前使用的是远端模型。为了不把屏幕或摄像头画面发到服务商，我先不采集；切回本地模型后再看。',
+      }
+    }
     this.deps.attention.send({ type: 'context_needed', reason: target })
     let capture: Capture | null = null
     try {
@@ -573,6 +612,7 @@ export class Conversation {
   }
 
   private async speak(text: string): Promise<string | undefined> {
+    if (!this.voiceReady.tts) return undefined
     if (!(await this.deps.synthesizer.available())) return undefined
     const name = `reply-${Date.now()}-${randomUUID().slice(0, 8)}.wav`
     const path = join(this.deps.config.dataDir, 'audio', name)
@@ -647,13 +687,17 @@ export class Conversation {
   }
 
   cancel(): void {
+    const hadTurn = this.busy || this.turnActive
     this.speechEpoch += 1
     this.abort?.abort()
     this.busy = false
+    this.turnActive = false
     this.turnAudioUrls = []
     this.clearFollowup()
     this.deps.attention.reset('cancel')
-    this.deps.bus.emit('assistant.cancelled', {})
+    // Cancel can arrive through both the WebSocket and /api/cancel; only the
+    // first one should close the visible answer. It is also a no-op when idle.
+    if (hadTurn) this.deps.bus.emit('assistant.cancelled', {})
   }
 
   async handleReminder(reminder: Reminder): Promise<void> {

@@ -1,7 +1,7 @@
 /* A deliberately small shell cache. API responses and media are never cached.
    The shell is network-first so a local update is visible on the next load;
    the cache is only an offline fallback. */
-const CACHE = 'jarvis-shell-v7'
+const CACHE = 'jarvis-shell-v9'
 const SHELL = ['/', '/styles.css', '/studio.css', '/pair.css', '/app.js', '/studio.js', '/visual.js', '/manifest.webmanifest', '/icons/icon-192.png', '/icons/icon-512.png', '/icons/apple-touch-icon.png', '/icons/jarvis.svg']
 
 self.addEventListener('install', event => {
@@ -18,6 +18,8 @@ self.addEventListener('fetch', event => {
   const url = new URL(event.request.url)
   if (event.request.method !== 'GET' || url.origin !== location.origin) return
   if (url.pathname.startsWith('/api/') || url.pathname === '/ws') return
+  // Never put a URL that carries an access token into Cache Storage.
+  if (url.searchParams.has('token')) return
   event.respondWith(
     fetch(event.request)
       .then(response => {

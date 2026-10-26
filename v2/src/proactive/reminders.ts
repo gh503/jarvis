@@ -155,13 +155,27 @@ export class ReminderStore {
     const rows = status
       ? (this.db.prepare('SELECT * FROM reminders WHERE status = ? ORDER BY due_at ASC').all(status) as Row[])
       : (this.db.prepare("SELECT * FROM reminders WHERE status IN ('pending','notified') ORDER BY due_at ASC").all() as Row[])
-    return rows.map(toReminder)
+    return rows.map(toReminder).sort((left, right) => {
+      const a = Date.parse(left.dueAt)
+      const b = Date.parse(right.dueAt)
+      if (!Number.isFinite(a)) return 1
+      if (!Number.isFinite(b)) return -1
+      return a - b
+    })
   }
 
   due(now = new Date()): Reminder[] {
-    return (this.db.prepare(
-      "SELECT * FROM reminders WHERE status = 'pending' AND due_at <= ? ORDER BY due_at ASC LIMIT 20",
-    ).all(localIso(now)) as Row[]).map(toReminder)
+    const rows = (this.db.prepare(
+      "SELECT * FROM reminders WHERE status = 'pending'",
+    ).all() as Row[]).map(toReminder)
+    const nowMs = now.getTime()
+    return rows
+      .filter(item => {
+        const due = Date.parse(item.dueAt)
+        return Number.isFinite(due) && due <= nowMs
+      })
+      .sort((left, right) => Date.parse(left.dueAt) - Date.parse(right.dueAt))
+      .slice(0, 20)
   }
 
   markNotified(id: string): Reminder | null {

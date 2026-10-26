@@ -76,9 +76,11 @@ test('cancel prevents speech generated for a stopped turn from being emitted', a
     const pending = conversation.handleText('我们聊聊明天的安排', { voice: true, skipAttention: true })
     await sleep(12)
     conversation.cancel()
+    conversation.cancel()
     const result = await pending
     assert.equal(result.cancelled, true)
-    assert.equal(cancelledEvents, 1)
+    assert.equal(cancelledEvents, 1, 'a repeated cancel must not emit a second cancelled event')
+    assert.equal(bus.history(50).filter(event => event.type === 'assistant.done').length, 0)
     await sleep(50)
     assert.equal(audioEvents, 0, 'audio from a cancelled turn must not reach the client')
   } finally {

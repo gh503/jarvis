@@ -133,6 +133,23 @@ export class FasterWhisperTranscriber implements Transcriber {
       child.stderr.on('data', chunk => {
         this.options.logger?.debug('asr worker stderr', { chunk: String(chunk).trim().slice(0, 500) })
       })
+      const workerFailure = (error: Error): void => {
+        if (this.stopped) return
+        if (this.child === child) this.child = null
+        this.ready = null
+        this.workerState = { state: 'error', error: error.message }
+        fail(error)
+        for (const pending of this.pending.values()) {
+          clearTimeout(pending.timer)
+          pending.reject(error)
+        }
+        this.pending.clear()
+      }
+      // Python can die between the readiness handshake and the next write.
+      // Without these listeners a closed stdin/stdout turns into an uncaught
+      // EPIPE and takes the whole assistant down.
+      child.stdin.on('error', error => workerFailure(new Error(`ASR stdin failed: ${error.message}`)))
+      child.stdout.on('error', error => workerFailure(new Error(`ASR stdout failed: ${error.message}`)))
       child.on('error', error => {
         clearTimeout(timer)
         this.workerState = { state: 'error', error: error.message }
@@ -204,8 +221,16 @@ export class FasterWhisperTranscriber implements Transcriber {
       const header = Buffer.alloc(8)
       header.writeUInt32BE(id, 0)
       header.writeUInt32BE(wav.byteLength, 4)
-      child.stdin.write(header)
-      child.stdin.write(wav)
+      try {
+        child.stdin.write(header)
+        child.stdin.write(wav)
+      } catch (error) {
+        const pending = this.pending.get(id)
+        if (pending) clearTimeout(pending.timer)
+        this.pending.delete(id)
+        reject(error instanceof Error ? error : new Error(String(error)))
+        this.restart()
+      }
     })
   }
 
@@ -221,7 +246,7 @@ export class FasterWhisperTranscriber implements Transcriber {
     this.stopped = true
     this.workerState = { state: 'idle' }
     this.lines?.close()
-    this.child?.stdin.end()
+    try { this.child?.stdin.end() } catch { /* already closed */ }
     this.child?.kill('SIGTERM')
     this.child = null
     this.ready = null
