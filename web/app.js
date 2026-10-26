@@ -1802,6 +1802,20 @@ function bindAddProvider() {
   })
 }
 
+async function loadScenarioOptions() {
+  if (state.modelSettings?.scenarios?.length) {
+    renderScenarioSelect()
+    return
+  }
+  try {
+    const data = await api('/api/model')
+    if (!state.modelSettings?.scenarios?.length) state.modelSettings = data.settings
+    renderScenarioSelect()
+  } catch {
+    // Keep the auto-only selector; settings can still be opened manually.
+  }
+}
+
 function renderScenarioSelect() {
   const select = $('#scenario-select')
   if (!select) return
@@ -2574,6 +2588,7 @@ async function main() {
   tickClock()
   setInterval(tickClock, 15000)
   await bootstrap()
+  void loadScenarioOptions()
   maybeOnboarding()
   // The Whisper worker warms up in the background. Poll a few times so the
   // "加载中" state clears promptly instead of waiting for the 30 s status poll.

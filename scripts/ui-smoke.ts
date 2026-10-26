@@ -108,6 +108,10 @@ async function main(): Promise<void> {
     check((await cdp.evaluate<string>('document.title')).includes('Jarvis'), 'home: title')
     check(await cdp.evaluate<boolean>("Boolean(document.querySelector('#input') && document.querySelector('#mic-btn'))"), 'home: composer and mic')
     check(await cdp.evaluate<boolean>('document.documentElement.scrollWidth <= window.innerWidth + 1'), 'home: no horizontal overflow')
+    // Regression: the composer scenario selector must be populated at boot,
+    // not only after the settings modal has been opened once.
+    await sleep(1200)
+    check(await cdp.evaluate<boolean>("document.querySelectorAll('#scenario-select option').length > 1"), 'home: scenario selector populated before opening settings')
 
     await cdp.evaluate("document.querySelector('#settings-btn').click()")
     await sleep(900)
