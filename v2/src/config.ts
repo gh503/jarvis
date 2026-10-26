@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
+import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { dirname, isAbsolute, join, resolve } from 'node:path'
 import { randomBytes } from 'node:crypto'
@@ -190,16 +190,19 @@ export function ensureRuntimeDirs(config: JarvisConfig): void {
     join(config.dataDir, 'captures'),
   ]) {
     mkdirSync(dir, { recursive: true, mode: 0o700 })
+    try { chmodSync(dir, 0o700) } catch { /* best effort on exotic filesystems */ }
   }
   const tokenFile = join(config.dataDir, 'auth-token')
   if (!config.authToken && existsSync(tokenFile)) {
     config.authToken = readFileSync(tokenFile, 'utf8').trim()
+    try { chmodSync(tokenFile, 0o600) } catch { /* best effort */ }
   }
   if (!config.authToken) {
     // A loopback-only server does not need a token. Generate one anyway so a
     // later switch to a private host is fail-closed rather than open.
     const token = randomBytes(24).toString('base64url')
     writeFileSync(tokenFile, `${token}\n`, { mode: 0o600 })
+    try { chmodSync(tokenFile, 0o600) } catch { /* best effort */ }
     config.authToken = token
   }
 }

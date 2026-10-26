@@ -58,6 +58,7 @@ try {
   const stamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19)
   const safety = `${dataDir}.pre-restore-${stamp}`
   await runProcess('mkdir', ['-p', dataDir, join(safety)], { timeoutMs: 10_000 })
+  await chmod(safety, 0o700).catch(() => undefined)
   for (const name of ['jarvis.db', 'jarvis.db-wal', 'jarvis.db-shm', 'tuning.json', 'model-config.json']) {
     if (existsSync(join(dataDir, name))) await copyFile(join(dataDir, name), join(safety, name)).catch(() => undefined)
   }

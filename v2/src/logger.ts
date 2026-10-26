@@ -1,4 +1,4 @@
-import { appendFileSync, mkdirSync } from 'node:fs'
+import { appendFileSync, chmodSync, mkdirSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 
 export type LogLevel = 'debug' | 'info' | 'warn' | 'error'
@@ -28,7 +28,10 @@ function redact(meta: Record<string, unknown>): Record<string, unknown> {
 }
 
 export function createLogger(level: LogLevel = 'info', file?: string): Logger {
-  if (file) mkdirSync(dirname(file), { recursive: true, mode: 0o700 })
+  if (file) {
+    mkdirSync(dirname(file), { recursive: true, mode: 0o700 })
+    try { chmodSync(file, 0o600) } catch { /* created on first append */ }
+  }
   const threshold = LEVELS[level] ?? LEVELS.info
 
   function write(scope: string, lineLevel: LogLevel, message: string, meta?: Record<string, unknown>): void {

@@ -28,17 +28,24 @@ export class SecureFiles {
     }
     mkdirSync(dirname(path), { recursive: true })
     const key = randomBytes(KEY_BYTES)
-    writeFileSync(path, key, { mode: 0o600 })
-    chmodSync(path, 0o600)
+    this.writeKey(key)
     this.key = key
+  }
+
+  private writeKey(key: Buffer): void {
+    const path = `${this.dataDir}/secret.key`
+    const temp = `${path}.${process.pid}.tmp`
+    writeFileSync(temp, key, { mode: 0o600 })
+    chmodSync(temp, 0o600)
+    renameSync(temp, path)
+    chmodSync(path, 0o600)
   }
 
   /** Rotate after an erase so any surviving ciphertext is no longer decryptable. */
   rotate(): void {
-    this.key = randomBytes(KEY_BYTES)
-    const path = `${this.dataDir}/secret.key`
-    writeFileSync(path, this.key, { mode: 0o600 })
-    chmodSync(path, 0o600)
+    const key = randomBytes(KEY_BYTES)
+    this.writeKey(key)
+    this.key = key
   }
 
   encryptDirectory(directory: string): void {

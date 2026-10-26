@@ -233,6 +233,7 @@ export class TuningStore {
     if (this.loaded) return this.current()
     this.loaded = true
     try {
+      await chmod(this.file, 0o600).catch(() => undefined)
       const raw = JSON.parse(await readFile(this.file, 'utf8')) as { values?: Record<string, unknown> }
       if (raw.values && typeof raw.values === 'object') {
         for (const param of allParams(this.groups)) {

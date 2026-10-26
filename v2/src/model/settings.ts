@@ -116,6 +116,7 @@ export class ModelSettingsStore {
     if (this.loaded) return this.loaded
     let saved: Partial<ModelSettings> = {}
     try {
+      await chmod(this.file, 0o600).catch(() => undefined)
       saved = JSON.parse(await readFile(this.file, 'utf8')) as Partial<ModelSettings>
     } catch {
       // First run, or an unreadable file: start from safe defaults.
