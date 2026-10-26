@@ -1,0 +1,211 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#0b0f14">
+  <meta name="description" content="Jarvis — 本地优先的私人 AI 助手">
+  <title>Jarvis</title>
+  <link rel="manifest" href="/manifest.webmanifest">
+  <link rel="icon" href="/icons/jarvis.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+  <div class="ambient ambient-a" aria-hidden="true"></div>
+  <div class="ambient ambient-b" aria-hidden="true"></div>
+
+  <div class="app-shell">
+    <header class="topbar">
+      <div class="brand">
+        <span class="brand-mark" aria-hidden="true">J</span>
+        <div class="brand-copy">
+          <strong>JARVIS</strong>
+          <span>local-first assistant</span>
+        </div>
+      </div>
+      <div class="topbar-center">
+        <span class="connection-pill" id="connection-pill">
+          <i class="dot" id="connection-dot"></i>
+          <span id="connection-label">连接中</span>
+        </span>
+        <span class="model-pill" id="model-pill">本地模型</span>
+      </div>
+      <div class="topbar-actions">
+        <span class="clock" id="clock">--:--</span>
+        <button class="icon-btn" id="focus-btn" type="button" title="专注模式" aria-label="切换专注模式" aria-pressed="false">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3a9 9 0 1 0 9 9h-2a7 7 0 1 1-7-7V3Zm1 2v6l4 2-1 1.7-5-2.7V5h2Z"/></svg>
+        </button>
+        <button class="icon-btn" id="settings-btn" type="button" title="设置" aria-label="打开设置">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M19.4 13a7.6 7.6 0 0 0 .05-1 7.6 7.6 0 0 0-.05-1l2.1-1.6-2-3.4-2.5 1a7.5 7.5 0 0 0-1.7-1L15 3h-4l-.3 2.9a7.5 7.5 0 0 0-1.7 1l-2.5-1-2 3.4L6.6 11a7.6 7.6 0 0 0 0 2l-2.1 1.6 2 3.4 2.5-1a7.5 7.5 0 0 0 1.7 1L11 21h4l.3-2.9a7.5 7.5 0 0 0 1.7-1l2.5 1 2-3.4-2.1-1.7ZM13 15.5a3.5 3.5 0 1 1 0-7 3.5 3.5 0 0 1 0 7Z"/></svg>
+        </button>
+      </div>
+    </header>
+
+    <main class="layout">
+      <aside class="presence-panel">
+        <div class="orb-wrap">
+          <div class="orb-ring" aria-hidden="true"></div>
+          <button class="orb" id="orb" type="button" aria-label="按下说话">
+            <span class="orb-core"></span>
+            <span class="orb-scan"></span>
+          </button>
+          <span class="orb-level" id="orb-level" aria-hidden="true"></span>
+        </div>
+        <p class="state-label" id="state-label">待命</p>
+        <p class="state-hint" id="state-hint">说“看下这个”，或按住下方麦克风。</p>
+
+        <div class="quick-actions" role="group" aria-label="快捷动作">
+          <button class="quick" data-action="screen" type="button">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 5h18v12H3V5Zm2 2v8h14V7H5Zm4 12h6v2H9v-2Z"/></svg>
+            <span>看屏幕</span>
+          </button>
+          <button class="quick" data-action="camera" type="button">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h3l1.5-2h7L17 7h3v12H4V7Zm8 3.2A3.8 3.8 0 1 0 12 18a3.8 3.8 0 0 0 0-7.6Zm0 2a1.8 1.8 0 1 1 0 3.6 1.8 1.8 0 0 1 0-3.6Z"/></svg>
+            <span>看摄像头</span>
+          </button>
+          <button class="quick" data-action="remember" type="button">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3a7 7 0 0 0-7 7c0 2.2 1 4.1 2.6 5.4V19h2.2v2h4.4v-2h2.2v-3.6A7 7 0 0 0 12 3Zm-2 6h4v2h-4V9Z"/></svg>
+            <span>记住</span>
+          </button>
+        </div>
+
+        <div class="mini-stats">
+          <div><strong id="memory-count">0</strong><span>条记忆</span></div>
+          <div><strong id="reminder-count">0</strong><span>个提醒</span></div>
+          <div><strong id="latency">--</strong><span>延迟</span></div>
+        </div>
+
+        <div class="privacy-note">
+          <span class="privacy-dot" aria-hidden="true"></span>
+          <p>默认只在本机处理。摄像头和屏幕按需开启，采集前会显示状态。</p>
+        </div>
+      </aside>
+
+      <section class="conversation-panel" aria-label="对话">
+        <div class="transcript" id="transcript" aria-live="polite">
+          <div class="empty-state" id="empty-state">
+            <p class="eyebrow">PERSONAL CONTEXT ENGINE</p>
+            <h1>不用解释太多。<br>我在看，也在记。</h1>
+            <p class="empty-copy">直接说话，或打字。需要看屏幕 / 摄像头时，我会先让你知道。</p>
+            <div class="prompt-chips">
+              <button type="button" data-prompt="帮我看看当前屏幕，告诉我最值得注意的一件事。">看下屏幕</button>
+              <button type="button" data-prompt="记住：我每周三晚上要整理项目进度。">记住一件事</button>
+              <button type="button" data-prompt="提醒我明天上午 9 点开周会。">设个提醒</button>
+              <button type="button" data-prompt="根据你记得的，帮我安排今天最重要的一件事。">帮我安排</button>
+            </div>
+          </div>
+        </div>
+
+        <div class="capture-strip" id="capture-strip" hidden>
+          <div class="capture-preview">
+            <img id="capture-image" alt="刚捕获的画面">
+            <div class="capture-meta">
+              <strong id="capture-title">刚看了一眼</strong>
+              <span id="capture-detail"></span>
+            </div>
+            <button class="icon-btn small" id="capture-close" type="button" aria-label="关闭画面">
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6 6 12 12M18 6 6 18"/></svg>
+            </button>
+          </div>
+        </div>
+
+        <div class="composer-wrap">
+          <div class="composer" id="composer">
+            <textarea id="input" rows="1" placeholder="说点什么…  Enter 发送，Shift+Enter 换行" aria-label="输入消息"></textarea>
+            <div class="composer-actions">
+              <button class="icon-btn" id="stop-btn" type="button" title="停止" aria-label="停止当前回答" hidden>
+                <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="7" y="7" width="10" height="10" rx="1"/></svg>
+              </button>
+              <button class="icon-btn" id="mute-btn" type="button" title="语音播报" aria-label="切换语音播报" aria-pressed="false">
+                <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 9v6h4l5 4V5L8 9H4Zm12.5 3a4.5 4.5 0 0 0-2.2-3.9v7.8a4.5 4.5 0 0 0 2.2-3.9Z"/></svg>
+              </button>
+              <button class="send-btn" id="send-btn" type="button" aria-label="发送">
+                <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m3 11 18-8-8 18-2.5-7.5L3 11Z"/></svg>
+              </button>
+            </div>
+          </div>
+          <div class="composer-meta">
+            <button class="mic-btn" id="mic-btn" type="button" aria-label="按住说话">
+              <span class="mic-ring" aria-hidden="true"></span>
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3a3 3 0 0 0-3 3v6a3 3 0 0 0 6 0V6a3 3 0 0 0-3-3Zm-6 9a6 6 0 0 0 5 5.9V21h2v-3.1A6 6 0 0 0 18 12h-2a4 4 0 0 1-8 0H6Z"/></svg>
+              <span id="mic-label">按住说话</span>
+            </button>
+            <span class="hint" id="hint">本地推理 · 默认不录屏</span>
+          </div>
+        </div>
+      </section>
+
+      <aside class="side-panel" aria-label="记忆与提醒">
+        <div class="side-tabs" role="tablist">
+          <button class="side-tab active" data-tab="memory" role="tab" aria-selected="true" type="button">记忆</button>
+          <button class="side-tab" data-tab="reminders" role="tab" aria-selected="false" type="button">提醒</button>
+          <button class="side-tab" data-tab="runtime" role="tab" aria-selected="false" type="button">运行</button>
+        </div>
+
+        <section class="side-content active" data-panel="memory">
+          <div class="side-head">
+            <div>
+              <h2>长期记忆</h2>
+              <p>只有确认过的才会进入回答上下文。</p>
+            </div>
+            <button class="text-btn" id="memory-refresh" type="button">刷新</button>
+          </div>
+          <div class="search-row">
+            <input id="memory-search" type="search" placeholder="搜索记忆…" aria-label="搜索记忆">
+          </div>
+          <div class="memory-list" id="memory-list"></div>
+        </section>
+
+        <section class="side-content" data-panel="reminders" hidden>
+          <div class="side-head">
+            <div>
+              <h2>提醒</h2>
+              <p>到点先判断是否适合打断你。</p>
+            </div>
+            <button class="text-btn" id="reminder-refresh" type="button">刷新</button>
+          </div>
+          <div class="memory-list" id="reminder-list"></div>
+        </section>
+
+        <section class="side-content" data-panel="runtime" hidden>
+          <div class="side-head">
+            <div>
+              <h2>运行状态</h2>
+              <p>数据留在本机；远端访问必须显式开启。</p>
+            </div>
+          </div>
+          <dl class="runtime-grid" id="runtime-grid"></dl>
+          <div class="runtime-block">
+            <h3>隐私边界</h3>
+            <p>屏幕通过系统门户按次授权；摄像头单帧读取；敏感记忆不会进入模型上下文。你可以随时删除任何一条记忆。</p>
+          </div>
+          <div class="runtime-block">
+            <h3>快捷键</h3>
+            <p><kbd>Enter</kbd> 发送 · <kbd>Shift</kbd>+<kbd>Enter</kbd> 换行 · 按住麦克风说话</p>
+          </div>
+        </section>
+      </aside>
+    </main>
+  </div>
+
+  <div class="modal-backdrop" id="modal" hidden>
+    <div class="modal" role="dialog" aria-modal="true" aria-labelledby="modal-title">
+      <div class="modal-head">
+        <h2 id="modal-title">设置</h2>
+        <button class="icon-btn" id="modal-close" type="button" aria-label="关闭">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6 6 12 12M18 6 6 18"/></svg>
+        </button>
+      </div>
+      <div class="modal-body" id="modal-body"></div>
+    </div>
+  </div>
+
+  <div class="lightbox" id="lightbox" hidden>
+    <button class="lightbox-close" id="lightbox-close" type="button" aria-label="关闭大图">×</button>
+    <img id="lightbox-image" alt="捕获画面大图">
+  </div>
+
+  <audio id="player" preload="none"></audio>
+  <script type="module" src="/app.js"></script>
+</body>
+</html>

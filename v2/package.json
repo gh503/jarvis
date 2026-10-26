@@ -1,0 +1,29 @@
+{
+  "name": "jarvis-v2",
+  "version": "2.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Local-first ambient Jarvis: attention, voice, senses and memory",
+  "engines": {
+    "node": ">=24"
+  },
+  "scripts": {
+    "start": "node --experimental-transform-types --enable-source-maps src/main.ts",
+    "dev": "node --watch --experimental-transform-types src/main.ts",
+    "test": "node --experimental-transform-types --test test/*.test.ts",
+    "typecheck": "tsc --noEmit",
+    "doctor": "node --experimental-transform-types src/doctor.ts",
+    "setup": "bash scripts/setup-models.sh",
+    "migrate-v1": "node --experimental-transform-types src/cli.ts migrate-v1",
+    "memory": "node --experimental-transform-types src/cli.ts memory",
+    "acceptance": "bash scripts/acceptance.sh"
+  },
+  "dependencies": {
+    "ws": "8.21.3"
+  },
+  "devDependencies": {
+    "@types/node": "24.13.3",
+    "@types/ws": "8.18.1",
+    "typescript": "5.9.3"
+  }
+}

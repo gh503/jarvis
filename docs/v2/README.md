@@ -1,6 +1,6 @@
 # Jarvis v2 — 重新设计基线
 
-- Status: **accepted baseline for v2; implementation not started**
+- Status: **v2 baseline accepted; a working vertical slice is implemented under `v2/`**
 - Branch: `feat/jarvis-v2`
 - Date: 2026-10-26
 - Supersedes for v2: [`docs/plan/architecture.md`](../plan/architecture.md) (retained as v1 history)
@@ -33,7 +33,9 @@ v2 不再从“给 agent 加一个聊天窗口”出发，而是从下面这个�
 | [jarvis-design.md](jarvis-design.md) | 产品形态、注意力管理器、实时语音、感官、架构、客户端、里程碑 | Baseline |
 | [memory-design.md](memory-design.md) | 记忆类型、写入、检索、巩固、遗忘、隐私、评测、迁移 | Baseline |
 | [decision-register.md](decision-register.md) | 已固定的决策、理由、影响 | Accepted |
-| [implementation-plan.md](implementation-plan.md) | v2 的实现切片与验收顺序 | Draft；开发前冻结 |
+| [implementation-plan.md](implementation-plan.md) | v2 的实现切片与验收顺序 | Draft；已按纵向切片推进 |
+| [implementation-status.md](implementation-status.md) | 已实现 / 部分实现 / 缺口 / 验证方式 | Implemented baseline |
+| [operations.md](operations.md) | 安装、启动、远程、隐私、验收、故障排查 | Implemented baseline |
 
 ## v2 范围
 
@@ -81,7 +83,14 @@ v2 不再从“给 agent 加一个聊天窗口”出发，而是从下面这个�
 
 ## 下一步
 
-开发前先完成两件事：
+当前 `v2/` 已跑通“文字/语音 → 注意力 → 记忆 → 回答 → TTS”和“按需屏幕 OCR → 回答”：
 
-1. 评审并冻结 [jarvis-design.md](jarvis-design.md) 与 [memory-design.md](memory-design.md)。
-2. 按 [implementation-plan.md](implementation-plan.md) 的 M0–M2 切片，先做“能跑通的一条纵向链路”，再扩展感官和主动性。
+```bash
+cd v2
+npm run setup   # 用户目录安装模型/依赖
+npm start       # http://127.0.0.1:3081
+npm test
+npm run doctor
+```
+
+下一步按 [implementation-status.md](implementation-status.md) §4 的收益排序推进：真实 Portal 验收、手机 PWA 真机、记忆评测、工具执行。

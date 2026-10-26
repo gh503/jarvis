@@ -1,6 +1,6 @@
 # Jarvis v2 — 实现计划
 
-- Status: Draft；设计评审后冻结
+- Status: In progress；实施进度与证据见 [implementation-status.md](implementation-status.md)
 - Date: 2026-10-26
 - Related: [jarvis-design.md](jarvis-design.md), [memory-design.md](memory-design.md)
 

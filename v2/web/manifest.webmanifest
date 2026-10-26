@@ -1,0 +1,17 @@
+{
+  "name": "Jarvis",
+  "short_name": "Jarvis",
+  "description": "本地优先的私人 AI 助手",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#080b0f",
+  "theme_color": "#080b0f",
+  "icons": [
+    {
+      "src": "/icons/jarvis.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any"
+    }
+  ]
+}

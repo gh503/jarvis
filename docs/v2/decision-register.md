@@ -24,6 +24,13 @@
 | D-016 | **高风险动作不因“主动/定时”获得额外授权。** | 主动性不能成为绕过审批的通道。 | 付款、开门、删除大批文件、凭证操作默认禁止或强制确认。 |
 | D-017 | **v2 不整体复用 v1 运行时；只复用通过评审的局部能力。** | v1 是 Mac/文字 MVP，产品边界不同；整体复用会继承错误假设。 | 审批/审计/设备身份/恢复可评估复用；核心重写。 |
 | D-018 | **评测必须包含弃权、知识更新、冲突、隐私四类。** | 只测 recall@k 会奖励“编造”和“记旧事”。 | 个人基准 150–200 题；不达标不扩功能。 |
+| D-019 | **v2 运行时用 TypeScript / Node 24 模块化单体；UI 用无框架 Web/PWA，Linux 桌面用 Chrome `--app` 壳。** | 当前机器已有 Node 24、v1 的 TS 经验和浏览器；原生类型剥离避免 build step，最快到达可体验的 Linux 助手。Rust/Tauri 保留为后续可选壳/性能 sidecar。 | 核心进程一个；UI 直接消费 HTTP/WS；不引入 Electron/Tauri 构建链；性能瓶颈出现再换壳。 |
+| D-020 | **本地模型基线：`qwen2.5:3b` + `nomic-embed-text` + faster-whisper `tiny` + Piper `zh_CN-huayan-medium`；`qwen2.5vl:3b` 仅作可选视觉。** | 在 i5-7300HQ / 4 GB VRAM 实测：3B LLM + nomic 可 100% GPU，热回答 <1 s；qwen3-embedding 会挤爆显存导致 75 s。tiny ASR 热路径 ~2 s；Piper 中文可用。 | 视觉模型不进入实时主路径；换模型必须重跑延迟/隐私验收；模型全部本地。 |
+| D-021 | **屏幕理解 OCR-first：先 RapidOCR 本地读文字，再用 LLM 回答；只有显式“用视觉看屏幕”或摄像头无文字时才调用 VLM。** | 这台机器 qwen2.5vl 3B 单帧 40–150 s，不能支撑“实时看屏幕”；OCR 4–8 s，且对办公文本更忠实、可引用。 | VLM 是可选慢路径；OCR 空结果不静默调用 VLM；回答明确说明是否只基于 OCR。 |
+| D-022 | **屏幕只走 XDG Desktop Portal 单次授权；Portal 明确拒绝时禁止 X11 绕过。** | 隐私承诺必须强于便利；绕过授权会让“按需感知”变成谎言。X11 仅在 portal 不可用/超时时作为兼容回退。 | 原生 Wayland 窗口标题不可得，窗口黑名单是尽力而为；portal 授权是实际强制点。 |
+| D-023 | **远程第一版是 TLS + Bearer/Cookie 令牌的 PWA/WebSocket，不做 WebRTC。** | 手机文字/语音入口已能覆盖大部分远程需求；WebRTC 的 NAT/权限/回声复杂度高，先不引入。 | 手机摄像头/麦克风作为远端输入留到后续；远程必须同时配置 TLS 与 ≥24 字符令牌。 |
+| D-024 | **记忆主存用 Node 24 内置 `node:sqlite`（WAL + FTS5 trigram），不引入 sqlite-vec/LanceDB。** | 单用户、万级条目；SQLite 事务/迁移/备份最简单；向量用 BLOB + 进程内 cosine，避免额外服务。 | 向量扫描上限 5000 条；超过后需要 ANN 或分片；FTS 短中文查询用 LIKE 回退。 |
+| D-025 | **默认静默 + 按住说话；不做唤醒词常听、不做持续 VAD。** | 当前 CPU/隐私预算下，常听麦克风收益不抵风险；PTT 已能验证完整语音闭环。 | 唤醒词/VAD 必须单独立项并重新评估 CPU、误唤醒、隐私指示。 |
 
 ## 变更流程
 
@@ -34,11 +41,11 @@
 
 ## 待定（Open）
 
-以下不阻塞 M0–M2，但实现前必须补 decision：
+以下不阻塞当前纵向链路，但扩功能前必须补 decision：
 
-- 桌面 UI：Tauri vs egui。
-- 本地 ASR/TTS/embedding 具体模型。
-- 向量索引：sqlite-vec vs LanceDB。
-- 静态加密：SQLCipher vs 应用层。
-- 手机第一阶段：PWA vs React Native。
-- 唤醒词常听是否默认开启。
+- 桌面壳是否迁移到 Tauri（当前 Chrome `--app` 已可用）。
+- 本地静态加密：SQLCipher vs 应用层字段加密。
+- 视觉模型替换（目标：4 GB 显存内全 GPU、中文可用）。
+- 手机端 WebRTC 与设备配对/撤销。
+- 唤醒词与 VAD 的默认开关和误唤醒预算。
+- 工具执行（文件/浏览器/日历）的审批与回滚模型。

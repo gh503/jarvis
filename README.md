@@ -3,8 +3,11 @@
 [![CI](https://github.com/gh503/jarvis/actions/workflows/ci.yml/badge.svg)](https://github.com/gh503/jarvis/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
-> **v2 redesign in progress (`feat/jarvis-v2`)**
-> 产品与记忆设计已固化在 [docs/v2](docs/v2/README.md)。v2 是“有感官、有记忆、知道何时不打扰”的常驻助手，不再以文字聊天窗口为中心。下方 v1 Mac MVP 说明保留为历史；v2 实现尚未开始。
+> **v2 已在 `feat/jarvis-v2` 跑通纵向链路**
+> 本地文字/语音对话、按需屏幕 OCR、单帧摄像头、SQLite 记忆、提醒与桌面 Web UI。
+> 运行说明见 [docs/v2/operations.md](docs/v2/operations.md)，状态见
+> [docs/v2/implementation-status.md](docs/v2/implementation-status.md)。
+> 下方 v1 Mac MVP 说明保留为历史。
 
 一个仅在本机运行的个人 Jarvis 原型，使用 DeepSeek Harness 提供对话、会话持久化和人工审批界面。
 
@@ -12,7 +15,9 @@
 
 当前版本是 `v0.1.0` Mac MVP。项目通过 [Jarvis Roadmap](https://github.com/users/gh503/projects/6) 跟踪执行，通过 [Milestones](https://github.com/gh503/jarvis/milestones) 管理阶段出口，通过 [Issues](https://github.com/gh503/jarvis/issues) 定义可验收工作。
 
-- [总体架构](docs/plan/architecture.md)
+- [v2 运行与隐私](docs/v2/operations.md)
+- [v2 实现状态](docs/v2/implementation-status.md)
+- [总体架构（v1，已由 v2 取代）](docs/plan/architecture.md)
 - [开发旅程与里程碑](docs/plan/00-development-journey.md)
 - [完整阶段计划](docs/plan/README.md)
 - [备份与恢复](docs/operations/backup-restore.md)

@@ -1,0 +1,739 @@
+import { DatabaseSync } from 'node:sqlite'
+import { randomUUID } from 'node:crypto'
+import { readFileSync } from 'node:fs'
+import type { Logger } from '../logger.ts'
+import type { EventBus } from '../events.ts'
+import { NullEmbedder, cosineSimilarity, decodeEmbedding, encodeEmbedding } from './embedding.ts'
+import {
+  classifyQuery,
+  confidenceFrom,
+  filterActive,
+  renderMemoryContext,
+  toRecalled,
+} from './recall.ts'
+import type {
+  ConsolidationStats,
+  Embedder,
+  Episode,
+  EpisodeInput,
+  MemoryInput,
+  MemoryItem,
+  MemoryKind,
+  MemorySensitivity,
+  MemoryStats,
+  MemoryStatus,
+  RecallOptions,
+  RecallResult,
+  RecalledMemory,
+} from './types.ts'
+import { emptyImportance, importanceScore, isActive, normalizeImportance } from './types.ts'
+
+const MAX_VECTOR_SCAN = 5000
+const MAX_LIST = 200
+// Cosine similarity for unrelated Chinese sentences often sits around 0.2.
+// Treating that as relevant pollutes the model's context; abstain instead.
+const MIN_VECTOR_SIMILARITY = 0.32
+
+const QUERY_STOP_CHARS = new Set([...'我你他她它的了吗呢吧啊是在有和就都这那哪个什么怎么', ' ', '\n', '\t', '？', '?', '。', '.', '，', ',', '！', '!'])
+
+function lexicallyRelated(query: string, item: MemoryItem): boolean {
+  const haystack = `${item.content} ${item.gist}`
+  const chars = [...query].filter(char => !QUERY_STOP_CHARS.has(char))
+  if (chars.length === 0) return false
+  const overlap = chars.filter(char => haystack.includes(char)).length
+  return overlap / chars.length >= 0.34
+}
+
+export interface MemoryStoreOptions {
+  file: string
+  embedder?: Embedder
+  now?: () => Date
+  logger?: Logger
+  bus?: EventBus
+}
+
+interface Row {
+  [key: string]: unknown
+}
+
+function text(value: unknown, fallback = ''): string {
+  return typeof value === 'string' ? value : fallback
+}
+
+function num(value: unknown, fallback = 0): number {
+  return typeof value === 'number' && Number.isFinite(value) ? value : fallback
+}
+
+function bool(value: unknown): boolean {
+  return value === 1 || value === true || value === '1'
+}
+
+function normalizeContent(value: string): string {
+  return value.replace(/\s+/g, ' ').trim()
+}
+
+function gistOf(content: string, gist?: string): string {
+  const clean = normalizeContent(gist ?? '')
+  if (clean) return clean.slice(0, 240)
+  return content.length <= 120 ? content : `${content.slice(0, 118)}…`
+}
+
+function statusForSource(source: MemoryInput['sourceKind']): MemoryStatus {
+  if (source === 'inferred' || source === 'external') return 'proposed'
+  return 'confirmed'
+}
+
+function trustForSource(source: MemoryInput['sourceKind']): MemoryInput['trust'] {
+  switch (source) {
+    case 'user-confirmed':
+      return 'authoritative'
+    case 'user-stated':
+    case 'system-observed':
+    case 'v1-import':
+      return 'high'
+    case 'inferred':
+    case 'external':
+      return 'low'
+  }
+}
+
+export class MemoryStore {
+  private readonly db: DatabaseSync
+  private readonly embedder: Embedder
+  private readonly now: () => Date
+  private readonly logger?: Logger
+  private readonly bus?: EventBus
+
+  constructor(options: MemoryStoreOptions) {
+    this.db = new DatabaseSync(options.file)
+    this.embedder = options.embedder ?? new NullEmbedder()
+    this.now = options.now ?? (() => new Date())
+    this.logger = options.logger
+    this.bus = options.bus
+    this.migrate()
+  }
+
+  private migrate(): void {
+    this.db.exec(`
+      PRAGMA journal_mode = WAL;
+      PRAGMA foreign_keys = ON;
+      PRAGMA busy_timeout = 5000;
+
+      CREATE TABLE IF NOT EXISTS memory_items (
+        id TEXT PRIMARY KEY,
+        owner_id TEXT NOT NULL,
+        kind TEXT NOT NULL,
+        content TEXT NOT NULL,
+        gist TEXT NOT NULL,
+        source_kind TEXT NOT NULL,
+        source_ref TEXT NOT NULL,
+        source_span TEXT NOT NULL,
+        trust TEXT NOT NULL,
+        confidence REAL NOT NULL,
+        importance_goal REAL NOT NULL,
+        importance_novelty REAL NOT NULL,
+        importance_social REAL NOT NULL,
+        importance_repetition REAL NOT NULL,
+        importance_explicit REAL NOT NULL,
+        importance_deadline REAL NOT NULL,
+        sensitivity TEXT NOT NULL,
+        valid_from TEXT NOT NULL,
+        valid_to TEXT,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        last_used_at TEXT,
+        use_count INTEGER NOT NULL DEFAULT 0,
+        status TEXT NOT NULL,
+        supersedes_id TEXT,
+        pinned INTEGER NOT NULL DEFAULT 0,
+        retention TEXT NOT NULL,
+        expires_at TEXT,
+        embedding BLOB
+      );
+      CREATE INDEX IF NOT EXISTS idx_memory_status ON memory_items(status, valid_to);
+      CREATE INDEX IF NOT EXISTS idx_memory_kind ON memory_items(kind);
+      CREATE INDEX IF NOT EXISTS idx_memory_updated ON memory_items(updated_at DESC);
+      CREATE INDEX IF NOT EXISTS idx_memory_pinned ON memory_items(pinned, updated_at DESC);
+
+      CREATE TABLE IF NOT EXISTS memory_episodes (
+        id TEXT PRIMARY KEY,
+        started_at TEXT NOT NULL,
+        ended_at TEXT NOT NULL,
+        app TEXT NOT NULL DEFAULT '',
+        window TEXT NOT NULL DEFAULT '',
+        participants TEXT NOT NULL DEFAULT '[]',
+        summary TEXT NOT NULL,
+        source_ref TEXT NOT NULL,
+        sensitivity TEXT NOT NULL DEFAULT 'standard',
+        created_at TEXT NOT NULL
+      );
+      CREATE INDEX IF NOT EXISTS idx_episodes_started ON memory_episodes(started_at DESC);
+
+      CREATE TABLE IF NOT EXISTS memory_entities (
+        id TEXT PRIMARY KEY,
+        name TEXT NOT NULL UNIQUE,
+        kind TEXT NOT NULL DEFAULT 'topic',
+        created_at TEXT NOT NULL
+      );
+
+      CREATE TABLE IF NOT EXISTS memory_links (
+        from_id TEXT NOT NULL,
+        to_id TEXT NOT NULL,
+        relation TEXT NOT NULL,
+        weight REAL NOT NULL DEFAULT 1,
+        created_at TEXT NOT NULL,
+        PRIMARY KEY (from_id, to_id, relation)
+      );
+
+      CREATE TABLE IF NOT EXISTS memory_events (
+        id TEXT PRIMARY KEY,
+        memory_id TEXT NOT NULL,
+        action TEXT NOT NULL,
+        at TEXT NOT NULL,
+        detail TEXT NOT NULL DEFAULT ''
+      );
+      CREATE INDEX IF NOT EXISTS idx_memory_events_memory ON memory_events(memory_id, at DESC);
+
+      CREATE TABLE IF NOT EXISTS reminders (
+        id TEXT PRIMARY KEY,
+        text TEXT NOT NULL,
+        due_at TEXT NOT NULL,
+        status TEXT NOT NULL DEFAULT 'pending',
+        created_at TEXT NOT NULL,
+        notified_at TEXT,
+        completed_at TEXT
+      );
+      CREATE INDEX IF NOT EXISTS idx_reminders_due ON reminders(status, due_at);
+
+      CREATE VIRTUAL TABLE IF NOT EXISTS memory_fts USING fts5(
+        id UNINDEXED,
+        content,
+        gist,
+        tokenize='trigram'
+      );
+    `)
+  }
+
+  private at(): string {
+    return this.now().toISOString()
+  }
+
+  private event(memoryId: string, action: string, detail = ''): void {
+    this.db.prepare(
+      'INSERT INTO memory_events (id, memory_id, action, at, detail) VALUES (?, ?, ?, ?, ?)',
+    ).run(randomUUID(), memoryId, action, this.at(), detail)
+    this.bus?.emit('memory.event', { memoryId, action, detail })
+  }
+
+  private ftsUpsert(item: MemoryItem): void {
+    this.db.prepare('DELETE FROM memory_fts WHERE id = ?').run(item.id)
+    this.db.prepare('INSERT INTO memory_fts (id, content, gist) VALUES (?, ?, ?)').run(
+      item.id,
+      item.content,
+      item.gist,
+    )
+  }
+
+  async add(input: MemoryInput): Promise<MemoryItem> {
+    const content = normalizeContent(input.content)
+    if (!content) throw new Error('memory content cannot be empty')
+    if (content.length > 8000) throw new Error('memory content is too long')
+    const now = this.at()
+    const status = input.status ?? statusForSource(input.sourceKind)
+    const item: MemoryItem = {
+      id: input.id ?? randomUUID(),
+      ownerId: 'local-owner',
+      kind: input.kind,
+      content,
+      gist: gistOf(content, input.gist),
+      sourceKind: input.sourceKind,
+      sourceRef: input.sourceRef,
+      sourceSpan: input.sourceSpan ?? '',
+      trust: input.trust ?? trustForSource(input.sourceKind) ?? 'medium',
+      confidence: Math.max(0, Math.min(1, input.confidence ?? 0.8)),
+      importance: normalizeImportance(input.importance),
+      sensitivity: input.sensitivity ?? 'standard',
+      validFrom: input.validFrom ?? now,
+      validTo: input.validTo ?? null,
+      createdAt: now,
+      updatedAt: now,
+      lastUsedAt: null,
+      useCount: 0,
+      status,
+      supersedesId: input.supersedesId ?? null,
+      pinned: input.pinned ?? false,
+      retention: input.retention ?? 'until-deleted',
+      expiresAt: input.expiresAt ?? null,
+    }
+
+    let embedding: Float32Array | null = null
+    try {
+      embedding = await this.embedder.embed(`${item.gist}\n${item.content}`)
+    } catch (error) {
+      this.logger?.warn('embedding failed; storing without vector', { error: String(error) })
+    }
+    this.insertItem(item, embedding)
+    this.event(item.id, 'created', item.sourceKind)
+    this.bus?.emit('memory.added', { item })
+    return item
+  }
+
+  private insertItem(item: MemoryItem, embedding: Float32Array | null): void {
+    this.db.prepare(`
+      INSERT INTO memory_items (
+        id, owner_id, kind, content, gist, source_kind, source_ref, source_span, trust,
+        confidence, importance_goal, importance_novelty, importance_social,
+        importance_repetition, importance_explicit, importance_deadline, sensitivity,
+        valid_from, valid_to, created_at, updated_at, last_used_at, use_count, status,
+        supersedes_id, pinned, retention, expires_at, embedding
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(
+      item.id,
+      item.ownerId,
+      item.kind,
+      item.content,
+      item.gist,
+      item.sourceKind,
+      item.sourceRef,
+      item.sourceSpan,
+      item.trust,
+      item.confidence,
+      item.importance.goal,
+      item.importance.novelty,
+      item.importance.social,
+      item.importance.repetition,
+      item.importance.explicit,
+      item.importance.deadline,
+      item.sensitivity,
+      item.validFrom,
+      item.validTo,
+      item.createdAt,
+      item.updatedAt,
+      item.lastUsedAt,
+      item.useCount,
+      item.status,
+      item.supersedesId,
+      item.pinned ? 1 : 0,
+      item.retention,
+      item.expiresAt,
+      embedding ? encodeEmbedding(embedding) : null,
+    )
+    this.ftsUpsert(item)
+  }
+
+  private rowToItem(row: Row): MemoryItem {
+    return {
+      id: text(row.id),
+      ownerId: text(row.owner_id, 'local-owner'),
+      kind: text(row.kind, 'semantic') as MemoryKind,
+      content: text(row.content),
+      gist: text(row.gist),
+      sourceKind: text(row.source_kind, 'inferred') as MemoryItem['sourceKind'],
+      sourceRef: text(row.source_ref),
+      sourceSpan: text(row.source_span),
+      trust: text(row.trust, 'medium') as MemoryItem['trust'],
+      confidence: num(row.confidence, 0.5),
+      importance: normalizeImportance({
+        goal: num(row.importance_goal, 0.5),
+        novelty: num(row.importance_novelty, 0.5),
+        social: num(row.importance_social, 0.5),
+        repetition: num(row.importance_repetition, 0.5),
+        explicit: num(row.importance_explicit, 0.5),
+        deadline: num(row.importance_deadline, 0.5),
+      }),
+      sensitivity: text(row.sensitivity, 'standard') as MemorySensitivity,
+      validFrom: text(row.valid_from),
+      validTo: (row.valid_to as string | null) ?? null,
+      createdAt: text(row.created_at),
+      updatedAt: text(row.updated_at),
+      lastUsedAt: (row.last_used_at as string | null) ?? null,
+      useCount: num(row.use_count),
+      status: text(row.status, 'proposed') as MemoryStatus,
+      supersedesId: (row.supersedes_id as string | null) ?? null,
+      pinned: bool(row.pinned),
+      retention: text(row.retention, 'until-deleted') as MemoryItem['retention'],
+      expiresAt: (row.expires_at as string | null) ?? null,
+    }
+  }
+
+  private embeddingOf(row: Row): Float32Array | null {
+    return decodeEmbedding(row.embedding)
+  }
+
+  get(id: string): MemoryItem | null {
+    const row = this.db.prepare('SELECT * FROM memory_items WHERE id = ?').get(id) as Row | undefined
+    return row ? this.rowToItem(row) : null
+  }
+
+  list(options: { kind?: MemoryKind; includeSensitive?: boolean; limit?: number; includeInactive?: boolean } = {}): MemoryItem[] {
+    const limit = Math.max(1, Math.min(MAX_LIST, options.limit ?? 100))
+    const clauses: string[] = []
+    const params: Array<string | number> = []
+    if (!options.includeInactive) clauses.push("status IN ('confirmed','proposed')")
+    if (options.kind) {
+      clauses.push('kind = ?')
+      params.push(options.kind)
+    }
+    if (options.includeSensitive === false) {
+      clauses.push("sensitivity = 'standard'")
+    }
+    const where = clauses.length ? `WHERE ${clauses.join(' AND ')}` : ''
+    params.push(limit)
+    const rows = this.db.prepare(
+      `SELECT * FROM memory_items ${where} ORDER BY pinned DESC, updated_at DESC LIMIT ?`,
+    ).all(...params) as Row[]
+    return rows.map(row => this.rowToItem(row))
+  }
+
+  private searchFts(query: string, limit: number): Array<{ id: string; rank: number }> {
+    const clean = query.trim()
+    if (!clean) return []
+    const results = new Map<string, number>()
+    if (clean.length >= 3) {
+      try {
+        const phrase = `"${clean.replace(/"/g, '""')}"`
+        const rows = this.db.prepare(
+          'SELECT id, bm25(memory_fts) AS rank FROM memory_fts WHERE memory_fts MATCH ? ORDER BY rank LIMIT ?',
+        ).all(phrase, limit) as Row[]
+        for (const row of rows) results.set(text(row.id), Math.max(0, 0.5 - num(row.rank, 0) / 10))
+      } catch {
+        // Fall through to LIKE; a malformed FTS query must not break recall.
+      }
+    }
+    const like = `%${clean.replace(/[%_]/g, '\\$&')}%`
+    const rows = this.db.prepare(
+      "SELECT id FROM memory_items WHERE content LIKE ? ESCAPE '\\' OR gist LIKE ? ESCAPE '\\' ORDER BY pinned DESC, updated_at DESC LIMIT ?",
+    ).all(like, like, limit) as Row[]
+    for (const row of rows) {
+      const id = text(row.id)
+      if (!results.has(id)) results.set(id, 0.45)
+    }
+    return [...results.entries()]
+      .map(([id, rank]) => ({ id, rank }))
+      .sort((a, b) => b.rank - a.rank)
+      .slice(0, limit)
+  }
+
+  private activeRowsForVector(limit = MAX_VECTOR_SCAN): Row[] {
+    return this.db.prepare(
+      "SELECT * FROM memory_items WHERE status = 'confirmed' AND (valid_to IS NULL OR valid_to > ?) AND embedding IS NOT NULL ORDER BY pinned DESC, updated_at DESC LIMIT ?",
+    ).all(this.at(), limit) as Row[]
+  }
+
+  async recall(query: string, options: RecallOptions = {}): Promise<RecallResult> {
+    const now = options.now ?? this.now()
+    const queryType = classifyQuery(query)
+    const limit = Math.max(1, Math.min(20, options.limit ?? 6))
+    const candidates = new Map<string, { item: MemoryItem; semantic: number; why: string[] }>()
+
+    const fts = this.searchFts(query, Math.max(30, limit * 6))
+    for (const hit of fts) {
+      const item = this.get(hit.id)
+      if (item) candidates.set(item.id, { item, semantic: hit.rank, why: ['fts'] })
+    }
+
+    let queryVector: Float32Array | null = null
+    try {
+      queryVector = await this.embedder.embed(query)
+    } catch (error) {
+      this.logger?.warn('query embedding failed; using lexical recall', { error: String(error) })
+    }
+    if (queryVector) {
+      for (const row of this.activeRowsForVector()) {
+        const item = this.rowToItem(row)
+        if (item.sensitivity === 'secret' && !options.includeSensitive) continue
+        const vector = this.embeddingOf(row)
+        if (!vector) continue
+        const semantic = Math.max(0, cosineSimilarity(queryVector, vector))
+        if (semantic < MIN_VECTOR_SIMILARITY) continue
+        const existing = candidates.get(item.id)
+        if (existing) {
+          existing.semantic = Math.max(existing.semantic, semantic)
+          if (semantic > 0.3) existing.why.push('vector')
+        } else if (lexicallyRelated(query, item)) {
+          candidates.set(item.id, { item, semantic, why: ['vector'] })
+        }
+      }
+    }
+
+    const pool = filterActive([...candidates.values()].map(value => value.item), options, now)
+    if (pool.length === 0) {
+      return {
+        items: [],
+        confidence: 0,
+        why: ['no_candidate'],
+        missing: [`没有找到与“${query}”相关的记忆。`],
+        queryType,
+      }
+    }
+    const scored: RecalledMemory[] = []
+    for (const item of pool) {
+      const candidate = candidates.get(item.id)
+      const recalled = toRecalled(item, candidate?.semantic ?? 0.2, queryType, options, now)
+      if (candidate?.why.includes('fts') && !recalled.why.includes('fts')) recalled.why.push('fts')
+      scored.push(recalled)
+    }
+    scored.sort((a, b) => b.score - a.score || b.updatedAt.localeCompare(a.updatedAt))
+    const items = scored.slice(0, limit)
+    this.markUsed(items.map(item => item.id))
+
+    const confidence = confidenceFrom(items)
+    const why = items.flatMap(item => item.why)
+    const missing = items.length === 0 ? [`没有找到与“${query}”相关的记忆。`] : []
+    this.bus?.emit('memory.recalled', { query, queryType, ids: items.map(item => item.id), confidence })
+    return { items, confidence, why: [...new Set(why)], missing, queryType }
+  }
+
+  contextFor(items: RecalledMemory[], maxChars = 3000): string {
+    return renderMemoryContext(items, maxChars)
+  }
+
+  markUsed(ids: string[]): void {
+    if (ids.length === 0) return
+    const at = this.at()
+    const stmt = this.db.prepare('UPDATE memory_items SET last_used_at = ?, use_count = use_count + 1 WHERE id = ?')
+    for (const id of ids) stmt.run(at, id)
+  }
+
+  confirm(id: string): MemoryItem | null {
+    const item = this.get(id)
+    if (!item) return null
+    this.db.prepare("UPDATE memory_items SET status = 'confirmed', trust = 'authoritative', updated_at = ? WHERE id = ?").run(this.at(), id)
+    this.event(id, 'confirmed')
+    return this.get(id)
+  }
+
+  reject(id: string): MemoryItem | null {
+    const item = this.get(id)
+    if (!item) return null
+    this.db.prepare("UPDATE memory_items SET status = 'rejected', updated_at = ? WHERE id = ?").run(this.at(), id)
+    this.event(id, 'rejected')
+    return this.get(id)
+  }
+
+  async edit(id: string, content: string, gist?: string): Promise<MemoryItem | null> {
+    const old = this.get(id)
+    if (!old) return null
+    const at = this.at()
+    this.db.prepare("UPDATE memory_items SET status = 'superseded', valid_to = ?, updated_at = ? WHERE id = ?").run(at, at, id)
+    this.event(id, 'superseded')
+    return this.add({
+      kind: old.kind,
+      content,
+      gist,
+      sourceKind: 'user-confirmed',
+      sourceRef: old.sourceRef,
+      sourceSpan: old.sourceSpan,
+      trust: 'authoritative',
+      confidence: 1,
+      importance: { ...old.importance, explicit: 1 },
+      sensitivity: old.sensitivity,
+      status: 'confirmed',
+      supersedesId: old.id,
+      pinned: old.pinned,
+      retention: old.retention,
+      expiresAt: old.expiresAt,
+    })
+  }
+
+  delete(id: string): boolean {
+    const item = this.get(id)
+    if (!item) return false
+    this.db.prepare('DELETE FROM memory_items WHERE id = ?').run(id)
+    this.db.prepare('DELETE FROM memory_fts WHERE id = ?').run(id)
+    this.db.prepare('DELETE FROM memory_links WHERE from_id = ? OR to_id = ?').run(id, id)
+    this.event(id, 'deleted')
+    this.bus?.emit('memory.deleted', { id })
+    return true
+  }
+
+  addEpisode(input: EpisodeInput): Episode {
+    const episode: Episode = {
+      ...input,
+      id: input.id ?? randomUUID(),
+      createdAt: this.at(),
+    }
+    this.db.prepare(`
+      INSERT INTO memory_episodes
+        (id, started_at, ended_at, app, window, participants, summary, source_ref, sensitivity, created_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(
+      episode.id,
+      episode.startedAt,
+      episode.endedAt,
+      episode.app ?? '',
+      episode.window ?? '',
+      JSON.stringify(episode.participants ?? []),
+      episode.summary,
+      episode.sourceRef,
+      episode.sensitivity ?? 'standard',
+      episode.createdAt,
+    )
+    this.bus?.emit('memory.episode', { episode })
+    return episode
+  }
+
+  listEpisodes(limit = 50): Episode[] {
+    const rows = this.db.prepare('SELECT * FROM memory_episodes ORDER BY started_at DESC LIMIT ?').all(
+      Math.max(1, Math.min(200, limit)),
+    ) as Row[]
+    return rows.map(row => ({
+      id: text(row.id),
+      startedAt: text(row.started_at),
+      endedAt: text(row.ended_at),
+      app: text(row.app),
+      window: text(row.window),
+      participants: JSON.parse(text(row.participants, '[]')) as string[],
+      summary: text(row.summary),
+      sourceRef: text(row.source_ref),
+      sensitivity: text(row.sensitivity, 'standard') as MemorySensitivity,
+      createdAt: text(row.created_at),
+    }))
+  }
+
+  async consolidate(): Promise<ConsolidationStats> {
+    const started = Date.now()
+    const at = this.at()
+    const now = this.now().getTime()
+    let expired = 0
+    let deduped = 0
+    let projected = 0
+
+    const expiring = this.db.prepare(
+      "SELECT id FROM memory_items WHERE retention = 'expires-at' AND expires_at IS NOT NULL AND expires_at <= ? AND status = 'confirmed'",
+    ).all(at) as Row[]
+    for (const row of expiring) {
+      this.db.prepare("UPDATE memory_items SET status = 'expired', valid_to = ?, updated_at = ? WHERE id = ?").run(at, at, text(row.id))
+      expired += 1
+    }
+
+    const rows = this.db.prepare(
+      "SELECT id, content, created_at FROM memory_items WHERE status = 'confirmed' ORDER BY created_at DESC",
+    ).all() as Row[]
+    const seen = new Map<string, string>()
+    for (const row of rows) {
+      const content = normalizeContent(text(row.content)).toLowerCase()
+      const existing = seen.get(content)
+      if (existing) {
+        // Rows are ordered newest first; keep the newest item and retire the
+        // older duplicate, not the other way around.
+        this.db.prepare("UPDATE memory_items SET status = 'superseded', valid_to = ?, updated_at = ? WHERE id = ?").run(
+          at,
+          at,
+          text(row.id),
+        )
+        this.event(text(row.id), 'deduped', existing)
+        deduped += 1
+      } else {
+        seen.set(content, text(row.id))
+      }
+    }
+
+    for (const row of this.db.prepare("SELECT id FROM memory_items WHERE status IN ('confirmed','proposed')").all() as Row[]) {
+      const id = text(row.id)
+      const item = this.get(id)
+      if (item) this.ftsUpsert(item)
+      projected += 1
+    }
+
+    // Keep the token budget honest: old, low-value, unpinned items naturally
+    // rank lower because strength decays; we do not destroy them.
+    void now
+    const stats = { expired, deduped, projected, durationMs: Date.now() - started }
+    this.bus?.emit('memory.consolidated', stats)
+    return stats
+  }
+
+  stats(): MemoryStats {
+    const row = this.db.prepare(`
+      SELECT
+        COUNT(*) AS total,
+        SUM(CASE WHEN status = 'confirmed' THEN 1 ELSE 0 END) AS confirmed,
+        SUM(CASE WHEN status = 'proposed' THEN 1 ELSE 0 END) AS proposed,
+        SUM(CASE WHEN sensitivity != 'standard' THEN 1 ELSE 0 END) AS sensitive,
+        SUM(CASE WHEN embedding IS NOT NULL THEN 1 ELSE 0 END) AS embedded
+      FROM memory_items
+    `).get() as Row
+    const episodes = this.db.prepare('SELECT COUNT(*) AS n FROM memory_episodes').get() as Row
+    return {
+      total: num(row.total),
+      confirmed: num(row.confirmed),
+      proposed: num(row.proposed),
+      sensitive: num(row.sensitive),
+      embedded: num(row.embedded),
+      episodes: num(episodes.n),
+    }
+  }
+
+  exportAll(): { version: 2; exportedAt: string; items: MemoryItem[]; episodes: Episode[] } {
+    return {
+      version: 2,
+      exportedAt: this.at(),
+      items: this.list({ includeSensitive: true, includeInactive: true, limit: MAX_LIST }),
+      episodes: this.listEpisodes(MAX_LIST),
+    }
+  }
+
+  migrateV1(file: string): { imported: number; skipped: number } {
+    const raw = JSON.parse(readFileSync(file, 'utf8')) as { items?: Array<Record<string, unknown>> }
+    const items = Array.isArray(raw.items) ? raw.items : []
+    let imported = 0
+    let skipped = 0
+    for (const legacy of items) {
+      const content = normalizeContent(String(legacy.content ?? ''))
+      if (!content) {
+        skipped += 1
+        continue
+      }
+      const kind: MemoryKind = legacy.class === 'episodic' ? 'episodic' : 'semantic'
+      const createdAt = String(legacy.createdAt ?? this.at())
+      const id = String(legacy.id ?? randomUUID())
+      if (this.get(id)) {
+        skipped += 1
+        continue
+      }
+      const item: MemoryItem = {
+        id,
+        ownerId: 'local-owner',
+        kind,
+        content,
+        gist: gistOf(content),
+        sourceKind: 'v1-import',
+        sourceRef: `v1-import:${id}`,
+        sourceSpan: '',
+        trust: 'high',
+        confidence: num(legacy.confidence, 0.9),
+        importance: { ...emptyImportance(), explicit: 0.9 },
+        sensitivity: legacy.sensitivity === 'sensitive' ? 'sensitive' : 'standard',
+        validFrom: String(legacy.confirmedAt ?? createdAt),
+        validTo: null,
+        createdAt,
+        updatedAt: createdAt,
+        lastUsedAt: null,
+        useCount: 0,
+        status: 'confirmed',
+        supersedesId: null,
+        pinned: false,
+        retention: 'until-deleted',
+        expiresAt: null,
+      }
+      this.insertItem(item, null)
+      this.event(id, 'imported', 'v1')
+      imported += 1
+    }
+    return { imported, skipped }
+  }
+
+  close(): void {
+    this.db.close()
+  }
+
+  // Exposed for tests and for the consolidation worker.
+  importanceOf(item: MemoryItem): number {
+    return importanceScore(item.importance)
+  }
+
+  active(item: MemoryItem, now = this.now()): boolean {
+    return isActive(item, now)
+  }
+}

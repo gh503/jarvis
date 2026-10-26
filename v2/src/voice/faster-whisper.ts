@@ -1,0 +1,196 @@
+import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process'
+import { readFile } from 'node:fs/promises'
+import { join } from 'node:path'
+import { createInterface, type Interface } from 'node:readline'
+import type { Logger } from '../logger.ts'
+import { makeTempDir, removeDir, toWav } from './media.ts'
+import type { Transcriber, Transcription } from './asr.ts'
+
+interface Pending {
+  resolve: (value: Transcription) => void
+  reject: (error: Error) => void
+  timer: NodeJS.Timeout
+}
+
+interface WorkerMessage {
+  ready?: boolean
+  id?: number
+  text?: string
+  language?: string
+  durationMs?: number
+  loadMs?: number
+  error?: string
+}
+
+export class FasterWhisperTranscriber implements Transcriber {
+  private child: ChildProcessWithoutNullStreams | null = null
+  private lines: Interface | null = null
+  private readonly pending = new Map<number, Pending>()
+  private nextId = 1
+  private ready: Promise<void> | null = null
+  private queue: Promise<unknown> = Promise.resolve()
+  private stopped = false
+
+  constructor(
+    private readonly options: {
+      pythonBin: string
+      script: string
+      model: string
+      language: string
+      ffmpeg: string
+      logger?: Logger
+    },
+  ) {}
+
+  async available(): Promise<boolean> {
+    return this.options.script.length > 0
+  }
+
+  start(): Promise<void> {
+    if (this.ready) return this.ready
+    this.ready = new Promise<void>((resolve, reject) => {
+      const child = spawn(
+        this.options.pythonBin,
+        [
+          this.options.script,
+          '--model',
+          this.options.model,
+          '--language',
+          this.options.language,
+        ],
+        {
+          stdio: ['pipe', 'pipe', 'pipe'],
+          env: { ...process.env, PYTHONUNBUFFERED: '1' },
+        },
+      )
+      this.child = child
+      let settled = false
+      const fail = (error: Error): void => {
+        if (!settled) {
+          settled = true
+          reject(error)
+        }
+      }
+      const timer = setTimeout(() => fail(new Error('ASR worker did not become ready in 180s')), 180_000)
+      timer.unref()
+
+      this.lines = createInterface({ input: child.stdout })
+      this.lines.on('line', line => {
+        let message: WorkerMessage
+        try {
+          message = JSON.parse(line) as WorkerMessage
+        } catch {
+          this.options.logger?.debug('asr worker non-json output', { line })
+          return
+        }
+        if (message.ready === true) {
+          clearTimeout(timer)
+          if (!settled) {
+            settled = true
+            this.options.logger?.info('asr worker ready', {
+              model: this.options.model,
+              loadMs: message.loadMs,
+            })
+            resolve()
+          }
+          return
+        }
+        if (message.ready === false) {
+          clearTimeout(timer)
+          fail(new Error(message.error ?? 'ASR worker failed to load'))
+          return
+        }
+        if (typeof message.id !== 'number') return
+        const pending = this.pending.get(message.id)
+        if (!pending) return
+        this.pending.delete(message.id)
+        clearTimeout(pending.timer)
+        if (message.error) {
+          pending.reject(new Error(message.error))
+        } else {
+          pending.resolve({
+            text: String(message.text ?? '').trim(),
+            language: String(message.language ?? this.options.language),
+            durationMs: Number(message.durationMs ?? 0),
+          })
+        }
+      })
+
+      child.stderr.setEncoding('utf8')
+      child.stderr.on('data', chunk => {
+        this.options.logger?.debug('asr worker stderr', { chunk: String(chunk).trim().slice(0, 500) })
+      })
+      child.on('error', error => {
+        clearTimeout(timer)
+        fail(error)
+      })
+      child.on('close', code => {
+        clearTimeout(timer)
+        if (!settled) fail(new Error(`ASR worker exited with code ${code}`))
+        this.child = null
+        for (const pending of this.pending.values()) {
+          clearTimeout(pending.timer)
+          pending.reject(new Error(`ASR worker exited with code ${code}`))
+        }
+        this.pending.clear()
+      })
+    })
+    return this.ready
+  }
+
+  async transcribe(input: string | Buffer, extension = 'wav'): Promise<Transcription> {
+    const task = this.queue.then(async () => {
+      await this.start()
+      const child = this.child
+      if (!child || child.killed) throw new Error('ASR worker is not running')
+      const dir = await makeTempDir('jarvis-asr-')
+      try {
+        const source = typeof input === 'string' ? input : join(dir, `request.${extension}`)
+        if (typeof input !== 'string') await (await import('node:fs/promises')).writeFile(source, input)
+        let wav = source
+        if (extension.toLowerCase() !== 'wav') {
+          wav = join(dir, 'request.wav')
+          await toWav(this.options.ffmpeg, source, wav)
+        }
+        const data = await readFile(wav)
+        return await this.send(data)
+      } finally {
+        await removeDir(dir)
+      }
+    })
+    this.queue = task.catch(() => undefined)
+    return await task
+  }
+
+  private send(wav: Buffer): Promise<Transcription> {
+    const id = this.nextId++
+    return new Promise<Transcription>((resolve, reject) => {
+      const child = this.child
+      if (!child) {
+        reject(new Error('ASR worker is not running'))
+        return
+      }
+      const timer = setTimeout(() => {
+        this.pending.delete(id)
+        reject(new Error('ASR request timed out'))
+      }, 120_000)
+      timer.unref()
+      this.pending.set(id, { resolve, reject, timer })
+      const header = Buffer.alloc(8)
+      header.writeUInt32BE(id, 0)
+      header.writeUInt32BE(wav.byteLength, 4)
+      child.stdin.write(header)
+      child.stdin.write(wav)
+    })
+  }
+
+  async close(): Promise<void> {
+    this.stopped = true
+    this.lines?.close()
+    this.child?.stdin.end()
+    this.child?.kill('SIGTERM')
+    this.child = null
+    this.ready = null
+    void this.stopped
+  }
+}
