@@ -33,6 +33,7 @@ npm run migrate-v1 -- /path/to/v1-memory.json
 bash scripts/install-desktop.sh
 bash scripts/install-service.sh
 bash scripts/install-hotkey.sh '<Super>j'   # GNOME only
+python3 scripts/tray.py                     # optional legacy tray (desktop-dependent)
 bash scripts/gen-tls.sh 100.x.y.z            # optional self-signed LAN cert
 ```
 

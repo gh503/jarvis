@@ -346,4 +346,4 @@ curl -s -X DELETE http://127.0.0.1:3081/api/dev/demo-memory -H 'x-jarvis-demo: 1
 - 记忆图暂不支持手动连线/取消连线；`memory_links` 表已存在，API 仅服务端演示/巩固可写。
 - 记忆数据库没有全库加密；captures/audio/telemetry 已加密，但 DB 依赖 0600 + 整盘 LUKS。
 - 设备令牌等价主令牌，没有按设备限权；丢失设备要在设置里撤销。
-- 没有 GNOME 托盘图标；用桌面图标、PWA 独立窗口或 `scripts/install-hotkey.sh`。
+- 托盘是可选 `scripts/tray.py`（GTK3 legacy）；GNOME 42 Wayland 默认不显示 XEmbed 图标，需状态图标扩展；日常入口仍推荐桌面图标、PWA 独立窗口或 `scripts/install-hotkey.sh`。
