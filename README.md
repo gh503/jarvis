@@ -21,6 +21,25 @@ to the next provider with a persisted cooldown) and work scenarios
 and system prompts. ASR/TTS can
 switch between local and remote independently.
 
+## Automatic GitHub releases
+
+A verified push to `main` publishes a GitHub Release and an immutable
+`vMAJOR.MINOR.PATCH` tag for that exact commit. Superseded, untagged commits are
+skipped so a slower CI run cannot publish older code as the newest release. Pull requests and other branches
+never publish. The first current-runtime release starts at `v2.0.0`; subsequent
+commits increment the latest stable patch version. Raising the version in
+`package.json` sets a new minimum release version for a major/minor transition.
+Release tags identify individual deliveries; the application's runtime version
+is maintained separately.
+
+Re-running the same commit reuses its existing tag and release. If tag creation
+succeeds but publication fails, re-run the failed CI release job to finish it;
+existing tags are never moved or overwritten. Release jobs are serialized, and
+publication requires the type check and test job to succeed. GitHub generates
+release notes and source archive downloads. This does not publish to npm or
+create platform installers. The workflow uses GitHub's built-in token, with
+repository write permission limited to the release job.
+
 ## Native tools and local work
 
 Enable native tool calling explicitly for a supported model in 设置 → 模型.
