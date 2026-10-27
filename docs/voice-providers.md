@@ -70,6 +70,35 @@ TTS 链：Edge TTS → 硅基流动 CosyVoice → 本地 Piper
 | 已有 GPU | 自建 Whisper | 自建 OpenAI 兼容 TTS |
 | 已在用 Cloudflare | Cloudflare Whisper | Cloudflare MeloTTS |
 
+## 2.1 常见模型与音色（设置里可直接选）
+
+`/providers#voice` 的每个预设详情、以及设置 → 语音的模型/音色输入框，都带一份
+常见值清单（输入框有自动补全）。下面是调研所得的型号建议，**不是全集，也未逐个线上实测**，以服务商当前文档和账号权限为准。模型与音色不是任意组合都兼容；本机 Piper 音色须先下载，自建服务须先部署对应模型。
+
+| 预设 | 备选模型 | 备选音色 |
+|---|---|---|
+| 本机 faster-whisper | `tiny` / `base` / `small` / `medium` / `large-v3` | — |
+| OpenAI Whisper | `whisper-1`、`gpt-4o-transcribe`、`gpt-4o-mini-transcribe` | — |
+| Groq Whisper | `whisper-large-v3`、`whisper-large-v3-turbo`、`distil-whisper-large-v3-en` | — |
+| 硅基流动 SenseVoice | `FunAudioLLM/SenseVoiceSmall` | — |
+| 百炼 Paraformer | `paraformer-v2`、`paraformer-8k-v2` | — |
+| Gemini 音频 | `gemini-2.5-flash`、`gemini-2.5-pro`、`gemini-2.0-flash` | — |
+| Cloudflare Whisper | `@cf/openai/whisper`、`@cf/openai/whisper-large-v3-turbo`、`@cf/openai/whisper-tiny-en` | — |
+| 自建 FunASR | `iic/SenseVoiceSmall`、`iic/speech_paraformer-large_asr_nat-zh-cn-16k-common-vocab8404-pytorch` | — |
+| 自建 Whisper | `whisper-large-v3-turbo`、`whisper-large-v3`、`whisper-1` | — |
+| 本机 Piper | `piper` | `zh_CN-huayan-medium`、`zh_CN-huayan-x_low`、`en_US-lessac-medium` |
+| Edge TTS | `edge-tts` | `zh-CN-XiaoxiaoNeural`、`zh-CN-YunxiNeural`、`zh-CN-YunjianNeural`、`zh-TW-HsiaoChenNeural`、`en-US-AriaNeural` |
+| OpenAI TTS | `gpt-4o-mini-tts`、`tts-1`、`tts-1-hd` | `alloy`、`coral`、`nova`、`onyx`、`sage`、`shimmer` |
+| 硅基流动 CosyVoice | `FunAudioLLM/CosyVoice2-0.5B` | `alex`、`anna`、`bella`、`benjamin`、`charles`、`claire`、`david`、`diana`（都要带 `FunAudioLLM/CosyVoice2-0.5B:` 前缀） |
+| Gemini TTS | `gemini-2.5-flash-preview-tts`、`gemini-2.5-pro-preview-tts` | `Kore`、`Puck`、`Charon`、`Aoede`、`Fenrir`、`Leda` |
+| Cloudflare TTS | `@cf/myshell-ai/melotts` | `zh`、`en` |
+| Groq TTS | `playai-tts`、`playai-tts-arabic` | `Fritz-PlayAI`、`Celeste-PlayAI`、`Cheyenne-PlayAI`、`Atlas-PlayAI` |
+| 自建 OpenAI 兼容 TTS | `tts-1`、`kokoro` | `alloy`、`nova`、`af_heart`、`am_adam` |
+
+> 音色格式随适配器不同：OpenAI 兼容是 `alloy` 这类短名，CosyVoice 是
+> `模型:音色`，Edge 是 `zh-CN-XiaoxiaoNeural`，Gemini 是 `Kore` 这种首字母大写的名字。
+> 填错通常返回 400/404，属于配置错误，不会触发自动切换。
+
 ## 3. ASR：语音识别
 
 ### 本机 faster-whisper

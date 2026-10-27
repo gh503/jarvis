@@ -36,10 +36,146 @@ export interface ProviderEntry {
   chinaDirect: boolean
   supportsModelList: boolean
   tags: string[]
+  /**
+   * Curated model ids the guide and the settings picker can offer without a
+   * network call. `GET /models` still wins when it works; these exist so a
+   * provider without a list endpoint (Anthropic, Volcengine) or a first run
+   * before a key is pasted still has something to choose from.
+   */
+  models: string[]
+  visionModels: string[]
+  embeddingModels: string[]
+  /** Why a provider has no preset ids (dynamic endpoints, account ids, …). */
+  modelNote?: string
 }
 
-function entry(value: ProviderEntry): ProviderEntry {
-  return value
+type EntryInput = Omit<ProviderEntry, 'models' | 'visionModels' | 'embeddingModels' | 'modelNote'> &
+  Partial<Pick<ProviderEntry, 'models' | 'visionModels' | 'embeddingModels' | 'modelNote'>>
+
+function entry(value: EntryInput): ProviderEntry {
+  return { models: [], visionModels: [], embeddingModels: [], ...value }
+}
+
+/**
+ * Curated model ids, kept in one place so the entries above stay readable.
+ * These are deliberately "common, stable-ish" names, not a mirror of any
+ * provider's catalogue: model names get retired, so the settings sheet still
+ * prefers `GET /models` and labels these as presets.
+ */
+const MODEL_HINTS: Record<string, { models?: string[], vision?: string[], embedding?: string[], note?: string }> = {
+  deepseek: {
+    models: ['deepseek-chat', 'deepseek-reasoner'],
+    note: 'DeepSeek 目前没有向量接口，记忆向量会回退到本地。',
+  },
+  siliconflow: {
+    models: ['deepseek-ai/DeepSeek-V3', 'deepseek-ai/DeepSeek-R1', 'Qwen/Qwen2.5-72B-Instruct', 'moonshotai/Kimi-K2-Instruct'],
+    vision: ['Qwen/Qwen2.5-VL-72B-Instruct', 'Qwen/Qwen2.5-VL-32B-Instruct'],
+    embedding: ['BAAI/bge-m3', 'Qwen/Qwen3-Embedding-0.6B', 'Qwen/Qwen3-Embedding-8B'],
+    note: '模型名带厂商前缀；部分开源模型有免费额度。',
+  },
+  dashscope: {
+    models: ['qwen-plus', 'qwen-max', 'qwen-turbo', 'qwen-long'],
+    vision: ['qwen-vl-max', 'qwen-vl-plus', 'qwen2.5-vl-72b-instruct'],
+    embedding: ['text-embedding-v3', 'text-embedding-v4'],
+  },
+  zhipu: {
+    models: ['glm-4-plus', 'glm-4-flash', 'glm-4-air', 'glm-z1-air'],
+    vision: ['glm-4v-plus', 'glm-4v-flash'],
+    embedding: ['embedding-3'],
+  },
+  moonshot: {
+    models: ['moonshot-v1-8k', 'moonshot-v1-32k', 'moonshot-v1-128k', 'kimi-k2-0711-preview'],
+  },
+  volcengine: {
+    note: '模型名是控制台创建的推理接入点 ID（ep-…），无法预置，必须手填。',
+  },
+  hunyuan: {
+    models: ['hunyuan-turbos-latest', 'hunyuan-pro', 'hunyuan-lite'],
+  },
+  qianfan: {
+    models: ['ernie-4.5-turbo-128k', 'ernie-speed-128k'],
+    vision: ['ernie-4.5-turbo-vl-32k'],
+  },
+  minimax: {
+    models: ['MiniMax-Text-01', 'abab6.5s-chat'],
+    vision: ['MiniMax-VL-01'],
+  },
+  stepfun: {
+    models: ['step-2-16k', 'step-1-8k'],
+    vision: ['step-1v-8k'],
+  },
+  baichuan: {
+    models: ['Baichuan4', 'Baichuan3-Turbo'],
+  },
+  openai: {
+    models: ['gpt-4o-mini', 'gpt-4o', 'gpt-4.1', 'gpt-4.1-mini', 'o4-mini'],
+    vision: ['gpt-4o', 'gpt-4o-mini', 'gpt-4.1', 'o4-mini'],
+    embedding: ['text-embedding-3-small', 'text-embedding-3-large'],
+  },
+  anthropic: {
+    models: ['claude-sonnet-4-5', 'claude-haiku-4-5', 'claude-opus-4-1'],
+    vision: ['claude-sonnet-4-5', 'claude-haiku-4-5', 'claude-opus-4-1'],
+    note: 'Anthropic 没有 embedding 接口，记忆向量会回退到本地。',
+  },
+  gemini: {
+    models: ['gemini-2.5-flash', 'gemini-2.5-pro', 'gemini-2.5-flash-lite', 'gemini-2.0-flash'],
+    vision: ['gemini-2.5-flash', 'gemini-2.5-pro', 'gemini-2.0-flash'],
+    note: '向量走原生的 :embedContent，OpenAI 兼容层不保证 /embeddings，建议留空由本地接管。',
+  },
+  openrouter: {
+    models: ['openai/gpt-4o-mini', 'anthropic/claude-sonnet-4.5', 'google/gemini-2.5-flash', 'deepseek/deepseek-chat-v3.1'],
+    vision: ['google/gemini-2.5-flash', 'openai/gpt-4o-mini'],
+    note: '免费模型须从当前列表中选择实际存在的 :free ID，不能给任意模型名添加后缀；向量接口支持以当前官方文档为准。',
+  },
+  groq: {
+    models: ['llama-3.3-70b-versatile', 'llama-3.1-8b-instant', 'openai/gpt-oss-120b', 'openai/gpt-oss-20b'],
+    note: 'Groq 只有对话与语音识别，没有向量端点。',
+  },
+  mistral: {
+    models: ['mistral-large-latest', 'mistral-small-latest', 'codestral-latest', 'magistral-medium-latest'],
+    vision: ['pixtral-large-latest', 'pixtral-12b-2409'],
+    embedding: ['mistral-embed'],
+  },
+  xai: {
+    models: ['grok-4', 'grok-3', 'grok-3-mini'],
+    vision: ['grok-2-vision-1212'],
+  },
+  together: {
+    models: ['meta-llama/Llama-3.3-70B-Instruct-Turbo', 'deepseek-ai/DeepSeek-V3', 'Qwen/Qwen2.5-72B-Instruct-Turbo'],
+    vision: ['meta-llama/Llama-3.2-90B-Vision-Instruct', 'Qwen/Qwen2-VL-72B-Instruct'],
+    embedding: ['BAAI/bge-large-en-v1.5', 'togethercomputer/m2-bert-80M-32k-retrieval'],
+  },
+  fireworks: {
+    note: '模型名形如 accounts/fireworks/models/…，用「获取模型列表」最稳。',
+  },
+  cloudflare: {
+    models: ['@cf/openai/gpt-oss-120b', '@cf/meta/llama-3.3-70b-instruct-fp8-fast', '@cf/qwen/qwen2.5-coder-32b-instruct'],
+    vision: ['@cf/meta/llama-3.2-11b-vision-instruct', '@cf/llava-hf/llava-1.5-7b-hf'],
+    embedding: ['@cf/baai/bge-m3', '@cf/baai/bge-small-en-v1.5'],
+  },
+  ollama: {
+    models: ['qwen2.5:3b', 'qwen2.5:7b', 'qwen3:8b', 'llama3.1:8b'],
+    vision: ['qwen2.5vl:3b', 'moondream:1.8b', 'llava:7b'],
+    embedding: ['nomic-embed-text', 'qwen3-embedding:0.6b', 'bge-m3', 'mxbai-embed-large'],
+  },
+  lmstudio: {
+    note: '模型取决于本机已下载的 GGUF，用「刷新」读取。',
+  },
+  vllm: {
+    note: '模型名由你启动服务时的 --model 决定，无法预置。',
+  },
+}
+
+function withHints(item: ProviderEntry): ProviderEntry {
+  const hint = MODEL_HINTS[item.id]
+  if (!hint) return { ...item, models: [], visionModels: [], embeddingModels: [] }
+  return {
+    ...item,
+    models: [...(hint.models ?? [])],
+    visionModels: [...(hint.vision ?? [])],
+    embeddingModels: [...(hint.embedding ?? [])],
+    ...(hint.note ? { modelNote: hint.note } : {}),
+  }
 }
 
 const CATALOG: ProviderEntry[] = [
@@ -399,7 +535,7 @@ const CATALOG: ProviderEntry[] = [
     setup: [
       '注册后在 Keys 页面创建 Key。',
       '地址保持默认，模型名形如 厂商/模型（如 openai/gpt-4o-mini）。',
-      '想用免费模型就在名字后加 :free，注意每天请求上限。',
+      '从当前模型列表选择实际存在的 :free 模型 ID；不能给任意模型名加后缀，额度以控制台为准。',
     ],
     cautions: ['免费模型有每日上限；部分模型会因上游限流而偶发 503。'],
     chinaDirect: false,
@@ -627,17 +763,29 @@ const CATALOG: ProviderEntry[] = [
 ]
 
 export function providerCatalog(): ProviderEntry[] {
-  return CATALOG.map(item => ({ ...item, setup: [...item.setup], cautions: [...item.cautions], tags: [...item.tags] }))
+  return CATALOG.map(item => {
+    const hinted = withHints(item)
+    return {
+      ...hinted,
+      setup: [...hinted.setup],
+      cautions: [...hinted.cautions],
+      tags: [...hinted.tags],
+      models: [...hinted.models],
+      visionModels: [...hinted.visionModels],
+      embeddingModels: [...hinted.embeddingModels],
+    }
+  })
 }
 
 export function providerGuide(id: string): ProviderEntry | undefined {
-  return CATALOG.find(item => item.id === id)
+  const item = CATALOG.find(entry => entry.id === id)
+  return item ? withHints(item) : undefined
 }
 
 const ID_PATTERN = /^[a-z0-9-]{1,32}$/
 
 /** Used by tests and by the server at boot; throws on a broken entry. */
-export function validateCatalog(entries: ProviderEntry[] = CATALOG): string[] {
+export function validateCatalog(entries: ProviderEntry[] = providerCatalog()): string[] {
   const problems: string[] = []
   const seen = new Set<string>()
   for (const item of entries) {
@@ -660,6 +808,18 @@ export function validateCatalog(entries: ProviderEntry[] = CATALOG): string[] {
     }
     if (item.region !== 'local' && /127\.0\.0\.1|localhost/.test(item.baseUrl)) {
       problems.push(`${item.id}: 远端供应商不应指向本机`)
+    }
+    for (const [field, list] of [['models', item.models], ['visionModels', item.visionModels], ['embeddingModels', item.embeddingModels]] as const) {
+      if (!Array.isArray(list)) {
+        problems.push(`${item.id}: ${field} 必须是数组`)
+        continue
+      }
+      if (new Set(list).size !== list.length) problems.push(`${item.id}: ${field} 有重复项`)
+      for (const name of list) {
+        if (typeof name !== 'string' || !name.trim() || /\s{2,}|[\r\n]/.test(name) || name.length > 120) {
+          problems.push(`${item.id}: ${field} 里的模型名不合法（${String(name)}）`)
+        }
+      }
     }
   }
   return problems

@@ -131,7 +131,7 @@
 
 ### OpenRouter
 - 地址：`https://openrouter.ai/api/v1` · Key：<https://openrouter.ai/keys>
-- 模型：`厂商/模型`，加 `:free` 用免费额度
+- 模型：`厂商/模型`；免费型号须从官方列表选择实际存在的 `:free` 条目，不能给任意名字加后缀。
 - 用途：先横向比价再决定长期用谁
 
 ### Groq
@@ -176,7 +176,37 @@
 - 地址：本机 `http://127.0.0.1:8000/v1`；局域网换成 `http://<内网IP>:8000/v1`
 - 局域网地址要加进 `JARVIS_ALLOWED_HOSTS`，否则页面返回 421
 
-## 6. 常见错误码
+## 6. 常见模型清单（设置里可直接选）
+
+供应商页面和设置表单现在都带一份**常见模型**清单：在 `/providers` 点开任意供应商，
+模型名以标签形式列出，点一下即复制；设置 → 模型里对应字段是下拉/自动补全，
+不用再照着文档手打。清单是“常见且相对稳定”的子集，**永远优先用「获取模型列表」**——
+它反映服务返回的型号，但仍需确认账号权限、额度及对应接口支持；本清单未逐个消耗线上额度验证。
+
+| 供应商 | 对话 | 视觉 | 向量 |
+|---|---|---|---|
+| DeepSeek | `deepseek-chat`、`deepseek-reasoner` | — | —（无向量接口，回退本地） |
+| 硅基流动 | `deepseek-ai/DeepSeek-V3`、`Qwen/Qwen2.5-72B-Instruct` 等 | `Qwen/Qwen2.5-VL-72B-Instruct` | `BAAI/bge-m3`、`Qwen/Qwen3-Embedding-0.6B` |
+| 百炼 | `qwen-plus`、`qwen-max`、`qwen-turbo` | `qwen-vl-max`、`qwen2.5-vl-72b-instruct` | `text-embedding-v3` |
+| 智谱 | `glm-4-plus`、`glm-4-flash` | `glm-4v-plus`、`glm-4v-flash` | `embedding-3` |
+| OpenAI | `gpt-4o-mini`、`gpt-4o`、`gpt-4.1` | `gpt-4o`、`gpt-4o-mini` | `text-embedding-3-small`、`-large` |
+| Anthropic | `claude-sonnet-4-5`、`claude-haiku-4-5` | 同左 | —（无向量接口） |
+| Gemini | `gemini-2.5-flash`、`gemini-2.5-pro` | 同左 | 建议留空（向量走原生接口） |
+| Mistral | `mistral-large-latest`、`codestral-latest` | `pixtral-large-latest` | `mistral-embed` |
+| Groq | `llama-3.3-70b-versatile`、`gpt-oss-120b` | — | —（无向量接口） |
+| Cloudflare | `@cf/openai/gpt-oss-120b` 等 | `@cf/meta/llama-3.2-11b-vision-instruct` | `@cf/baai/bge-m3` |
+| 本机 Ollama | `qwen2.5:3b`、`qwen3:8b` | `qwen2.5vl:3b`、`moondream:1.8b` | `nomic-embed-text`、`qwen3-embedding:0.6b` |
+
+几个必须知道的边界：
+
+- **远端向量只用于 standard 级记忆**；敏感记忆只能交给本地向量模型处理。
+- **换向量模型不会重建旧向量**。nomic 是 768 维、bge-m3/Qwen3 是 1024 维，维度不同
+  余弦直接算 0；换之前要么接受旧记忆退化为词法召回，要么清空重建。
+- **视觉模型跟着当前供应商走**，不参与供应商池切换；供应商不支持图像输入时，
+  留空让本地 `qwen2.5vl` 接管更可靠。
+- 免费层的向量/视觉额度见各供应商页面；Gemini 免费层会使用数据改进产品。
+
+## 7. 常见错误码
 
 | 状态 | 含义 | Jarvis 的处理 |
 |---|---|---|
@@ -187,7 +217,7 @@
 | 429 | 限流 | 冷却 60 秒并切换 |
 | 5xx | 供应商故障 | 冷却 5 分钟并切换 |
 
-## 7. 想换供应商但保留历史
+## 8. 想换供应商但保留历史
 
 换模型不影响记忆和历史；对话上下文按会话保存。切换后建议在“场景”里
 给不同任务指定不同供应商（例如代码走 Claude、日常走 DeepSeek）。

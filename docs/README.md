@@ -71,8 +71,8 @@ v2 不再从“给 agent 加一个聊天窗口”出发，而是从下面这个�
 - 多厂商模型：Gemini、Groq、硅基流动、OpenRouter、Cloudflare Workers AI 可直连；模型列表自动发现。
 - Web UI：五标签设置、外观/主题（深色/浅色/跟随系统）、PWA 离线 shell、可键盘操作的对话与观察台；细节见 [ui.md](ui.md)。
 - 安装与分发：PWA 安装（含手机）、`npm run app` 桌面窗口、`npm run package` 便携包；平台能力矩阵见 [distribution.md](distribution.md)，新手路径见 [getting-started.md](getting-started.md)。
-- 模型服务指南：`/providers` 页面 + [providers-guide.md](providers-guide.md)，覆盖 11 家国内直连、9 家国际与 4 种本机方案，含 Key 创建入口、地址、费用与常见坑。
-- 语音服务指南：同页 `#voice` + [voice-providers.md](voice-providers.md)，ASR 9 个、TTS 8 个预设（本地/国内/国际），含适配器、端点、音色格式、多服务优先级链与自动切换规则、排错表。
+- 模型服务指南：`/providers` 页面 + [providers-guide.md](providers-guide.md)，覆盖 11 家国内直连、9 家国际与 4 种本机方案，含 Key 创建入口、地址、费用与常见坑；每个预设附带常见对话/视觉/向量型号，点开即复制，设置里可直接选。
+- 语音服务指南：同页 `#voice` + [voice-providers.md](voice-providers.md)，ASR 9 个、TTS 8 个预设（本地/国内/国际），含适配器、端点、音色格式、备选模型/音色清单、多服务优先级链与自动切换规则、排错表。
 - 供应商池与自动切换：按优先级组成故障转移链，额度/限流/鉴权/网络错误自动换下一家，冷却持久化并实时提示。
 - 工作场景：编程 / 写作 / 研究 / 邮件 / 会议 / 报告 / 翻译 / 头脑风暴 / 学习 / 闲聊 共 10 个内置场景，各有独立的供应商链、模型、温度与提示词，自动识别或手动指定（`research` 吸收旧的 `reasoning`）。
 - 工具执行：文件、浏览器、日历、提醒；高风险动作走审批和审计。

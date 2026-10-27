@@ -30,9 +30,15 @@ npm run doctor
 npm run app          # starts the server and opens it as a desktop window
 ```
 
+Every preset also carries a short, curated list of model ids — chat, vision and
+embedding — shown as copy-on-click chips on the guide page and offered as a
+picker/autocomplete in 设置 → 模型, so you are not expected to retype ids from
+memory. The lists are a convenience, not a contract: “获取模型列表” still wins.
+
 The same guide covers speech: `/providers#voice` lists nine ASR and eight TTS
 presets (local, mainland, international) and hands any of them into
-设置 → 语音 with the adapter, endpoint, model and voice already filled.
+设置 → 语音 with the adapter, endpoint, model and voice already filled, plus
+alternative model and voice ids for each preset.
 ASR and TTS are each an **ordered chain**: add several providers, put the local
 engine last as the safety net, and a failing provider (quota, bad key, rate
 limit, network) is parked and skipped automatically — the same rule the LLM

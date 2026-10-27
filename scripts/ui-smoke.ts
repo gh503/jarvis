@@ -200,6 +200,10 @@ async function main(): Promise<void> {
     check(settings.adapters, 'settings: provider pool card still present')
     check(settings.pool, 'settings: provider pool + scenario card')
     check(settings.scenarioSelect, 'composer: scenario selector')
+    await cdp.evaluate("(() => { const card = [...document.querySelectorAll('[data-model-select]')].find(el => (el.closest('.provider-card')?.innerText || '').includes('127.0.0.1:11434')); if (card) card.click() })()")
+    await sleep(400)
+    check(await cdp.evaluate<number>("document.querySelectorAll('#model-vision-list option').length") >= 3, 'settings: local vision model suggestions')
+    check(await cdp.evaluate<number>("document.querySelectorAll('#model-embed-list option').length") >= 3, 'settings: local embedding model suggestions')
     await cdp.evaluate("document.querySelector('[data-settings-tab=\"appearance\"]').click()")
     await sleep(400)
     check(await cdp.evaluate<boolean>("Boolean(document.querySelector('#appearance-card') && document.querySelectorAll('.appearance-swatch').length === 5 && document.querySelectorAll('.appearance-preset').length >= 4)"), 'settings: appearance tab with swatches and presets')
@@ -314,6 +318,8 @@ async function main(): Promise<void> {
       await sleep(400)
       check(await cdp.evaluate<boolean>("document.querySelector('#pv-sheet').open === true"), 'providers: detail sheet opens')
       check(await cdp.evaluate<boolean>("(document.querySelector('#pv-sheet-body')?.innerText || '').includes('https://api.siliconflow.cn/v1')"), 'providers: detail shows the base URL')
+      check(await cdp.evaluate<number>("document.querySelectorAll('#pv-sheet-body .pv-model-chip').length") >= 8, 'providers: detail lists curated chat/vision/embedding chips')
+      check(await cdp.evaluate<boolean>("[...document.querySelectorAll('#pv-sheet-body [data-copy]')].some(el => el.dataset.copy === 'BAAI/bge-m3')"), 'providers: embedding chips are copyable')
       await cdp.evaluate("document.querySelector('#pv-sheet-close').click()")
       await sleep(250)
       check(await cdp.evaluate<boolean>("document.querySelector('#pv-sheet').open === false"), 'providers: detail sheet closes')
@@ -331,6 +337,7 @@ async function main(): Promise<void> {
       await sleep(400)
       check(await cdp.evaluate<boolean>("document.querySelector('#pv-sheet').open === true"), 'providers: voice detail sheet opens')
       check(await cdp.evaluate<boolean>("(document.querySelector('#pv-sheet-body')?.innerText || '').includes('FunAudioLLM/CosyVoice2-0.5B:alex')"), 'providers: voice detail shows the exact voice id')
+      check(await cdp.evaluate<number>("document.querySelectorAll('#pv-sheet-body .pv-model-chip').length") >= 8, 'providers: voice detail lists model alternatives and voices')
       await cdp.evaluate("document.querySelector('#pv-sheet-close').click()")
       await sleep(250)
 
@@ -377,6 +384,8 @@ async function main(): Promise<void> {
       check(await cdp.evaluate<string>("document.querySelector('#asr-model')?.value || ''") === 'whisper-1', 'providers: voice handoff fills the model')
       check(await cdp.evaluate<string>("document.querySelector('#asr-adapter')?.value || ''") === 'openai', 'providers: voice handoff selects the adapter')
       check(await cdp.evaluate<boolean>("document.querySelector('#voice-dirty')?.hidden === false"), 'providers: voice prefill marks the form unsaved')
+      check(await cdp.evaluate<number>("document.querySelectorAll('#asr-model-list option').length") >= 3, 'providers: ASR model field suggests alternatives')
+      check(await cdp.evaluate<boolean>("document.querySelector('#asr-model')?.hasAttribute('list')"), 'providers: ASR model input is wired to the suggestions')
 
       // Add-from-catalogue inside the settings sheet: TTS gets a remote entry,
       // then the existing local engine is reused instead of duplicated.
@@ -387,6 +396,7 @@ async function main(): Promise<void> {
       await sleep(500)
       check(await cdp.evaluate<number>("document.querySelectorAll('#voice-chain-tts li').length") === 2, 'settings: adding a TTS preset extends the chain')
       check(await cdp.evaluate<number>("document.querySelectorAll('#tts-adapter option').length") === 5, 'settings: remote TTS adapter offers OpenAI/Gemini/Cloudflare/Edge')
+      check(await cdp.evaluate<number>("document.querySelectorAll('#tts-voice-list option').length") >= 6, 'settings: TTS voice field suggests catalogue voices')
       await cdp.evaluate("document.querySelector('[data-voice-add=\"tts\"]').click()")
       await sleep(400)
       await cdp.evaluate("document.querySelector('[data-voice-preset-id=\"local-piper\"]').click()")

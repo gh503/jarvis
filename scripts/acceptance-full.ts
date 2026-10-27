@@ -236,6 +236,11 @@ async function main(): Promise<void> {
     check('目录包含本机供应商', (catalogJson.providers ?? []).some((item: any) => item.region === 'local'))
     check('目录不包含任何密钥字段', !JSON.stringify(catalogJson).includes('"apiKey":'))
     check('目录带平台信息', Boolean(catalogJson.platform?.os))
+    const providers = catalogJson.providers ?? []
+    check('每个供应商都带模型清单', providers.every((item: any) => Array.isArray(item.models)))
+    check('目录带视觉模型清单', providers.filter((item: any) => (item.visionModels ?? []).length).length >= 8)
+    check('目录带向量模型清单', providers.filter((item: any) => (item.embeddingModels ?? []).length).length >= 7)
+    check('本机条目列出 Ollama 向量模型', providers.some((item: any) => item.id === 'ollama' && item.embeddingModels.includes('nomic-embed-text')))
     const platformHealth = await req(base, '/api/health')
     const voiceCatalog = await req(base, '/api/voice/catalog', { headers: PROXIED })
     equal('语音目录无需登录', voiceCatalog.status, 200)
@@ -246,6 +251,10 @@ async function main(): Promise<void> {
     check('语音目录含 TTS', (voiceJson.voices ?? []).some((item: any) => item.kind === 'tts'))
     check('语音目录含国内直连', (voiceJson.voices ?? []).some((item: any) => item.region === 'cn' && item.chinaDirect === true))
     check('语音目录不含密钥字段', !JSON.stringify(voiceJson).includes('"apiKey":'))
+    const voices = voiceJson.voices ?? []
+    check('语音预设都带可选模型', voices.every((item: any) => Array.isArray(item.models) && item.models.length > 0))
+    check('TTS 预设都带可选音色', voices.filter((item: any) => item.kind === 'tts').every((item: any) => Array.isArray(item.voices) && item.voices.length > 0))
+    check('Edge 预设列出中文音色', voices.some((item: any) => item.id === 'edge-tts' && item.voices.includes('zh-CN-XiaoxiaoNeural')))
     includes('指南页含语音分区', providersPage.text, '语音识别与合成')
     includes('指南页锚点', providersPage.text, 'id="voice"')
 

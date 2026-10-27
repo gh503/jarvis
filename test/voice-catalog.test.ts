@@ -53,9 +53,49 @@ test('the catalogue is not the caller\'s to mutate', () => {
   const first = voiceCatalog()
   first[0].setup.push('mutated')
   first[0].name = 'mutated'
+  first[0].models?.push('mutated')
+  first[0].voices?.push('mutated')
   const second = voiceCatalog()
   assert.notEqual(second[0].name, 'mutated')
   assert.ok(!second[0].setup.includes('mutated'))
+  assert.ok(!(second[0].models ?? []).includes('mutated'))
+  assert.ok(!(second[0].voices ?? []).includes('mutated'))
+})
+
+test('every preset carries pickable model ids, and TTS carries voices too', () => {
+  for (const entry of voiceCatalog()) {
+    assert.ok(Array.isArray(entry.models) && entry.models.length > 0, `${entry.id} 没有可选模型`)
+    assert.ok((entry.models ?? []).includes(entry.model), `${entry.id} 的备选里没有默认模型 ${entry.model}`)
+    if (entry.kind === 'tts') {
+      assert.ok(Array.isArray(entry.voices) && entry.voices.length > 0, `${entry.id} 没有可选音色`)
+      assert.ok((entry.voices ?? []).includes(entry.voice ?? ''), `${entry.id} 的备选里没有默认音色 ${entry.voice}`)
+    } else {
+      assert.ok(Array.isArray(entry.voices), `${entry.id} 的 voices 字段缺失`)
+    }
+  }
+})
+
+test('voice alternatives stay in the format their adapter expects', () => {
+  const cosy = voiceCatalog().find(entry => entry.id === 'siliconflow-cosyvoice')
+  assert.ok(cosy)
+  for (const voice of cosy.voices ?? []) assert.match(voice, /^FunAudioLLM\/CosyVoice2-0\.5B:/)
+  const edge = voiceCatalog().find(entry => entry.id === 'edge-tts')
+  assert.ok(edge)
+  assert.ok((edge.voices ?? []).includes('zh-CN-XiaoxiaoNeural'))
+  const gemini = voiceCatalog().find(entry => entry.id === 'gemini-tts')
+  assert.ok(gemini)
+  assert.ok((gemini.voices ?? []).includes('Kore'))
+})
+
+test('docs mention every alternative model id so the two cannot drift', async () => {
+  const { readFile } = await import('node:fs/promises')
+  const { join } = await import('node:path')
+  const doc = await readFile(join(import.meta.dirname, '..', 'docs', 'voice-providers.md'), 'utf8')
+  for (const entry of voiceCatalog()) {
+    for (const model of entry.models ?? []) {
+      assert.ok(doc.includes(model), `${entry.id} 的备选模型 ${model} 没有出现在 voice-providers.md`)
+    }
+  }
 })
 
 test('voiceGuide finds a preset by id and rejects unknown ones', () => {

@@ -50,9 +50,48 @@ test('catalogue copies are defensive (mutating one does not change the source)',
   const first = providerCatalog()
   first[0].setup.push('mutated')
   first[0].tags.push('mutated')
+  first[0].models.push('mutated')
+  first[0].visionModels.push('mutated')
+  first[0].embeddingModels.push('mutated')
   const second = providerCatalog()
   assert.ok(!second[0].setup.includes('mutated'))
   assert.ok(!second[0].tags.includes('mutated'))
+  assert.ok(!second[0].models.includes('mutated'))
+  assert.ok(!second[0].visionModels.includes('mutated'))
+  assert.ok(!second[0].embeddingModels.includes('mutated'))
+})
+
+test('every remote provider offers curated ids or explains why it cannot', () => {
+  for (const entry of providerCatalog()) {
+    assert.ok(Array.isArray(entry.models), `${entry.id} 缺少 models`)
+    assert.ok(Array.isArray(entry.visionModels), `${entry.id} 缺少 visionModels`)
+    assert.ok(Array.isArray(entry.embeddingModels), `${entry.id} 缺少 embeddingModels`)
+    for (const name of [...entry.models, ...entry.visionModels, ...entry.embeddingModels]) {
+      assert.equal(name, name.trim(), `${entry.id} 的模型名有空白`)
+      assert.ok(!/[\r\n]/.test(name), `${entry.id} 的模型名有换行`)
+    }
+    if (entry.region !== 'local' && entry.models.length === 0) {
+      assert.ok(entry.modelNote, `${entry.id} 没有预置模型时必须说明原因`)
+    }
+  }
+})
+
+test('the well-known ids people search for are actually in the lists', () => {
+  const byId = new Map(providerCatalog().map(entry => [entry.id, entry]))
+  assert.ok(byId.get('deepseek')?.models.includes('deepseek-chat'))
+  assert.ok(byId.get('siliconflow')?.embeddingModels.includes('BAAI/bge-m3'))
+  assert.ok(byId.get('siliconflow')?.visionModels.some(name => name.includes('Qwen2.5-VL')))
+  assert.ok(byId.get('openai')?.embeddingModels.includes('text-embedding-3-small'))
+  assert.ok(byId.get('cloudflare')?.embeddingModels.includes('@cf/baai/bge-m3'))
+  assert.ok(byId.get('ollama')?.visionModels.includes('qwen2.5vl:3b'))
+  assert.ok(byId.get('ollama')?.embeddingModels.includes('nomic-embed-text'))
+  assert.ok(byId.get('anthropic')?.visionModels.length, 'Anthropic 视觉应与对话同款')
+})
+
+test('at least a dozen guides carry vision or embedding hints', () => {
+  const entries = providerCatalog()
+  assert.ok(entries.filter(entry => entry.visionModels.length).length >= 8)
+  assert.ok(entries.filter(entry => entry.embeddingModels.length).length >= 7)
 })
 
 test('lookup by id returns the entry, and unknown ids return undefined', () => {

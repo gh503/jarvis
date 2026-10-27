@@ -114,6 +114,20 @@ function renderVoices() {
   }
 }
 
+/**
+ * Curated model ids rendered as copy-on-click chips. These are a convenience,
+ * not a contract: the provider's /models list still wins in the settings form.
+ */
+function modelChipsHtml(groups) {
+  const sections = groups
+    .filter(([, items]) => Array.isArray(items) && items.length)
+    .map(([label, items]) => `<div class="pv-model-group">
+      <span class="pv-model-label">${escapeHtml(label)}</span>
+      <div class="pv-model-chips">${items.map(name => `<button type="button" class="pv-model-chip" data-copy="${escapeHtml(name)}" title="点击复制">${escapeHtml(name)}</button>`).join('')}</div>
+    </div>`)
+  return sections.length ? `<h3>常见模型</h3><p class="pv-card-summary">以下为参考预设，未经逐项调用验证；模型、音色及费用以当前官方文档和账号控制台为准。</p>${sections.join('')}` : ''
+}
+
 function openVoiceDetail(entry) {
   state.current = { ...entry, __voice: true }
   $('#pv-sheet-title').textContent = entry.name
@@ -141,6 +155,7 @@ function openVoiceDetail(entry) {
     <h3>要填什么</h3>
     ${address}
     <ul class="pv-voice-fields">${extras}</ul>
+    ${modelChipsHtml([['模型', entry.models], ['音色', entry.voices]])}
     <h3>费用</h3>
     <p class="pv-card-summary">${escapeHtml(entry.freeTier)}</p>
     ${entry.cautions.length ? `<h3>注意</h3><ul>${entry.cautions.map(item => `<li>${escapeHtml(item)}</li>`).join('')}</ul>` : ''}
@@ -164,6 +179,7 @@ function openDetail(provider) {
   $('#pv-sheet-title').textContent = provider.name
   $('#pv-sheet-region').textContent = `${REGION_LABEL[provider.region] || provider.region} · ${KIND_LABEL[provider.kind] || provider.kind} · ${PROTOCOL_LABEL[provider.protocol] || provider.protocol}`
   const keyLink = $('#pv-sheet-key')
+  keyLink.hidden = false
   keyLink.href = provider.keyUrl
   keyLink.textContent = provider.region === 'local' ? '下载 / 查看安装方式 ↗' : '去创建 API Key ↗'
   $('#pv-sheet-body').innerHTML = `
@@ -171,6 +187,8 @@ function openDetail(provider) {
     <ol>${provider.setup.map(step => `<li>${escapeHtml(step)}</li>`).join('')}</ol>
     <h3>要填的地址</h3>
     <div class="pv-url"><code>${escapeHtml(provider.baseUrl)}</code><button class="pv-copy" type="button" data-copy="${escapeHtml(provider.baseUrl)}">复制</button></div>
+    ${modelChipsHtml([['对话', provider.models], ['视觉', provider.visionModels], ['向量', provider.embeddingModels]])}
+    ${provider.modelNote ? `<p class="pv-card-summary">${escapeHtml(provider.modelNote)}</p>` : ''}
     <h3>费用</h3>
     <p class="pv-card-summary">${escapeHtml(provider.freeTier)}</p>
     ${provider.cautions.length ? `<h3>注意</h3><ul>${provider.cautions.map(item => `<li>${escapeHtml(item)}</li>`).join('')}</ul>` : ''}
@@ -287,6 +305,10 @@ function bind() {
     }
   })
 
+  $('#pv-sheet-body').addEventListener('click', event => {
+    const copy = event.target.closest('[data-copy]')
+    if (copy) void copyText(copy.dataset.copy, copy)
+  })
   $('#pv-sheet-close').addEventListener('click', closeDetail)
   $('#pv-sheet').addEventListener('click', event => { if (event.target === $('#pv-sheet')) closeDetail() })
   $('#pv-sheet-use').addEventListener('click', () => {

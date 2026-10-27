@@ -375,6 +375,16 @@ body.pv-body {
 .pv-inline-link:hover { text-decoration: underline; }
 .pv-voice-fields { margin: 10px 0 0; padding-left: 18px; color: var(--muted); font-size: 13px; display: grid; gap: 4px; }
 .pv-voice-fields code { color: var(--text); }
+.pv-model-group { display: grid; gap: 6px; margin: 8px 0 4px; }
+.pv-model-label { font-size: 10px; letter-spacing: .1em; text-transform: uppercase; color: var(--faint); }
+.pv-model-chips { display: flex; flex-wrap: wrap; gap: 6px; }
+.pv-model-chip {
+  border: 1px solid var(--line); background: transparent; color: var(--muted);
+  border-radius: 7px; padding: 3px 8px; font: 11.5px var(--mono); cursor: pointer;
+  max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.pv-model-chip:hover { color: var(--text); border-color: rgb(var(--accent-rgb) / .45); }
+.pv-model-chip:focus-visible { outline: 2px solid var(--cyan); outline-offset: 1px; }
 .pv-badge.asr, .pv-badge.tts { border-color: rgb(var(--accent-rgb) / .45); color: var(--cyan); background: var(--cyan-dim); }
 @media (max-width: 640px) {
   .pv-section-head { flex-direction: column; align-items: stretch; }

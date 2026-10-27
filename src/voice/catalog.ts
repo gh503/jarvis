@@ -42,6 +42,72 @@ export interface VoiceEntry {
   /** Reachable from mainland China without a proxy. */
   chinaDirect: boolean
   tags: string[]
+  /**
+   * Alternative model ids for this provider, so the settings form can offer a
+   * picker instead of making people retype the default. Not exhaustive: the
+   * provider's own docs stay authoritative.
+   */
+  models?: string[]
+  /** TTS only: alternative voice ids in the format this adapter expects. */
+  voices?: string[]
+}
+
+/**
+ * Curated alternatives, kept next to the presets instead of inline so the
+ * entries stay readable. `voiceCatalog()` merges them in.
+ */
+const VOICE_HINTS: Record<string, { models?: string[], voices?: string[] }> = {
+  'local-faster-whisper': { models: ['tiny', 'base', 'small', 'medium', 'large-v3'] },
+  'openai-whisper': { models: ['whisper-1', 'gpt-4o-transcribe', 'gpt-4o-mini-transcribe'] },
+  'groq-whisper': { models: ['whisper-large-v3', 'whisper-large-v3-turbo', 'distil-whisper-large-v3-en'] },
+  'siliconflow-sensevoice': { models: ['FunAudioLLM/SenseVoiceSmall'] },
+  'dashscope-paraformer': { models: ['paraformer-v2', 'paraformer-8k-v2'] },
+  'gemini-audio': { models: ['gemini-2.5-flash', 'gemini-2.5-pro', 'gemini-2.0-flash'] },
+  'cloudflare-whisper': { models: ['@cf/openai/whisper', '@cf/openai/whisper-large-v3-turbo', '@cf/openai/whisper-tiny-en'] },
+  'selfhosted-funasr': { models: ['iic/SenseVoiceSmall', 'iic/speech_paraformer-large_asr_nat-zh-cn-16k-common-vocab8404-pytorch'] },
+  'selfhosted-whisper': { models: ['whisper-large-v3-turbo', 'whisper-large-v3', 'whisper-1'] },
+  'local-piper': {
+    models: ['piper'],
+    voices: ['zh_CN-huayan-medium', 'zh_CN-huayan-x_low', 'en_US-lessac-medium'],
+  },
+  'edge-tts': {
+    models: ['edge-tts'],
+    voices: ['zh-CN-XiaoxiaoNeural', 'zh-CN-YunxiNeural', 'zh-CN-YunjianNeural', 'zh-CN-liaoning-XiaobeiNeural', 'zh-TW-HsiaoChenNeural', 'en-US-AriaNeural'],
+  },
+  'openai-tts': {
+    models: ['gpt-4o-mini-tts', 'tts-1', 'tts-1-hd'],
+    voices: ['alloy', 'coral', 'echo', 'fable', 'nova', 'onyx', 'sage', 'shimmer'],
+  },
+  'siliconflow-cosyvoice': {
+    models: ['FunAudioLLM/CosyVoice2-0.5B'],
+    voices: ['alex', 'anna', 'bella', 'benjamin', 'charles', 'claire', 'david', 'diana']
+      .map(name => `FunAudioLLM/CosyVoice2-0.5B:${name}`),
+  },
+  'gemini-tts': {
+    models: ['gemini-2.5-flash-preview-tts', 'gemini-2.5-pro-preview-tts'],
+    voices: ['Kore', 'Puck', 'Charon', 'Aoede', 'Fenrir', 'Leda', 'Orus', 'Zephyr'],
+  },
+  'cloudflare-tts': {
+    models: ['@cf/myshell-ai/melotts'],
+    voices: ['zh', 'en'],
+  },
+  'groq-tts': {
+    models: ['playai-tts', 'playai-tts-arabic'],
+    voices: ['Fritz-PlayAI', 'Celeste-PlayAI', 'Cheyenne-PlayAI', 'Aaliyah-PlayAI', 'Atlas-PlayAI'],
+  },
+  'selfhosted-openai-tts': {
+    models: ['tts-1', 'kokoro'],
+    voices: ['alloy', 'nova', 'af_heart', 'am_adam'],
+  },
+}
+
+function withHints(entry: VoiceEntry): VoiceEntry {
+  const hint = VOICE_HINTS[entry.id]
+  return {
+    ...entry,
+    models: [...(hint?.models ?? (entry.model ? [entry.model] : []))],
+    voices: [...(hint?.voices ?? (entry.voice ? [entry.voice] : []))],
+  }
 }
 
 const CATALOG: VoiceEntry[] = [
@@ -502,7 +568,17 @@ const CATALOG: VoiceEntry[] = [
 ]
 
 export function voiceCatalog(): VoiceEntry[] {
-  return CATALOG.map(entry => ({ ...entry, setup: [...entry.setup], cautions: [...entry.cautions], tags: [...entry.tags] }))
+  return CATALOG.map(raw => {
+    const entry = withHints(raw)
+    return {
+      ...entry,
+      setup: [...entry.setup],
+      cautions: [...entry.cautions],
+      tags: [...entry.tags],
+      models: [...(entry.models ?? [])],
+      voices: [...(entry.voices ?? [])],
+    }
+  })
 }
 
 export function voiceGuide(id: string): VoiceEntry | undefined {
@@ -533,6 +609,15 @@ export function validateVoiceCatalog(entries: VoiceEntry[] = CATALOG): string[] 
     }
     if (entry.kind === 'asr' && !entry.model.trim()) problems.push(`${entry.id}: ASR 需要默认模型`)
     if (entry.kind === 'tts' && !entry.model.trim()) problems.push(`${entry.id}: TTS 需要默认模型`)
+    const hint = VOICE_HINTS[entry.id]
+    const models = entry.models ?? hint?.models ?? (entry.model ? [entry.model] : [])
+    const voices = entry.voices ?? hint?.voices ?? (entry.voice ? [entry.voice] : [])
+    if (new Set(models).size !== models.length) problems.push(`${entry.id}: models 有重复项`)
+    if (new Set(voices).size !== voices.length) problems.push(`${entry.id}: voices 有重复项`)
+    if (entry.model && !models.includes(entry.model)) problems.push(`${entry.id}: models 必须包含默认模型 ${entry.model}`)
+    if (entry.kind === 'tts' && entry.voice && !voices.includes(entry.voice)) {
+      problems.push(`${entry.id}: voices 必须包含默认音色 ${entry.voice}`)
+    }
     if (entry.adapter === 'edge' && entry.kind !== 'tts') problems.push(`${entry.id}: Edge 只用于 TTS`)
     if (entry.kind === 'asr' && entry.adapter === 'edge') problems.push(`${entry.id}: ASR 不支持 Edge 适配器`)
     if (entry.region !== 'local' && !entry.keyUrl.trim() && entry.adapter !== 'edge') problems.push(`${entry.id}: 缺少 Key 申请地址`)
@@ -544,5 +629,5 @@ export function validateVoiceCatalog(entries: VoiceEntry[] = CATALOG): string[] 
 }
 
 export function voiceByKind(kind: VoiceKind, entries: VoiceEntry[] = CATALOG): VoiceEntry[] {
-  return entries.filter(entry => entry.kind === kind)
+  return entries.filter(entry => entry.kind === kind).map(entry => withHints(entry))
 }

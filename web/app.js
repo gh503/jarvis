@@ -620,6 +620,8 @@ async function bootstrap() {
     state.actions = data.actions || []
     applyStatus(data.status)
     updateAttention(data.attention)
+    // Not awaited: the composer must not wait for the guide catalogue.
+    void loadCatalog()
     renderMemory()
     renderReminders()
     renderRuntime()
@@ -1170,13 +1172,40 @@ function profileReachable(profile) {
   return profile.kind !== 'openai' || profile.hasKey || isLoopbackUrl(profile.baseUrl)
 }
 
+function normalizeEndpoint(value) {
+  return String(value || '').trim().replace(/\/+$/, '').toLowerCase()
+}
+
+/**
+ * Match a saved profile back to the public catalogue so the form can offer
+ * curated ids (vision/embedding especially) before any network call.
+ */
+function catalogEntryFor(profile) {
+  const list = state.catalog || []
+  if (!profile) return null
+  const base = normalizeEndpoint(profile.baseUrl)
+  if (base) {
+    const byBase = list.find(item => item.kind === profile.kind && normalizeEndpoint(item.baseUrl) === base)
+    if (byBase) return byBase
+  }
+  return profile.kind === 'ollama' ? list.find(item => item.id === 'ollama') || null : null
+}
+
+function catalogModelList(profile, field) {
+  return (catalogEntryFor(profile)?.[field] || []).filter(Boolean)
+}
+
 function modelNameOptions(selected) {
+  const curated = catalogModelList(selected, 'models')
+  const fetched = (state.modelOptions[selected.id] || []).map(item => typeof item === 'string' ? item : item.name).filter(Boolean)
+  // Fetched ids come from the service; listing does not guarantee call access.
   const names = [...new Set([
     ...(selected.model ? [selected.model] : []),
-    ...((state.modelOptions[selected.id] || []).map(item => typeof item === 'string' ? item : item.name).filter(Boolean)),
+    ...fetched,
+    ...curated,
   ])]
   if (!names.length) return `<option value="">${selected.kind === 'openai' && !profileReachable(selected) ? '填写 Key 后获取模型' : '正在获取模型列表…'}</option>`
-  return names.map(name => `<option value="${escapeHtml(name)}" ${name === selected.model ? 'selected' : ''}>${escapeHtml(name)}</option>`).join('')
+  return names.map(name => `<option value="${escapeHtml(name)}" ${name === selected.model ? 'selected' : ''}>${escapeHtml(name)}${fetched.includes(name) ? ' · 服务返回' : curated.includes(name) ? ' · 参考预设' : ' · 当前配置'}</option>`).join('')
 }
 
 function settingsDot(ok, warn = false) {
@@ -1360,7 +1389,8 @@ function addProviderCardHtml() {
         </select>
       </label>
       <label class="settings-field wide"><span>Base URL</span><input id="add-base" type="url" placeholder="https://api.groq.com/openai/v1" autocomplete="off" spellcheck="false"></label>
-      <label class="settings-field"><span>模型</span><input id="add-model" type="text" placeholder="先测试连接从列表选择" autocomplete="off" spellcheck="false"></label>
+      <label class="settings-field"><span>模型</span><input id="add-model" type="text" list="add-model-list" placeholder="先测试连接从列表选择" autocomplete="off" spellcheck="false"></label>
+      <datalist id="add-model-list">${[...new Set((state.catalog || []).flatMap(item => item.models || []))].slice(0, 80).map(name => `<option value="${escapeHtml(name)}"></option>`).join('')}</datalist>
       <label class="settings-field"><span>API Key</span><input id="add-key" type="password" autocomplete="new-password" placeholder="sk-..."></label>
     </div>
     <div class="settings-actions">
@@ -1370,10 +1400,22 @@ function addProviderCardHtml() {
   </div>`
 }
 
+function modelHintText(profile) {
+  const entry = catalogEntryFor(profile)
+  const parts = []
+  if (entry?.embeddingModels?.length) parts.push(`常见向量：${entry.embeddingModels.slice(0, 3).map(name => `\`${name}\``).join('、')}`)
+  if (entry?.visionModels?.length) parts.push(`常见视觉：${entry.visionModels.slice(0, 3).map(name => `\`${name}\``).join('、')}`)
+  if (entry?.modelNote) parts.push(entry.modelNote)
+  parts.push('留空时回退到本地 Ollama；远端向量只用于 standard 级记忆，敏感记忆永不出网。')
+  return parts.join(' ')
+}
+
 function modelFormHtml(selected) {
   const remote = selected.kind === 'openai'
   const keyHint = selected.hasKey ? '已保存；留空保持不变' : isLoopbackUrl(selected.baseUrl) ? '可选（localhost 服务）' : '粘贴 API Key'
   const advancedOpen = Boolean(selected.embedModel || selected.visionModel)
+  const visionHints = catalogModelList(selected, 'visionModels')
+  const embedHints = catalogModelList(selected, 'embeddingModels')
   return `<div class="settings-card" id="model-form" data-model-form="${escapeHtml(selected.id)}">
     <div class="settings-card-head">
       <div><h4>编辑 ${escapeHtml(selected.label)}</h4><p>${escapeHtml(remote ? protocolLabel(selected.protocol) : '本机 Ollama 原生接口')}</p></div>
@@ -1390,7 +1432,7 @@ function modelFormHtml(selected) {
       <label class="settings-field${remote ? '' : ' wide'}"><span>Base URL</span>
         <input id="model-base" type="url" autocomplete="off" spellcheck="false" value="${escapeHtml(selected.baseUrl || '')}" placeholder="${remote ? 'https://api.deepseek.com/v1' : 'http://127.0.0.1:11434'}">
       </label>
-      <label class="settings-field wide"><span>模型 <em>从服务地址自动获取</em></span>
+      <label class="settings-field wide"><span>模型 <em>服务返回 / 参考预设，调用权限以控制台为准</em></span>
         <div class="inline-control">
           <select id="model-name">${modelNameOptions(selected)}</select>
           <button type="button" class="model-action" id="model-refresh" title="重新读取模型列表">刷新</button>
@@ -1406,13 +1448,15 @@ function modelFormHtml(selected) {
       <summary>高级：记忆向量与视觉模型</summary>
       <div class="settings-form-grid">
         <label class="settings-field"><span>记忆向量模型 <em>可选</em></span>
-          <input id="model-embed" type="text" autocomplete="off" spellcheck="false" value="${escapeHtml(selected.embedModel || '')}" placeholder="nomic-embed-text">
+          <input id="model-embed" type="text" list="model-embed-list" autocomplete="off" spellcheck="false" value="${escapeHtml(selected.embedModel || '')}" placeholder="nomic-embed-text">
+          <datalist id="model-embed-list">${embedHints.map(name => `<option value="${escapeHtml(name)}"></option>`).join('')}</datalist>
         </label>
         <label class="settings-field"><span>视觉模型 <em>可选</em></span>
-          <input id="model-vision" type="text" autocomplete="off" spellcheck="false" value="${escapeHtml(selected.visionModel || '')}" placeholder="qwen2.5vl:3b">
+          <input id="model-vision" type="text" list="model-vision-list" autocomplete="off" spellcheck="false" value="${escapeHtml(selected.visionModel || '')}" placeholder="qwen2.5vl:3b">
+          <datalist id="model-vision-list">${visionHints.map(name => `<option value="${escapeHtml(name)}"></option>`).join('')}</datalist>
         </label>
       </div>
-      <p class="settings-hint">远端未填写时会回退到本地 Ollama；Anthropic 没有官方 embedding 接口。</p>
+      <p class="settings-hint">${escapeHtml(modelHintText(selected))}</p>
     </details>
     <p class="settings-hint">Base URL 只填域名或完整端点都可以。远端必须 HTTPS；只有 localhost 可用 HTTP。Key 只存本机 <code>data/model-config.json</code>（0600），不会回显。</p>
     <div class="settings-actions">
@@ -1530,10 +1574,30 @@ function voicePresetHtml(kind) {
   </div>`
 }
 
+function voiceHintsFor(kind, entry) {
+  const list = (state.voices || []).filter(item => item.kind === kind)
+  const candidates = list.filter(item => entry.kind === 'local'
+    ? !item.baseUrl && item.adapter !== 'edge'
+    : entry.adapter === 'edge'
+      ? item.adapter === 'edge'
+      : Boolean(entry.baseUrl) && normalizeEndpoint(item.baseUrl) === normalizeEndpoint(entry.baseUrl)
+        && (!entry.adapter || entry.adapter === 'auto' || entry.adapter === item.adapter))
+  const found = candidates.find(item => item.id === entry.id)
+    || candidates.find(item => item.models?.includes(entry.model))
+    || (candidates.length === 1 ? candidates[0] : null)
+  return {
+    models: (found?.models || (entry.model ? [entry.model] : [])).filter(Boolean),
+    voices: (found?.voices || (entry.voice ? [entry.voice] : [])).filter(Boolean),
+  }
+}
+
 function voiceFormHtml(kind) {
   const entry = voiceEntry(kind, state.voiceEdit[kind])
   if (!entry) return ''
   const local = entry.kind === 'local'
+  const hints = voiceHintsFor(kind, entry)
+  const datalists = `<datalist id="${kind}-model-list">${hints.models.map(name => `<option value="${escapeHtml(name)}"></option>`).join('')}</datalist>
+    <datalist id="${kind}-voice-list">${hints.voices.map(name => `<option value="${escapeHtml(name)}"></option>`).join('')}</datalist>`
   const adapters = kind === 'asr'
     ? [['auto', '自动识别（按服务地址）'], ['openai', 'OpenAI 兼容'], ['gemini', 'Google Gemini（原生音频）'], ['cloudflare', 'Cloudflare Workers AI']]
     : [['auto', '自动识别（按服务地址）'], ['openai', 'OpenAI 兼容'], ['gemini', 'Google Gemini（原生 TTS）'], ['cloudflare', 'Cloudflare Workers AI'], ['edge', 'Edge TTS（本机命令，免费）']]
@@ -1554,7 +1618,8 @@ function voiceFormHtml(kind) {
     }
     const type = name === 'baseUrl' ? 'url' : 'text'
     const extra = name === 'baseUrl' ? 'autocomplete="off" spellcheck="false"' : ''
-    return `<label class="settings-field"><span>${label}</span><input ${attrs} type="${type}" ${extra} value="${escapeHtml(value ?? '')}" placeholder="${escapeHtml(options.placeholder || '')}" ${options.id ? `id="${options.id}"` : ''}></label>`
+    const list = options.list ? ` list="${options.list}"` : ''
+    return `<label class="settings-field"><span>${label}</span><input ${attrs} type="${type}" ${extra}${list} value="${escapeHtml(value ?? '')}" placeholder="${escapeHtml(options.placeholder || '')}" ${options.id ? `id="${options.id}"` : ''}></label>`
   }
   const header = `<div class="voice-form-head">
       <strong>${local ? '本地引擎' : '远端服务'} · ${escapeHtml(entry.label || entry.id)}</strong>
@@ -1564,9 +1629,10 @@ function voiceFormHtml(kind) {
     return `<div class="voice-form" data-voice-form="${kind}">${header}
       ${field('label', '名称', entry.label, { id: `${kind}-label` })}
       <div class="settings-form-grid">
-        ${field('model', '模型', entry.model, { placeholder: kind === 'asr' ? 'small' : 'piper', id: `${kind}-model` })}
-        ${kind === 'asr' ? field('language', '语言', entry.language, { id: `${kind}-language` }) : field('voice', '音色', entry.voice, { id: `${kind}-voice` })}
+        ${field('model', '模型', entry.model, { placeholder: kind === 'asr' ? 'small' : 'piper', id: `${kind}-model`, list: `${kind}-model-list` })}
+        ${kind === 'asr' ? field('language', '语言', entry.language, { id: `${kind}-language` }) : field('voice', '音色', entry.voice, { id: `${kind}-voice`, list: `${kind}-voice-list` })}
       </div>
+      ${datalists}
       <p class="settings-hint">本地引擎不出网、无调用费${kind === 'asr' ? '；首次识别要加载模型，会慢几秒' : '；音色数量取决于本机安装的模型'}。</p>
     </div>`
   }
@@ -1582,11 +1648,12 @@ function voiceFormHtml(kind) {
     </div>
     ${baseField}
     <div class="settings-form-grid">
-      ${field('model', '模型', entry.model, { placeholder: kind === 'asr' ? 'whisper-1' : 'tts-1', id: `${kind}-model` })}
-      ${kind === 'asr' ? field('language', '语言', entry.language, { id: `${kind}-language` }) : field('voice', '音色', entry.voice, { placeholder: 'alloy / Kore / zh-CN-XiaoxiaoNeural', id: `${kind}-voice` })}
+      ${field('model', '模型', entry.model, { placeholder: kind === 'asr' ? 'whisper-1' : 'tts-1', id: `${kind}-model`, list: `${kind}-model-list` })}
+      ${kind === 'asr' ? field('language', '语言', entry.language, { id: `${kind}-language` }) : field('voice', '音色', entry.voice, { placeholder: 'alloy / Kore / zh-CN-XiaoxiaoNeural', id: `${kind}-voice`, list: `${kind}-voice-list` })}
     </div>
     ${keyField}
-  </div>`
+  </div>
+  ${datalists}`
 }
 
 function voicePanelHtml() {
@@ -2284,7 +2351,7 @@ function renderVoicePanel() {
 
 function voiceProfileFromCatalog(entry) {
   const kind = entry.kind
-  const local = !entry.baseUrl
+  const local = !entry.baseUrl && entry.adapter !== 'edge'
   return {
     id: uniqueVoiceId(kind, local ? 'local' : entry.id),
     label: entry.name.slice(0, 64),
@@ -2430,8 +2497,8 @@ function bindVoiceSettings() {
       const kind = preset.dataset.voicePresetKind
       const entry = (state.voices || []).find(item => item.id === preset.dataset.voicePresetId)
       if (!entry) return
-      const local = !entry.baseUrl
-      const existing = ensureVoiceDraft()[kind].find(item => local ? item.kind === 'local' : item.baseUrl === entry.baseUrl)
+      const local = !entry.baseUrl && entry.adapter !== 'edge'
+      const existing = ensureVoiceDraft()[kind].find(item => local ? item.kind === 'local' : entry.adapter === 'edge' ? item.adapter === 'edge' : item.kind === 'remote' && item.baseUrl === entry.baseUrl && item.model === entry.model)
       if (existing) {
         state.voiceEdit[kind] = existing.id
         state.voicePicker[kind] = false
@@ -2533,6 +2600,10 @@ async function showSettings(options = {}) {
     api('/api/voice'),
     api('/api/model'),
     api('/api/tuning'),
+    // Warm the public catalogue before rendering: the model form uses it for
+    // vision/embedding suggestions without a second round-trip.
+    loadCatalog(),
+    loadVoiceCatalog(),
   ])
   if (voiceResult.status === 'fulfilled') {
     state.voiceSettings = voiceResult.value.settings
@@ -2779,8 +2850,8 @@ async function applyVoiceGuide(id, options = {}) {
   ensureVoiceDraft()
   const kind = entry.kind
   const chain = state.voiceDraft[kind]
-  const local = !entry.baseUrl
-  const existing = chain.find(item => local ? item.kind === 'local' : (item.baseUrl && item.baseUrl === entry.baseUrl))
+  const local = !entry.baseUrl && entry.adapter !== 'edge'
+  const existing = chain.find(item => local ? item.kind === 'local' : entry.adapter === 'edge' ? item.adapter === 'edge' : item.kind === 'remote' && item.baseUrl === entry.baseUrl && item.model === entry.model)
   if (existing) {
     state.voiceEdit[kind] = existing.id
     state.voicePicker[kind] = false

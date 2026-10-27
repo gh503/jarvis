@@ -134,11 +134,21 @@ test('server enforces proxy auth, CSRF and serves the shell', async () => {
     assert.equal(catalog.status, 200)
     const catalogText = await catalog.text()
     assert.doesNotMatch(catalogText, /"apiKey"\s*:/)
-    const catalogBody = JSON.parse(catalogText) as { providers: Array<{ id: string, baseUrl: string, region: string }>, platform?: { os?: string } }
+    const catalogBody = JSON.parse(catalogText) as {
+      providers: Array<{ id: string, baseUrl: string, region: string, models: string[], visionModels: string[], embeddingModels: string[] }>,
+      platform?: { os?: string },
+    }
     assert.ok(catalogBody.providers.length >= 15)
     assert.ok(catalogBody.providers.every(item => /^https?:\/\//.test(item.baseUrl)))
     assert.ok(catalogBody.providers.some(item => item.region === 'cn'))
     assert.ok(catalogBody.providers.some(item => item.region === 'local'))
+    // The settings form and /providers render these without a second request.
+    for (const provider of catalogBody.providers) {
+      assert.ok(Array.isArray(provider.models), `${provider.id} 缺少 models`)
+      assert.ok(Array.isArray(provider.visionModels), `${provider.id} 缺少 visionModels`)
+      assert.ok(Array.isArray(provider.embeddingModels), `${provider.id} 缺少 embeddingModels`)
+    }
+    assert.ok(catalogBody.providers.find(item => item.id === 'ollama')?.embeddingModels.includes('nomic-embed-text'))
 
     // Voice presets are public for the same reason: the guide must be readable
     // before a key exists.
