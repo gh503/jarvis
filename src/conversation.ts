@@ -1,4 +1,6 @@
 import { randomUUID } from 'node:crypto'
+import { prepareContext } from './context.ts'
+import { isContextOverflow } from './model/context-budget.ts'
 import { readdir, rm, stat } from 'node:fs/promises'
 import { join } from 'node:path'
 import type { AttentionManager } from './attention.ts'
@@ -593,6 +595,8 @@ export class Conversation {
     }
     const item = result.items[0]
     this.deps.memory.delete(item.id)
+    if (item.sourceRef.startsWith('turn:')) this.deps.sessions?.excludeTurnFromContext(item.sourceRef.slice(5))
+    this.deps.sessions?.invalidateSummaries()
     return { reply: `忘掉了：${item.gist}` }
   }
 
@@ -684,25 +688,42 @@ export class Conversation {
       })),
     ].join('\n') })
     if (memoryBlock) messages.push({ role: 'system', content: memoryBlock })
-    const maxContext = Math.max(0, Math.round(this.deps.tuning.number('conversation.maxContextMessages')))
-    const charBudget = Math.max(0, Math.round(this.deps.tuning.number('conversation.contextChars')))
-    if (maxContext > 0) {
-      if (this.deps.sessions) {
-        messages.push(...this.deps.sessions.context(options.sessionId!, maxContext, charBudget)
-          .map(item => ({ role: item.role, content: item.content } as ChatMessage)))
-      } else {
-        let used = 0
-        const context: ChatMessage[] = []
-        for (const item of this.history.slice(-maxContext).reverse()) {
-          if (used + item.content.length > charBudget) break
-          used += item.content.length
-          context.unshift(item)
-        }
-        messages.push(...context)
-      }
+    const requestOptions = {
+      signal: options.signal ?? this.abort?.signal,
+      temperature: scenario?.temperature ?? this.deps.tuning.number('conversation.temperature'),
+      timeoutMs: Math.round(this.deps.tuning.number('conversation.streamTimeoutMs')),
+      model: scenario?.model || undefined,
+      maxTokens: scenario?.maxTokens ?? undefined,
+      profileIds: scenario && scenario.profileIds.length > 0 ? scenario.profileIds : undefined,
     }
+    const epoch = this.deps.memory.mutationEpoch?.()
+    const routeIdentity = `${requestClient.status?.().id ?? ''}:${requestClient.model}`
+    const checkContext = () => {
+      this.check(turn)
+      if (`${requestClient.status?.().id ?? ''}:${requestClient.model}` !== routeIdentity) throw new Error('模型已切换，请重新发送。')
+      if (epoch !== this.deps.memory.mutationEpoch?.()) throw new Error('记忆或资料已变更，请重新发送。')
+    }
+    const contextInput = {
+      client: requestClient, summarizer: local.isLocal === true ? local : undefined,
+      options: requestOptions, sessions: this.deps.sessions, sessionId: options.sessionId!,
+      scope: `${scenarioId ?? 'global'}:${requestClient.isLocal === true ? 'local' : 'shared'}:${requestClient.model}`,
+      system: messages[0], user: {role:'user' as const,content:text}, optional: messages.slice(1),
+      fallback: this.history, maxRecentMessages: Math.max(0,Math.round(this.deps.tuning.number('conversation.maxContextMessages'))),
+      check: checkContext,
+      notice: (event: import('./context.ts').ContextNotice) => this.emitTurn('assistant.context', {...event}),
+    }
+    let plan = await prepareContext(contextInput)
+    // Report only references actually included by the total budget, including retries.
+    const noteActualContext = () => {
+      if (profileEntries.length && !plan.messages.includes(messages[1])) {
+        profileUsed.length = 0
+        turn.profileUsed = []
+      }
+      const memoryMessage = memoryBlock ? messages.at(-1) : undefined
+      if (memoryMessage && !plan.messages.includes(memoryMessage)) contextUsed.length = 0
+    }
+    noteActualContext()
     this.check(turn)
-    messages.push({ role: 'user', content: text })
 
     let reply = ''
     let emitted = false
@@ -726,14 +747,33 @@ export class Conversation {
       }
     }
     try {
-      for await (const delta of requestClient.chatStream(messages, {
-        signal: options.signal ?? this.abort?.signal,
-        temperature: scenario?.temperature ?? this.deps.tuning.number('conversation.temperature'),
-        timeoutMs: Math.round(this.deps.tuning.number('conversation.streamTimeoutMs')),
-        model: scenario?.model || undefined,
-        maxTokens: scenario?.maxTokens ?? undefined,
-        profileIds: scenario && scenario.profileIds.length > 0 ? scenario.profileIds : undefined,
-      })) {
+      const stream = async function* () {
+        for (let attempt = 0; attempt < 2; attempt++) {
+          let produced = false
+          try {
+            const latestLimits = await requestClient.contextLimits?.(requestOptions)
+            checkContext()
+            if (latestLimits && (latestLimits.contextWindow < plan.numCtx || latestLimits.maxOutputTokens < plan.maxTokens)) {
+              plan = await prepareContext({...contextInput,force:attempt > 0})
+              noteActualContext()
+            }
+            checkContext()
+            for await (const delta of requestClient.chatStream(plan.messages, {...requestOptions,maxTokens:plan.maxTokens,numCtx:plan.numCtx})) {
+              produced = true
+              yield delta
+            }
+            return
+          } catch(error) {
+            if (produced || attempt > 0 || !isContextOverflow(error)) throw error
+            checkContext()
+            const previous = plan.estimatedTokens
+            plan = await prepareContext({...contextInput,force:true})
+            noteActualContext()
+            if (plan.estimatedTokens >= previous) throw error
+          }
+        }
+      }
+      for await (const delta of stream()) {
         if (options.signal?.aborted) throw new Error('Turn cancelled')
         this.check(turn)
         this.deps.sessions?.appendDelta(options.turnId!, delta)
@@ -753,7 +793,7 @@ export class Conversation {
       speechStarted = true
       this.enqueueSpeech(speechBuffer)
     }
-    return { reply: reply.trim(), profileUsed, contextUsed, audioSpoken: speechStarted, memoryIds: recall.items.map(item => item.id) }
+    return { reply: reply.trim(), profileUsed, contextUsed, audioSpoken: speechStarted, memoryIds: contextUsed.length ? recall.items.map(item => item.id) : [] }
   }
 
   private async look(target: 'screen' | 'camera', userText: string, forceVision = false): Promise<TurnResult> {
@@ -916,7 +956,8 @@ export class Conversation {
 
   /** Stop continued output from a turn whose profile inputs were just changed. */
   invalidateProfileUsage(): void {
-    if (this.active?.profileUsed?.length) this.cancel(this.identity(this.active))
+    this.deps.sessions?.invalidateSummaries()
+    if (this.active) this.cancel(this.identity(this.active))
   }
 
   async quiesce(): Promise<void> {

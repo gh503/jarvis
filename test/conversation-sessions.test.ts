@@ -3,6 +3,7 @@ import assert from 'node:assert/strict'
 import { Conversation, type ConversationDeps } from '../src/conversation.ts'
 import { SessionStore } from '../src/sessions.ts'
 import { EventBus } from '../src/events.ts'
+import { estimateMessagesTokens } from '../src/model/context-budget.ts'
 import type { ChatMessage } from '../src/model/ollama.ts'
 
 function deferred<T = void>() {
@@ -52,7 +53,8 @@ test('selected session context is bounded, isolated, and terminal retries are id
     f.sessions.beginTurn(a, 'long', 'x'.repeat(100), 'text')
     f.sessions.finishTurn('long', { text: 'y'.repeat(100), status: 'complete' })
     await f.conversation.handleText('bounded', { sessionId: a, turnId: 'a3', skipAttention: true })
-    assert.ok(seen[3].slice(1, -1).reduce((n, m) => n + m.content.length, 0) <= 80)
+    assert.ok(estimateMessagesTokens(seen[3]) + 1024 + Math.ceil(4096 * .08) <= 4096)
+    assert.equal(seen[3].at(-1)?.content, 'bounded')
   } finally { f.conversation.reset(); f.sessions.close() }
 })
 

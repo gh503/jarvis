@@ -64,13 +64,16 @@ try {
         const reference = new DatabaseSync(referenceFile, { readOnly: true })
         try {
           const version = check.prepare('PRAGMA user_version').get()!.user_version
-          if (version !== reference.prepare('PRAGMA user_version').get()!.user_version) {
+          if (version !== 1 && version !== reference.prepare('PRAGMA user_version').get()!.user_version) {
             throw new Error(`Unsupported sessions database version: ${version}`)
           }
           const schema = (db: DatabaseSync) => db.prepare(
             "SELECT type,name,tbl_name,sql FROM sqlite_master WHERE name NOT LIKE 'sqlite_%' ORDER BY type,name"
           ).all()
-          if (JSON.stringify(schema(check)) !== JSON.stringify(schema(reference))) {
+          // v1 has the identical transcript schema, before derived context tables were added.
+          const expected = schema(reference).filter(row => version !== 1
+            || !['context_revisions', 'session_summaries'].includes(String(row.tbl_name)))
+          if (JSON.stringify(schema(check)) !== JSON.stringify(expected)) {
             throw new Error('sessions.db does not match the SessionStore schema')
           }
           if (check.prepare('PRAGMA foreign_key_check').all().length) {

@@ -1,3 +1,4 @@
+import { isContextOverflow } from './context-budget.ts'
 /**
  * Provider failure classification and cooldown policy for automatic failover.
  *
@@ -15,6 +16,7 @@ export interface CooldownEntry {
 }
 
 export function classifyModelError(error: unknown): FailureKind {
+  if (isContextOverflow(error) || (error as { code?: string })?.code === 'MODEL_OUTPUT_TRUNCATED') return 'client'
   const status = typeof (error as { status?: unknown })?.status === 'number' ? (error as { status: number }).status : undefined
   const message = (error instanceof Error ? error.message : String(error)).toLowerCase()
 

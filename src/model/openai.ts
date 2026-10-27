@@ -1,23 +1,27 @@
+import { contextWindow, contextLimitsFor, isContextOverflow, requireCompleteOutput } from './context-budget.ts'
 import type { Embedder } from '../memory/types.ts'
 import type { ChatMessage, ChatOptions, ModelClient, ModelHealth, ModelInfo, ModelStatus } from './types.ts'
 import { isCloudflareBaseUrl, listCloudflareModels } from './cloudflare.ts'
 
 interface OpenAIChoice {
+  finish_reason?: string
   delta?: { content?: string }
   message?: { content?: string }
 }
 
 interface OpenAIChunk {
   choices?: OpenAIChoice[]
-  error?: { message?: string }
+  error?: { message?: string; code?: string; type?: string }
 }
 
 export type OpenAIProtocol = 'chat-completions' | 'responses'
 
 export class OpenAIError extends Error {
-  constructor(message: string, readonly status?: number) {
+  readonly code?: string
+  constructor(message: string, readonly status?: number, detail?: unknown) {
     super(message)
     this.name = 'OpenAIError'
+    if (isContextOverflow(detail ?? message)) this.code = 'CONTEXT_WINDOW_EXCEEDED'
   }
 }
 
@@ -27,6 +31,7 @@ export class OpenAIError extends Error {
  * LM Studio, OpenRouter and Ollama's /v1 compatibility layer all work.
  */
 export class OpenAICompatibleClient implements ModelClient, Embedder {
+  private readonly configuredWindow: number
   readonly model: string
   readonly visionModel: string
   readonly embedModel: string
@@ -37,6 +42,7 @@ export class OpenAICompatibleClient implements ModelClient, Embedder {
   private readonly protocol: OpenAIProtocol
 
   constructor(options: {
+    contextWindow?: number
     baseUrl: string
     model: string
     apiKey?: string
@@ -54,6 +60,7 @@ export class OpenAICompatibleClient implements ModelClient, Embedder {
       // Validation happens in ModelSettingsStore; keep the raw value for a useful error.
     }
     this.baseUrl = normalized
+    this.configuredWindow = contextWindow(options.contextWindow)
     this.model = options.model
     this.apiKey = options.apiKey ?? ''
     this.visionModel = options.visionModel ?? ''
@@ -61,6 +68,10 @@ export class OpenAICompatibleClient implements ModelClient, Embedder {
     this.id = options.id ?? 'remote'
     this.label = options.label ?? '远端模型'
     this.protocol = options.protocol === 'responses' ? 'responses' : 'chat-completions'
+  }
+
+  async contextLimits(options: ChatOptions = {}): Promise<{ contextWindow: number; maxOutputTokens: number }> {
+    return contextLimitsFor(this.configuredWindow, options, this.model)
   }
 
   status(): ModelStatus {
@@ -123,7 +134,7 @@ export class OpenAICompatibleClient implements ModelClient, Embedder {
       messages: payloadMessages,
       stream,
       temperature: options.temperature ?? 0.4,
-      ...(options.maxTokens ? { max_tokens: options.maxTokens } : {}),
+      max_tokens: contextLimitsFor(this.configuredWindow, options, this.model).maxOutputTokens,
     })
   }
 
@@ -146,7 +157,7 @@ export class OpenAICompatibleClient implements ModelClient, Embedder {
       stream,
       ...(instructions ? { instructions } : {}),
       ...(options.temperature !== undefined ? { temperature: options.temperature } : {}),
-      ...(options.maxTokens ? { max_output_tokens: options.maxTokens } : {}),
+      max_output_tokens: contextLimitsFor(this.configuredWindow, options, this.model).maxOutputTokens,
     })
   }
 
@@ -171,11 +182,13 @@ export class OpenAICompatibleClient implements ModelClient, Embedder {
       })
       if (!response.ok || !response.body) {
         const detail = await response.text().catch(() => '')
-        throw new OpenAIError(`远端模型请求失败：HTTP ${response.status} ${detail.slice(0, 300)}`, response.status)
+        throw new OpenAIError(`远端模型请求失败：HTTP ${response.status} ${detail.slice(0, 300)}`, response.status, detail)
       }
       const contentType = response.headers.get('content-type') ?? ''
       if (!contentType.includes('text/event-stream')) {
         const data = (await response.json()) as OpenAIChunk
+        if (data.error) throw new OpenAIError(data.error.message ?? 'OpenAI error', undefined, data.error)
+        requireCompleteOutput(options, data.choices?.[0]?.finish_reason)
         const content = data.choices?.[0]?.message?.content ?? data.choices?.[0]?.delta?.content
         if (content) yield content
         return
@@ -201,7 +214,8 @@ export class OpenAICompatibleClient implements ModelClient, Embedder {
           } catch {
             continue
           }
-          if (chunk.error?.message) throw new OpenAIError(chunk.error.message)
+          if (chunk.error) throw new OpenAIError(chunk.error.message ?? 'OpenAI stream error', undefined, chunk.error)
+          requireCompleteOutput(options, chunk.choices?.[0]?.finish_reason)
           const content = chunk.choices?.[0]?.delta?.content
           if (content) yield content
         }
@@ -224,14 +238,18 @@ export class OpenAICompatibleClient implements ModelClient, Embedder {
       })
       if (!response.ok || !response.body) {
         const detail = await response.text().catch(() => '')
-        throw new OpenAIError(`Responses 请求失败：HTTP ${response.status} ${detail.slice(0, 300)}`, response.status)
+        throw new OpenAIError(`Responses 请求失败：HTTP ${response.status} ${detail.slice(0, 300)}`, response.status, detail)
       }
       const contentType = response.headers.get('content-type') ?? ''
       if (!contentType.includes('text/event-stream')) {
         const data = (await response.json()) as {
+          incomplete_details?: { reason?: string }
+          error?: { message?: string; code?: string }
           output_text?: string
           output?: Array<{ content?: Array<{ type?: string; text?: string }> }>
         }
+        if (data.error) throw new OpenAIError(data.error.message ?? 'Responses error', undefined, data.error)
+        requireCompleteOutput(options, data.incomplete_details?.reason)
         const text = data.output_text ?? (data.output ?? [])
           .flatMap(item => item.content ?? [])
           .filter(item => item.type === 'output_text' || item.text)
@@ -258,8 +276,10 @@ export class OpenAICompatibleClient implements ModelClient, Embedder {
           let event: {
             type?: string
             delta?: string
-            error?: { message?: string }
-            response?: { output_text?: string }
+            error?: { message?: string; code?: string; type?: string }
+            response?: { output_text?: string; incomplete_details?: { reason?: string }; error?: { message?: string; code?: string } }
+            code?: string
+            message?: string
           }
           try {
             event = JSON.parse(raw) as typeof event
@@ -270,11 +290,13 @@ export class OpenAICompatibleClient implements ModelClient, Embedder {
             sawDelta = true
             yield event.delta
           }
+          requireCompleteOutput(options, event.response?.incomplete_details?.reason)
+          if (event.type === 'response.failed') throw new OpenAIError(event.response?.error?.message ?? 'Responses failed', undefined, event.response?.error)
           if (event.type === 'response.completed') {
             if (!sawDelta && event.response?.output_text) yield event.response.output_text
             return
           }
-          if (event.type === 'error') throw new OpenAIError(event.error?.message ?? 'Responses stream error')
+          if (event.type === 'error') throw new OpenAIError(event.error?.message ?? event.message ?? 'Responses stream error', undefined, event.error ?? event)
         }
       }
     } finally {

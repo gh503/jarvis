@@ -28,6 +28,23 @@ export interface SessionMessage {
   error: string | null;
   metadata: Record<string, unknown> | null;
 }
+export interface SessionSummary {
+  sessionId: string;
+  scope: string;
+  text: string;
+  throughMessageId: number;
+  sourceIds: number[];
+  revision: number;
+  createdAt: number;
+}
+export interface SaveSummaryInput {
+  sessionId: string;
+  scope: string;
+  text: string;
+  throughMessageId: number;
+  sourceIds: number[];
+  expectedRevision: number;
+}
 export interface SessionStoreOptions { file: string; now?: () => number }
 export interface SessionListOptions { query?: string; limit?: number; offset?: number; archived?: boolean }
 export interface MessageListOptions { before?: number; limit?: number }
@@ -129,12 +146,12 @@ export class SessionStore {
   private migrate(): void {
     this.transaction(() => {
       const version = Number(this.db.prepare('PRAGMA user_version').get()!.user_version);
-      if (version === 1) return;
-      if (version !== 0) throw new Error(`Unsupported sessions database version: ${version}`);
-      if (this.db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'").get()) {
+      if (version === 2) return;
+      if (version !== 0 && version !== 1) throw new Error(`Unsupported sessions database version: ${version}`);
+      if (version === 0 && this.db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'").get()) {
         throw new Error('Refusing to adopt an existing non-session database');
       }
-      this.db.exec(`
+      if (version === 0) this.db.exec(`
         CREATE TABLE sessions (
           id TEXT PRIMARY KEY, title TEXT NOT NULL, title_explicit INTEGER NOT NULL DEFAULT 0 CHECK(title_explicit IN (0,1)),
           created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL, archived INTEGER NOT NULL DEFAULT 0 CHECK(archived IN (0,1))
@@ -150,7 +167,19 @@ export class SessionStore {
         CREATE INDEX sessions_archived_updated ON sessions(archived,updated_at DESC,id);
         CREATE INDEX messages_session_id ON messages(session_id,id);
         CREATE INDEX messages_status ON messages(status);
-        PRAGMA user_version=1;
+      `);
+      this.db.exec(`
+        CREATE TABLE context_revisions (
+          session_id TEXT PRIMARY KEY, revision INTEGER NOT NULL DEFAULT 0
+        );
+        INSERT INTO context_revisions(session_id) SELECT id FROM sessions;
+        CREATE TABLE session_summaries (
+          session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+          scope TEXT NOT NULL, text TEXT NOT NULL, through_message_id INTEGER NOT NULL,
+          source_ids TEXT NOT NULL, revision INTEGER NOT NULL, created_at INTEGER NOT NULL,
+          PRIMARY KEY(session_id,scope)
+        );
+        PRAGMA user_version=2;
       `);
     });
   }
@@ -190,6 +219,19 @@ export class SessionStore {
     this.db.prepare('INSERT INTO sessions(id,title,title_explicit,created_at,updated_at) VALUES(?,?,?,?,?)')
       .run(id, title?.trim() ?? UNTITLED, title === undefined ? 0 : 1, at, at);
     return this.requireSession(id);
+  }
+  private contextRevision(sessionId: string): number {
+    return Number(this.db.prepare('SELECT revision FROM context_revisions WHERE session_id=?').get(sessionId)?.revision ?? 0);
+  }
+  private bumpContextRevision(sessionId: string): number {
+    // Deliberately survives deletion: recreating the stable default id must not revive stale work.
+    this.db.prepare(`INSERT INTO context_revisions(session_id,revision) VALUES(?,1)
+      ON CONFLICT(session_id) DO UPDATE SET revision=revision+1`).run(sessionId);
+    return this.contextRevision(sessionId);
+  }
+  private invalidateSessionSummaries(sessionId: string): void {
+    this.bumpContextRevision(sessionId);
+    this.db.prepare('DELETE FROM session_summaries WHERE session_id=?').run(sessionId);
   }
   /** Stable legacy conversation, recreated after deletion or clearAll(). */
   getOrCreateDefault(): Session {
@@ -233,11 +275,18 @@ export class SessionStore {
   }
   delete(id: string): boolean {
     text(id, 'sessionId', 256);
-    return this.db.prepare('DELETE FROM sessions WHERE id=?').run(id).changes > 0;
+    return this.transaction(() => {
+      if (!this.get(id)) return false;
+      this.invalidateSessionSummaries(id);
+      return this.db.prepare('DELETE FROM sessions WHERE id=?').run(id).changes > 0;
+    });
   }
   /** Deletes transcripts and checkpoints/truncates WAL; cannot erase external backups or filesystem snapshots. */
   clearAll(): void {
-    this.transaction(() => { this.db.exec('DELETE FROM sessions'); });
+    this.transaction(() => {
+      for (const row of this.db.prepare('SELECT id FROM sessions').all()) this.invalidateSessionSummaries(String(row.id));
+      this.db.exec('DELETE FROM sessions');
+    });
     const checkpoint = this.db.prepare('PRAGMA wal_checkpoint(TRUNCATE)').get();
     if (checkpoint && Number(checkpoint.busy)) throw new Error('Sessions erased, but WAL checkpoint is busy; close other database readers and retry clearAll');
     this.db.exec('VACUUM');
@@ -313,9 +362,18 @@ export class SessionStore {
           && (options.metadata === undefined || metadata === JSON.stringify(assistant.metadata))) return assistant;
         throw new SessionStoreError('CONFLICT', 'Turn is already finished');
       }
+      if (assistant.metadata?.contextExcluded === true) {
+        metadata = JSON.stringify({ ...(metadata ? JSON.parse(metadata) as Record<string, unknown> : {}), contextExcluded: true });
+      }
       const at = this.timestamp();
       this.db.prepare('UPDATE messages SET content=?,status=?,error=?,metadata=?,updated_at=max(updated_at,?) WHERE id=?')
         .run(options.text ?? assistant.content, options.status, options.error ?? null, metadata, at, assistant.id);
+      if (options.status === 'complete') {
+        // An older concurrent turn can become eligible behind an already summarized cursor.
+        if (this.db.prepare('SELECT 1 FROM session_summaries WHERE session_id=? AND through_message_id>=?')
+          .get(assistant.sessionId, assistant.id)) this.invalidateSessionSummaries(assistant.sessionId);
+        else this.bumpContextRevision(assistant.sessionId);
+      }
       this.touch(assistant.sessionId, at);
       return this.requirePair(turnId).assistant;
     });
@@ -348,9 +406,83 @@ export class SessionStore {
     }
     return pairs.reverse().flat();
   }
+  private eligiblePairs(sessionId: string, after: number, through: number, limit: number): Row[] {
+    return this.db.prepare(`SELECT u.id AS user_id,a.id AS assistant_id FROM messages u
+      JOIN messages a ON a.turn_id=u.turn_id AND a.role='assistant'
+      WHERE u.session_id=? AND a.session_id=? AND u.role='user'
+        AND u.status='complete' AND a.status='complete' AND u.id>? AND a.id<=?
+        AND coalesce(json_extract(u.metadata,'$.contextExcluded'),0)<>1
+        AND coalesce(json_extract(a.metadata,'$.contextExcluded'),0)<>1
+      ORDER BY u.id ASC LIMIT ?`).all(sessionId, sessionId, after, through, limit);
+  }
+  /** Scope is opaque (for example a privacy/model route); it never filters transcript scenarios.
+   * Returns the earliest at most 10,000 eligible messages after the summary cursor, in whole pairs.
+   * Revision is session-wide, including other scopes. Capture it before asynchronous summarization.
+   */
+  contextState(sessionId: string, scope: string): { summary: SessionSummary | null; messages: SessionMessage[]; revision: number; hasMore: boolean } {
+    text(scope, 'scope', 4096);
+    return this.transaction(() => {
+      this.requireSession(sessionId);
+      const row = this.db.prepare('SELECT * FROM session_summaries WHERE session_id=? AND scope=?').get(sessionId, scope);
+      const summary: SessionSummary | null = row ? {
+        sessionId, scope, text: String(row.text), throughMessageId: Number(row.through_message_id),
+        sourceIds: JSON.parse(String(row.source_ids)) as number[], revision: Number(row.revision), createdAt: Number(row.created_at),
+      } : null;
+      const select = this.db.prepare('SELECT * FROM messages WHERE id=?');
+      const pairs = this.eligiblePairs(sessionId, summary?.throughMessageId ?? 0, Number.MAX_SAFE_INTEGER, 5001);
+      const messages = pairs.slice(0, 5000)
+        .flatMap(pair => [message(select.get(Number(pair.user_id))!), message(select.get(Number(pair.assistant_id))!)]);
+      return { summary, messages, revision: this.contextRevision(sessionId), hasMore: pairs.length > 5000 };
+    });
+  }
+  /** Atomically replace a derived summary. sourceIds must be the complete cumulative eligible
+   * prefix in chronological order, ending on an assistant id; invalid or stale input conflicts.
+   * Completed source text is immutable; the session revision protects its eligibility fingerprint.
+   */
+  saveSummary(input: SaveSummaryInput): SessionSummary {
+    text(input.scope, 'scope', 4096); text(input.text, 'text', MAX_TEXT);
+    integer(input.throughMessageId, 'throughMessageId', 1, Number.MAX_SAFE_INTEGER);
+    integer(input.expectedRevision, 'expectedRevision', 0, Number.MAX_SAFE_INTEGER);
+    if (!Array.isArray(input.sourceIds)) throw new TypeError('sourceIds must be an array');
+    for (const id of input.sourceIds) integer(id, 'sourceId', 1, Number.MAX_SAFE_INTEGER);
+    return this.transaction(() => {
+      this.requireSession(input.sessionId);
+      const conflict = () => { throw new SessionStoreError('CONFLICT', 'Summary source prefix or context revision changed'); };
+      if (this.contextRevision(input.sessionId) !== input.expectedRevision) conflict();
+      const previous = this.db.prepare('SELECT through_message_id FROM session_summaries WHERE session_id=? AND scope=?')
+        .get(input.sessionId, input.scope);
+      if (previous && input.throughMessageId <= Number(previous.through_message_id)) conflict();
+      const ids = this.eligiblePairs(input.sessionId, 0, input.throughMessageId, Number.MAX_SAFE_INTEGER)
+        .flatMap(pair => [Number(pair.user_id), Number(pair.assistant_id)]);
+      if (!ids.length || ids.at(-1) !== input.throughMessageId || ids.length !== input.sourceIds.length
+        || ids.some((id, index) => id !== input.sourceIds[index])) conflict();
+      const revision = this.bumpContextRevision(input.sessionId);
+      const createdAt = this.timestamp();
+      this.db.prepare(`INSERT INTO session_summaries(session_id,scope,text,through_message_id,source_ids,revision,created_at)
+        VALUES(?,?,?,?,?,?,?) ON CONFLICT(session_id,scope) DO UPDATE SET text=excluded.text,
+        through_message_id=excluded.through_message_id,source_ids=excluded.source_ids,revision=excluded.revision,created_at=excluded.created_at`)
+        .run(input.sessionId, input.scope, input.text, input.throughMessageId, JSON.stringify(ids), revision, createdAt);
+      return { sessionId: input.sessionId, scope: input.scope, text: input.text, throughMessageId: input.throughMessageId,
+        sourceIds: ids, revision, createdAt };
+    });
+  }
+  /** Invalidates every scope and advances durable CAS revisions, even when no summary exists. */
+  invalidateSummaries(sessionId?: string): void {
+    if (sessionId !== undefined) text(sessionId, 'sessionId', 256);
+    this.transaction(() => {
+      if (sessionId !== undefined) this.invalidateSessionSummaries(sessionId);
+      else for (const row of this.db.prepare('SELECT id FROM sessions').all()) this.invalidateSessionSummaries(String(row.id));
+    });
+  }
   /** Retain visible evidence while preventing a corrected source from replaying into prompts. */
   excludeTurnFromContext(turnId: string): void {
-    this.db.prepare("UPDATE messages SET metadata=json_set(coalesce(metadata,'{}'),'$.contextExcluded',json('true')) WHERE turn_id=? AND role='assistant'").run(turnId);
+    text(turnId, 'turnId', 256);
+    this.transaction(() => {
+      const pair = this.pair(turnId);
+      if (!pair) return;
+      this.db.prepare("UPDATE messages SET metadata=json_set(coalesce(metadata,'{}'),'$.contextExcluded',json('true')) WHERE turn_id=? AND role='assistant'").run(turnId);
+      this.invalidateSessionSummaries(pair.assistant.sessionId);
+    });
   }
   close(): void { if (!this.closed) { this.db.close(); this.closed = true; } }
 }

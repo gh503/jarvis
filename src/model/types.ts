@@ -13,6 +13,8 @@ export interface ChatOptions {
   temperature?: number
   numCtx?: number
   maxTokens?: number
+  /** Reject output stopped by its token limit (for summaries). */
+  requireComplete?: boolean
   signal?: AbortSignal
   timeoutMs?: number
   keepAlive?: string
@@ -48,6 +50,7 @@ export interface ModelClient {
   readonly model: string
   readonly visionModel: string
   readonly embedModel: string
+  contextLimits?(options?: ChatOptions): Promise<{ contextWindow: number; maxOutputTokens: number }>
   health(timeoutMs?: number): Promise<ModelHealth>
   chatStream(messages: ChatMessage[], options?: ChatOptions): AsyncGenerator<string>
   chatOnce(messages: ChatMessage[], options?: ChatOptions): Promise<string>

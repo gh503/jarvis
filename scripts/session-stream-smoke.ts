@@ -63,7 +63,7 @@ const sessions = [A, B].map((id, i) => ({ id, title: i ? 'Fixture B' : 'Fixture 
 let active: { sessionId: string; turnId: string } | null = { sessionId: A, turnId: TA }
 const message = (id: number, sessionId: string, turnId: string, role: string, content: string, status = 'complete') => ({ id, sessionId, turnId, role, content, status, createdAt: now })
 const messages = new Map([
-  [A, [message(1, A, TA, 'user', 'A question'), message(2, A, TA, 'assistant', 'A partial', 'streaming')]],
+  [A, [message(1, A, TA, 'user', 'A question'), message(2, A, TA, 'assistant', '', 'streaming')]],
   [B, [message(3, B, TB, 'user', 'B question'), message(4, B, TB, 'assistant', 'B answer')]],
 ])
 const status = { modelReady: true, model: 'synthetic', provider: 'local', voice: { asr: false, tts: false } }
@@ -141,7 +141,33 @@ try {
     await until('history buttons', () => browser.eval(`Boolean(${button})`))
     await browser.eval(`${button}.click()`)
   }
-  await until('initial A snapshot and WS hello', async () => connections > 0 && await selected('Fixture A') && (await text()).includes('A partial'))
+  await until('initial A snapshot and WS hello', async () => connections > 0 && await selected('Fixture A') && (await text()).includes('A question'))
+  // Context preparation is temporary UI status, never assistant response text.
+  const beforeContext = await text()
+  emit('assistant.context', { sessionId: A, turnId: TB, state: 'trimmed', reason: 'STALE SAME SESSION CONTEXT' })
+  emit('assistant.context', { sessionId: B, turnId: TB, state: 'trimmed', reason: 'STALE OTHER SESSION CONTEXT' })
+  await until('stale context frames delivered', () => browser.frames.some(frame => frame.includes('STALE OTHER SESSION CONTEXT')))
+  await rendered()
+  assert.equal(await text(), beforeContext, 'stale context events must not change the selected transcript')
+  emit('assistant.context', { sessionId: A, turnId: TA, state: 'compacting' })
+  await until('active context preparation notice', async () => (await text()).includes('正在整理较早的对话，保留近期内容…'))
+  assert(await browser.eval("document.querySelector('#send-btn').disabled && !document.querySelector('#stop-btn').hidden"))
+  emit('assistant.context', { sessionId: A, turnId: TA, state: 'compacted' })
+  await until('context ready notice', async () => (await text()).includes('上下文已整理，正在回答…'))
+  emit('assistant.context', { sessionId: A, turnId: TA, state: 'trimmed', reason: '预算内近期上下文已就绪' })
+  await until('trimmed context notice', async () => (await text()).includes('预算内近期上下文已就绪'))
+  messages.get(A)![1].content = 'A partial'
+  // Omit full deliberately: the status must not have entered streamText.
+  emit('assistant.delta', { sessionId: A, turnId: TA, text: 'A partial' })
+  await until('first delta replaces context notice', async () => (await text()).includes('A partial'))
+  const assistantBubbles = () => browser.eval("[...document.querySelectorAll('#transcript .message.assistant .bubble')].map(el => el.textContent)")
+  assert.deepEqual(await assistantBubbles(), ['A partial'])
+  emit('assistant.context', { sessionId: A, turnId: TA, state: 'compacting' })
+  await until('late context frame delivered', () => browser.frames.filter(frame => frame.includes('assistant.context') && frame.includes('compacting')).length === 2)
+  await rendered()
+  assert.deepEqual(await assistantBubbles(), ['A partial'], 'late preparation notice must not overwrite response text')
+  assert.doesNotMatch(await text(), /STALE|正在整理|上下文已整理|预算内近期/)
+  checked.push('context notices match active session and turn; deltas replace notices without contaminating response text')
   // 1. A keeps streaming while B is selected; returning restores server partial.
   await open(B); await until('B selected', () => selected('Fixture B'))
   messages.get(A)![1].content = 'A partial extended'

@@ -1,3 +1,4 @@
+import { contextWindow } from './context-budget.ts'
 import { chmod, mkdir, readFile, rename, rm, writeFile } from 'node:fs/promises'
 import type { LlmProtocol } from './types.ts'
 import { dirname, join } from 'node:path'
@@ -16,6 +17,7 @@ export interface ModelProfile {
   visionModel: string
   embedModel: string
   keepAlive: string
+  contextWindow?: number
 }
 
 export interface ModelSettings {
@@ -65,6 +67,7 @@ function profile(value: Partial<ModelProfile>, fallback?: ModelProfile): ModelPr
     apiKey: String(value.apiKey ?? fallback?.apiKey ?? ''),
     visionModel: String(value.visionModel ?? fallback?.visionModel ?? '').trim(),
     embedModel: String(value.embedModel ?? fallback?.embedModel ?? '').trim(),
+    contextWindow: contextWindow(value.contextWindow ?? fallback?.contextWindow),
     keepAlive: String(value.keepAlive ?? fallback?.keepAlive ?? '24h').trim(),
   }
 }
@@ -75,6 +78,7 @@ export function isLoopbackHost(hostname: string): boolean {
 }
 
 export function validateProfile(value: ModelProfile): ModelProfile {
+  contextWindow(value.contextWindow)
   if (!/^[a-z0-9-]{1,32}$/.test(value.id)) throw new Error('模型配置 id 不合法')
   if (!value.model || value.model.length > 200) throw new Error('模型名称不能为空')
   let url: URL
@@ -299,6 +303,7 @@ export class ModelSettingsStore {
         visionModel: item.visionModel,
         embedModel: item.embedModel,
         keepAlive: item.keepAlive,
+        contextWindow: contextWindow(item.contextWindow),
         hasKey: Boolean(item.apiKey),
       })),
       priority: [...settings.priority],
@@ -315,7 +320,7 @@ export class ModelSettingsStore {
     const id = String(input.id ?? '').trim().toLowerCase()
     if (!/^[a-z0-9-]{1,32}$/.test(id)) throw new Error('供应商 id 需为 1-32 位小写字母/数字/连字符')
     if (settings.profiles.some(item => item.id === id)) throw new Error('这个 id 已存在')
-    const created = profile({ ...input, id, kind: 'openai' }, settings.profiles.find(item => item.id === 'remote') ?? settings.profiles[0])
+    const created = profile({ ...input, contextWindow: input.contextWindow ?? 4096, id, kind: 'openai' }, settings.profiles.find(item => item.id === 'remote') ?? settings.profiles[0])
     created.kind = 'openai'
     validateProfile(created)
     const next: ModelSettings = {

@@ -227,6 +227,12 @@ function handleEvent(event) {
         appendMessage('user', data.text)
       }
       break
+    case 'assistant.context':
+      ensureStreaming()
+      if (!state.streamText) state.streamEl.querySelector('.bubble').textContent = data.state === 'compacting'
+        ? '正在整理较早的对话，保留近期内容…'
+        : data.state === 'compacted' ? '上下文已整理，正在回答…' : (data.reason || '已按模型容量保留近期上下文，正在回答…')
+      break
     case 'assistant.delta':
       state.sawAssistantEvent = true
       ensureStreaming()
@@ -1695,8 +1701,12 @@ function modelFormHtml(selected) {
       <input id="model-key" type="password" autocomplete="new-password" value="" placeholder="${escapeHtml(keyHint)}">
     </label>` : ''}
     <details class="settings-advanced" ${advancedOpen ? 'open' : ''}>
-      <summary>高级：记忆向量与视觉模型</summary>
+      <summary>高级：上下文容量、记忆向量与视觉模型</summary>
       <div class="settings-form-grid">
+        <label class="settings-field"><span>上下文容量（tokens）</span>
+          <input id="model-context-window" type="number" min="2048" max="2000000" step="1" value="${Number(selected.contextWindow) || 4096}">
+          <small>按模型实际支持的容量填写；未知时使用 4096。会自动预留回答空间。</small>
+        </label>
         <label class="settings-field"><span>记忆向量模型 <em>可选</em></span>
           <input id="model-embed" type="text" list="model-embed-list" autocomplete="off" spellcheck="false" value="${escapeHtml(selected.embedModel || '')}" placeholder="nomic-embed-text">
           <datalist id="model-embed-list">${embedHints.map(name => `<option value="${escapeHtml(name)}"></option>`).join('')}</datalist>
@@ -2982,6 +2992,7 @@ async function refreshModelOptions(selected, options = {}) {
         embedModel: $('#model-embed')?.value.trim() || '',
         visionModel: $('#model-vision')?.value.trim() || '',
         keepAlive: selected.keepAlive || '24h',
+        contextWindow: Number($('#model-context-window')?.value || selected.contextWindow || 4096),
       }),
     })
     if (state.modelFormId !== selected.id) return
@@ -3395,6 +3406,7 @@ function modelPayload(selected) {
     embedModel: $('#model-embed')?.value.trim() || '',
     visionModel: $('#model-vision')?.value.trim() || '',
     keepAlive: selected.keepAlive || '24h',
+        contextWindow: Number($('#model-context-window')?.value || selected.contextWindow || 4096),
   }
 }
 

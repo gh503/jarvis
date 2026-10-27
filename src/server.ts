@@ -1265,10 +1265,10 @@ export class JarvisServer {
     const memoryMatch = path.match(/^\/api\/memory\/([^/]+)(?:\/(confirm|reject))?$/)
     if (memoryMatch) {
       const id = memoryMatch[1]
-      const profileEntry = this.deps.profile?.snapshot().entries.find(entry => entry.memoryId === id)
-      if (profileEntry && ['POST', 'DELETE'].includes(request.method ?? '')) {
+      const previousMemory = this.deps.memory.get(id)
+      if (previousMemory && ['POST', 'DELETE'].includes(request.method ?? '')) {
         this.deps.conversation.invalidateProfileUsage?.()
-        if (profileEntry.sourceRef.startsWith('turn:')) this.deps.sessions?.excludeTurnFromContext(profileEntry.sourceRef.slice(5))
+        if (previousMemory.sourceRef.startsWith('turn:')) this.deps.sessions?.excludeTurnFromContext(previousMemory.sourceRef.slice(5))
       }
       if (request.method === 'DELETE' && !memoryMatch[2]) {
         if (!this.deps.memory.delete(id)) {

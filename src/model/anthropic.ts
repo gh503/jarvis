@@ -1,3 +1,4 @@
+import { contextWindow, contextLimitsFor, isContextOverflow, requireCompleteOutput } from './context-budget.ts'
 import type { ChatMessage, ChatOptions, ModelClient, ModelHealth, ModelInfo, ModelStatus } from './types.ts'
 
 interface AnthropicContentBlock {
@@ -9,15 +10,18 @@ interface AnthropicContentBlock {
 interface AnthropicPayload {
   content?: AnthropicContentBlock[]
   content_block?: AnthropicContentBlock
-  error?: { message?: string }
+  error?: { message?: string; type?: string }
+  stop_reason?: string
   type?: string
-  delta?: { type?: string; text?: string }
+  delta?: { type?: string; text?: string; stop_reason?: string }
 }
 
 export class AnthropicError extends Error {
-  constructor(message: string, readonly status?: number) {
+  readonly code?: string
+  constructor(message: string, readonly status?: number, detail?: unknown) {
     super(message)
     this.name = 'AnthropicError'
+    if (isContextOverflow(detail ?? message)) this.code = 'CONTEXT_WINDOW_EXCEEDED'
   }
 }
 
@@ -60,6 +64,7 @@ function blocks(message: ChatMessage): Array<Record<string, unknown>> {
  * all different, and guessing leads to silent empty replies.
  */
 export class AnthropicClient implements ModelClient {
+  private readonly configuredWindow: number
   readonly model: string
   readonly visionModel: string
   readonly embedModel = ''
@@ -69,6 +74,7 @@ export class AnthropicClient implements ModelClient {
   private readonly label: string
 
   constructor(options: {
+    contextWindow?: number
     baseUrl: string
     model: string
     apiKey?: string
@@ -77,11 +83,16 @@ export class AnthropicClient implements ModelClient {
     label?: string
   }) {
     this.baseUrl = normalizeBase(options.baseUrl)
+    this.configuredWindow = contextWindow(options.contextWindow)
     this.model = options.model
     this.apiKey = options.apiKey ?? ''
     this.visionModel = options.visionModel ?? ''
     this.id = options.id ?? 'remote'
     this.label = options.label ?? 'Anthropic Messages'
+  }
+
+  async contextLimits(options: ChatOptions = {}): Promise<{ contextWindow: number; maxOutputTokens: number }> {
+    return contextLimitsFor(this.configuredWindow, options, this.model)
   }
 
   status(): ModelStatus {
@@ -143,7 +154,7 @@ export class AnthropicClient implements ModelClient {
       .map(message => ({ role: message.role, content: blocks(message) }))
     return JSON.stringify({
       model: options.model ?? this.model,
-      max_tokens: options.maxTokens ?? 1024,
+      max_tokens: contextLimitsFor(this.configuredWindow, options, this.model).maxOutputTokens,
       temperature: options.temperature ?? 0.4,
       stream,
       ...(system ? { system } : {}),
@@ -164,11 +175,13 @@ export class AnthropicClient implements ModelClient {
       })
       if (!response.ok || !response.body) {
         const detail = await response.text().catch(() => '')
-        throw new AnthropicError(`Anthropic 请求失败：HTTP ${response.status} ${detail.slice(0, 300)}`, response.status)
+        throw new AnthropicError(`Anthropic 请求失败：HTTP ${response.status} ${detail.slice(0, 300)}`, response.status, detail)
       }
       const contentType = response.headers.get('content-type') ?? ''
       if (!contentType.includes('text/event-stream')) {
         const data = (await response.json()) as AnthropicPayload
+        if (data.error) throw new AnthropicError(data.error.message ?? 'Anthropic error', undefined, data.error)
+        requireCompleteOutput(options, data.stop_reason)
         const content = (data.content ?? []).map(block => block.text ?? '').join('')
         if (content) yield content
         return
@@ -194,8 +207,9 @@ export class AnthropicClient implements ModelClient {
             continue
           }
           if (payload.type === 'error' || payload.error?.message) {
-            throw new AnthropicError(payload.error?.message ?? 'Anthropic stream error')
+            throw new AnthropicError(payload.error?.message ?? 'Anthropic stream error', undefined, payload.error)
           }
+          requireCompleteOutput(options, payload.stop_reason ?? payload.delta?.stop_reason)
           if (payload.type === 'content_block_delta' && payload.delta?.text) yield payload.delta.text
           if (payload.type === 'content_block_start') {
             // Some gateways send the first block whole instead of a delta.

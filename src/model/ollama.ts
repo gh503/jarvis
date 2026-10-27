@@ -1,22 +1,27 @@
+import { contextWindow, contextLimitsFor, isContextOverflow, requireCompleteOutput } from './context-budget.ts'
 import type { Embedder } from '../memory/types.ts'
 import type { ChatMessage, ChatOptions, ModelClient, ModelHealth, ModelInfo, ModelStatus } from './types.ts'
 
 export type { ChatMessage, ChatOptions, ModelClient, ModelInfo, ModelHealth, ModelStatus } from './types.ts'
 
 export class OllamaError extends Error {
-  constructor(message: string, readonly status?: number) {
+  readonly code?: string
+  constructor(message: string, readonly status?: number, detail?: unknown) {
     super(message)
     this.name = 'OllamaError'
+    if (isContextOverflow(detail ?? message)) this.code = 'CONTEXT_WINDOW_EXCEEDED'
   }
 }
 
 interface OllamaChatChunk {
   message?: { role?: string; content?: string }
   done?: boolean
+  done_reason?: string
   error?: string
 }
 
 export class OllamaClient implements ModelClient, Embedder {
+  private readonly configuredWindow: number
   readonly model: string
   readonly visionModel: string
   readonly embedModel: string
@@ -27,8 +32,9 @@ export class OllamaClient implements ModelClient, Embedder {
 
   constructor(
     private readonly baseUrl: string,
-    options: { model: string; visionModel: string; embedModel: string; keepAlive?: string; id?: string; label?: string },
+    options: { contextWindow?: number; model: string; visionModel: string; embedModel: string; keepAlive?: string; id?: string; label?: string },
   ) {
+    this.configuredWindow = contextWindow(options.contextWindow)
     this.model = options.model
     this.visionModel = options.visionModel
     this.embedModel = options.embedModel
@@ -40,6 +46,10 @@ export class OllamaClient implements ModelClient, Embedder {
     // "Local" means the socket never leaves this machine, not merely that the
     // provider is an Ollama instance.
     this.isLocal = host === '127.0.0.1' || host === 'localhost' || host === '::1' || host === '0.0.0.0'
+  }
+
+  async contextLimits(options: ChatOptions = {}): Promise<{ contextWindow: number; maxOutputTokens: number }> {
+    return contextLimitsFor(this.configuredWindow, options, this.model)
   }
 
   status(): ModelStatus {
@@ -74,7 +84,8 @@ export class OllamaClient implements ModelClient, Embedder {
       keep_alive: options.keepAlive ?? this.keepAlive,
       options: {
         temperature: options.temperature ?? 0.4,
-        num_ctx: options.numCtx ?? 4096,
+        num_ctx: contextLimitsFor(this.configuredWindow, options, this.model).contextWindow,
+        num_predict: contextLimitsFor(this.configuredWindow, options, this.model).maxOutputTokens,
       },
     })
   }
@@ -94,7 +105,7 @@ export class OllamaClient implements ModelClient, Embedder {
       })
       if (!response.ok || !response.body) {
         const detail = await response.text().catch(() => '')
-        throw new OllamaError(`Ollama chat failed: HTTP ${response.status} ${detail.slice(0, 300)}`, response.status)
+        throw new OllamaError(`Ollama chat failed: HTTP ${response.status} ${detail.slice(0, 300)}`, response.status, detail)
       }
       const reader = response.body.getReader()
       const decoder = new TextDecoder()
@@ -114,6 +125,7 @@ export class OllamaClient implements ModelClient, Embedder {
           } catch {
             continue
           }
+          requireCompleteOutput(options, chunk.done_reason)
           if (chunk.error) throw new OllamaError(chunk.error)
           const content = chunk.message?.content
           if (content) yield content
@@ -121,12 +133,11 @@ export class OllamaClient implements ModelClient, Embedder {
         }
       }
       if (buffer.trim()) {
-        try {
-          const chunk = JSON.parse(buffer.trim()) as OllamaChatChunk
-          if (chunk.message?.content) yield chunk.message.content
-        } catch {
-          // Partial trailing JSON after a stream reset; ignore.
-        }
+        let chunk: OllamaChatChunk | undefined
+        try { chunk = JSON.parse(buffer.trim()) as OllamaChatChunk } catch { /* partial JSON */ }
+        if (chunk?.error) throw new OllamaError(chunk.error)
+        requireCompleteOutput(options, chunk?.done_reason)
+        if (chunk?.message?.content) yield chunk.message.content
       }
     } finally {
       clearTimeout(timeout)

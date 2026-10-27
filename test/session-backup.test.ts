@@ -57,6 +57,8 @@ test('backup snapshots WAL sessions, includes manifest, restores transcripts and
   store.beginTurn(session.id, 'turn-one', 'Question', 'test')
   store.finishTurn('turn-one', { status: 'complete', text: 'Answer', metadata: { test: true } })
   const expected = store.exportAll()
+  const context = store.contextState(session.id, 'backup-scope')
+  const summary = store.saveSummary({ sessionId:session.id,scope:'backup-scope',text:'测试摘要',sourceIds:context.messages.map(m=>m.id),throughMessageId:context.messages.at(-1)!.id,expectedRevision:context.revision })
   assert.ok(existsSync(join(source, 'sessions.db-wal')))
   const memory = new MemoryStore({ file: join(source, 'jarvis.db') })
   const profile = new ProfileStore(memory)
@@ -80,7 +82,10 @@ test('backup snapshots WAL sessions, includes manifest, restores transcripts and
     assert.equal(existsSync(join(target, `${name}-shm`)), false)
   }
   const reopened = new SessionStore({ file: join(target, 'sessions.db'), now: () => 1234 })
-  try { assert.deepEqual(reopened.exportAll(), expected) } finally { reopened.close() }
+  try {
+    assert.deepEqual(reopened.exportAll(), expected)
+    assert.deepEqual(reopened.contextState(session.id, 'backup-scope').summary, summary)
+  } finally { reopened.close() }
   const restoredMemory = new MemoryStore({ file: join(target, 'jarvis.db') })
   try {
     const restoredProfile = new ProfileStore(restoredMemory).snapshot()

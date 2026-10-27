@@ -1,3 +1,4 @@
+import { contextLimitsFor, estimateMessagesTokens } from './context-budget.ts'
 import type { Logger } from '../logger.ts'
 import { AnthropicClient } from './anthropic.ts'
 import { classifyModelError, cooldownActive, cooldownMs, shouldFailover, type FailureKind } from './failover.ts'
@@ -16,6 +17,7 @@ export function createModelClient(profile: ModelProfile): ModelClient {
       visionModel: profile.visionModel,
       id: profile.id,
       label: profile.label,
+      contextWindow: profile.contextWindow,
     })
   }
   if (profile.kind === 'openai') {
@@ -27,6 +29,7 @@ export function createModelClient(profile: ModelProfile): ModelClient {
       embedModel: profile.embedModel,
       id: profile.id,
       label: profile.label,
+      contextWindow: profile.contextWindow,
       protocol: profile.protocol === 'responses' ? 'responses' : 'chat-completions',
     })
   }
@@ -37,6 +40,7 @@ export function createModelClient(profile: ModelProfile): ModelClient {
     keepAlive: profile.keepAlive || '24h',
     id: profile.id,
     label: profile.label,
+    contextWindow: profile.contextWindow,
   })
 }
 
@@ -72,6 +76,12 @@ export class ModelRouter implements ModelClient {
   private client: ModelClient
   private current: ModelProfile
   private clients = new Map<string, ModelClient>()
+  private clientConfigs = new Map<string, string>()
+
+  private configKey(profile: ModelProfile): string {
+    return JSON.stringify([profile.kind, profile.protocol, profile.baseUrl, profile.model, profile.apiKey,
+      profile.visionModel, profile.embedModel, profile.keepAlive, profile.label, profile.contextWindow ?? 4096])
+  }
   private lastCooldowns: Record<string, { until: number; kind: string; reason: string }> = {}
 
   constructor(
@@ -84,6 +94,7 @@ export class ModelRouter implements ModelClient {
     this.client = initial
     this.current = profile
     this.clients.set(profile.id, initial)
+    this.clientConfigs.set(profile.id, this.configKey(profile))
   }
 
   get model(): string {
@@ -135,6 +146,15 @@ export class ModelRouter implements ModelClient {
     return { ...base, cooldowns: this.lastCooldowns }
   }
 
+  async contextLimits(options: ChatOptions = {}): Promise<{ contextWindow: number; maxOutputTokens: number }> {
+    const chain = await this.chain(options.profileIds)
+    const limits = chain.map((profile, index) => contextLimitsFor(profile.contextWindow, index === 0 ? options : { ...options, model: undefined }, profile.model))
+    return {
+      contextWindow: Math.min(...limits.map(item => item.contextWindow)),
+      maxOutputTokens: Math.min(...limits.map(item => item.maxOutputTokens)),
+    }
+  }
+
   async health(timeoutMs = 5000): Promise<ModelHealth> {
     return await this.client.health(timeoutMs)
   }
@@ -144,11 +164,16 @@ export class ModelRouter implements ModelClient {
   }
 
   private clientFor(profile: ModelProfile): ModelClient {
-    if (profile.id === this.current.id) return this.client
+    const key = this.configKey(profile)
     let client = this.clients.get(profile.id)
-    if (!client) {
+    if (!client || this.clientConfigs.get(profile.id) !== key) {
       client = createModelClient(profile)
       this.clients.set(profile.id, client)
+      this.clientConfigs.set(profile.id, key)
+    }
+    if (profile.id === this.current.id) {
+      this.client = client
+      this.current = profile
     }
     return client
   }
@@ -169,7 +194,7 @@ export class ModelRouter implements ModelClient {
       const profile = byId.get(id)
       if (profile && !ordered.some(item => item.id === id)) ordered.push(profile)
     }
-    if (!ordered.some(item => item.id === this.current.id)) ordered.push(this.current)
+    if (!ordered.some(item => item.id === this.current.id)) ordered.push(byId.get(this.current.id) ?? this.current)
     if (ordered.length === 0) return [this.current]
     const usable = ordered.filter(profileActivatable)
     const candidates = usable.length > 0 ? usable : ordered
@@ -206,8 +231,19 @@ export class ModelRouter implements ModelClient {
     }
   }
 
+  private async assertTextBudget(client: ModelClient, profile: ModelProfile, messages: ChatMessage[], options: ChatOptions): Promise<void> {
+    // Image token costs are provider-specific; this guard protects text planning only.
+    if (messages.some(message => message.images?.length)) return
+    const limits = await client.contextLimits?.(options) ?? contextLimitsFor(profile.contextWindow, options, profile.model)
+    if (estimateMessagesTokens(messages) + (options.maxTokens ?? limits.maxOutputTokens) > limits.contextWindow) {
+      throw Object.assign(new Error('Request exceeds the selected model context window'), { code: 'CONTEXT_WINDOW_EXCEEDED' })
+    }
+  }
+
   async *chatStream(messages: ChatMessage[], options: ChatOptions = {}): AsyncGenerator<string> {
     const chain = await this.chain(options.profileIds)
+    const maxTokens = Math.min(...chain.map((profile, index) => contextLimitsFor(profile.contextWindow, index === 0 ? options : { ...options, model: undefined }, profile.model).maxOutputTokens))
+    options = { ...options, maxTokens }
     let lastError: unknown = new Error('没有可用的模型供应商')
     for (const [index, profile] of chain.entries()) {
       const client = this.clientFor(profile)
@@ -217,6 +253,7 @@ export class ModelRouter implements ModelClient {
       const attemptOptions = index === 0 ? options : { ...options, model: undefined }
       let produced = false
       try {
+        await this.assertTextBudget(client, profile, messages, attemptOptions)
         for await (const delta of client.chatStream(messages, attemptOptions)) {
           produced = true
           yield delta
@@ -235,11 +272,14 @@ export class ModelRouter implements ModelClient {
 
   async chatOnce(messages: ChatMessage[], options: ChatOptions = {}): Promise<string> {
     const chain = await this.chain(options.profileIds)
+    const maxTokens = Math.min(...chain.map((profile, index) => contextLimitsFor(profile.contextWindow, index === 0 ? options : { ...options, model: undefined }, profile.model).maxOutputTokens))
+    options = { ...options, maxTokens }
     let lastError: unknown = new Error('没有可用的模型供应商')
     for (const [index, profile] of chain.entries()) {
       const client = this.clientFor(profile)
       const attemptOptions = index === 0 ? options : { ...options, model: undefined }
       try {
+        await this.assertTextBudget(client, profile, messages, attemptOptions)
         const reply = await client.chatOnce(messages, attemptOptions)
         this.noteSuccess(profile, client)
         return reply
@@ -301,9 +341,11 @@ export class ModelRouter implements ModelClient {
    */
   resetTo(profile: ModelProfile): void {
     this.clients.clear()
+    this.clientConfigs.clear()
     this.current = profile
     this.client = createModelClient(profile)
     this.clients.set(profile.id, this.client)
+    this.clientConfigs.set(profile.id, this.configKey(profile))
     this.lastCooldowns = {}
   }
 
@@ -316,6 +358,7 @@ export class ModelRouter implements ModelClient {
     if (!test.ok) throw new Error(test.message)
     this.client = createModelClient(profile)
     this.clients.set(profile.id, this.client)
+    this.clientConfigs.set(profile.id, this.configKey(profile))
     this.current = profile
     if (this.failover) {
       try {
