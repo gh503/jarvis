@@ -6,6 +6,9 @@ const $$ = (selector, root = document) => [...root.querySelectorAll(selector)]
 
 const state = {
   bootRetry: 0,
+  capabilities: null,
+  catalog: null,
+  pendingProvider: null,
   ws: null,
   wsReady: false,
   reconnect: 0,
@@ -1493,6 +1496,17 @@ function settingsPanelsHtml(selected, settings) {
         <div><h3>对话模型</h3><p>选择本地 Ollama 或远端服务；模型列表会从服务地址自动读取。</p></div>
         <span class="settings-chip">${state.status?.provider === 'remote' ? '远端运行中' : '本地运行中'}</span>
       </div>
+      <div class="provider-guide">
+        <div>
+          <p class="provider-guide-title">还没选好供应商？</p>
+          <p class="settings-hint">国内直连、国际、本机模型，一页看完价格与三步接入。</p>
+        </div>
+        <div class="provider-guide-actions">
+          <a class="model-action" href="/providers" target="_blank" rel="noopener">打开供应商指南</a>
+          <button class="model-action" type="button" id="provider-guide-inline">就地选一个</button>
+        </div>
+      </div>
+      <div class="provider-quick" id="provider-quick" hidden></div>
       ${state.settingsError ? `<p class="settings-error">模型配置读取失败：${escapeHtml(state.settingsError)}。下面是可用的本地默认项，保存前请确认服务已恢复。</p>` : ''}
       <div class="provider-grid" id="provider-grid"></div>
       <div id="model-form-host"></div>
@@ -1539,6 +1553,15 @@ function settingsPanelsHtml(selected, settings) {
         <span class="settings-chip">${state.status?.focus ? '专注模式' : '正常'}</span>
       </div>
       <div class="settings-stat-grid" id="settings-runtime">${settingsRuntimeHtml()}</div>
+      <div class="settings-card">
+        <div class="settings-card-head"><div><h4>安装与平台</h4><p>装成 App、在手机上用，以及这台机器支持哪些能力。</p></div></div>
+        <div class="settings-actions">
+          <a class="model-action" href="/install" target="_blank" rel="noopener">安装到这台设备</a>
+          <a class="model-action" href="/providers" target="_blank" rel="noopener">模型服务指南</a>
+          <a class="model-action" href="/pair" target="_blank" rel="noopener">配对手机</a>
+        </div>
+        <ul class="capability-list" id="capability-list">${capabilityListHtml()}</ul>
+      </div>
       <div class="settings-card">
         <div class="settings-card-head"><div><h4>隐私与数据</h4><p>屏幕按次授权，摄像头只取单帧，记忆默认只存本机。</p></div></div>
         <p class="settings-hint">模型上下文不包含标记为 sensitive / secret 的记忆。远端模型仍会收到当前对话和普通记忆；屏幕/摄像头画面默认不会发往远端（需服务端显式 JARVIS_ALLOW_REMOTE_VISION=1），切换前请确认服务商政策。</p>
@@ -2241,6 +2264,7 @@ function renderSettings(options = {}) {
   requestAnimationFrame(() => {
     const body = $('.settings-modal .modal-body')
     if (body) body.scrollTop = scrollTop
+    applyPendingProvider()
   })
 }
 
@@ -2464,7 +2488,143 @@ function bindModelForm(selected) {
   })
 }
 
+const QUICK_PROVIDER_IDS = ['deepseek', 'siliconflow', 'moonshot', 'zhipu', 'dashscope', 'gemini']
+
+async function loadCatalog() {
+  if (Array.isArray(state.catalog) && state.catalog.length) return state.catalog
+  try {
+    const data = await api('/api/providers/catalog', { timeoutMs: 15_000 })
+    state.catalog = Array.isArray(data.providers) ? data.providers : []
+  } catch {
+    state.catalog = []
+  }
+  return state.catalog
+}
+
+function capabilityListHtml() {
+  const caps = state.capabilities
+  if (!caps) return '<li class="capability"><span>平台能力</span><span>读取中…</span></li>'
+  const rows = [
+    ['屏幕捕获', caps.screenCapture, caps.reasons?.screenCapture],
+    ['摄像头', caps.camera, caps.reasons?.camera],
+    ['本地语音识别', caps.localAsr, caps.reasons?.localAsr],
+    ['本地语音合成', caps.localTts, caps.reasons?.localTts],
+    ['桌面通知', caps.notify, caps.reasons?.notify],
+    ['开机自启', caps.autostart, caps.reasons?.autostart],
+  ]
+  return rows.map(([label, ok, reason]) => `<li class="capability ${ok ? 'ok' : 'off'}"><span>${label}</span><span>${ok ? '可用' : escapeHtml(reason || '不可用')}</span></li>`).join('')
+}
+
+/**
+ * Hide features the current OS cannot serve. On macOS/Windows the screen and
+ * camera helpers do not exist; a button that always fails is worse than a
+ * button that explains why it is off.
+ */
+function applyCapabilities(platform) {
+  if (!platform || !platform.os) return
+  state.capabilities = platform
+  for (const [action, ok] of Object.entries({ screen: platform.screenCapture, camera: platform.camera })) {
+    const button = document.querySelector(`.quick[data-action="${action}"]`)
+    if (!button) continue
+    button.disabled = !ok
+    if (!ok) {
+      const reason = platform.reasons?.[action] || '当前平台不支持'
+      button.title = reason
+      button.setAttribute('aria-description', reason)
+    } else {
+      button.removeAttribute('title')
+      button.removeAttribute('aria-description')
+    }
+  }
+  const list = $('#capability-list')
+  if (list) list.innerHTML = capabilityListHtml()
+}
+
+async function toggleProviderQuick() {
+  const host = $('#provider-quick')
+  if (!host) return
+  if (!host.hidden) { host.hidden = true; return }
+  host.innerHTML = '<p class="settings-hint">正在读取供应商…</p>'
+  host.hidden = false
+  const catalog = await loadCatalog()
+  const picks = QUICK_PROVIDER_IDS
+    .map(id => catalog.find(item => item.id === id))
+    .filter(Boolean)
+  if (!picks.length) {
+    host.innerHTML = '<p class="settings-hint">读取失败，请打开「供应商指南」页查看。</p>'
+    return
+  }
+  host.innerHTML = picks.map(item => `<button type="button" class="provider-pick" data-provider="${escapeHtml(item.id)}">
+    <b>${escapeHtml(item.name)}</b>
+    <span>${item.chinaDirect ? '国内直连' : '需自备网络'}</span>
+  </button>`).join('') + '<a class="provider-pick more" href="/providers" target="_blank" rel="noopener"><b>全部供应商</b><span>价格与步骤 →</span></a>'
+}
+
+async function applyProviderGuide(id) {
+  const catalog = await loadCatalog()
+  const entry = catalog.find(item => item.id === id)
+  if (!entry) {
+    appendMessage('system', '没有找到这个供应商，请到「模型服务」页面重新选择。')
+    return
+  }
+  if ($('#modal').hidden) await showSettings({ tab: 'model' })
+  else activateSettingsTab('model')
+  const normalize = value => String(value || '').replace(/\/+$/, '')
+  const existing = (state.modelSettings?.profiles ?? []).find(item => normalize(item.baseUrl) === normalize(entry.baseUrl))
+  if (existing) {
+    // Already configured: select that profile instead of adding a duplicate.
+    state.modelFormId = existing.id
+    renderSettings({ tab: 'model', focus: false })
+    $('#model-form')?.scrollIntoView({ block: 'center', behavior: 'smooth' })
+    $('#model-key')?.focus({ preventScroll: true })
+    const result = $('#model-result')
+    if (result) { result.textContent = `已选中「${entry.name}」，粘贴 API Key 后保存`; result.className = 'settings-feedback ok' }
+    return
+  }
+  // Keep it as pending state: any background re-render of the settings sheet
+  // (tuning broadcast, device refresh) rebuilds the form and would otherwise
+  // wipe the values before the user can paste a key.
+  state.pendingProvider = entry
+  applyPendingProvider()
+}
+
+function applyPendingProvider() {
+  const entry = state.pendingProvider
+  if (!entry) return
+  const base = $('#add-base')
+  if (!base) return
+  const setValue = (selector, value) => {
+    const element = $(selector)
+    if (!element) return
+    element.value = value
+    element.dispatchEvent(new Event('input', { bubbles: true }))
+    element.dispatchEvent(new Event('change', { bubbles: true }))
+  }
+  setValue('#add-label', entry.name.slice(0, 32))
+  setValue('#add-protocol', entry.protocol)
+  setValue('#add-base', entry.baseUrl)
+  setValue('#add-model', entry.model || '')
+  const card = $('#provider-add-card')
+  card?.classList.add('flash')
+  setTimeout(() => card?.classList.remove('flash'), 1800)
+  $('#add-key')?.focus({ preventScroll: true })
+  const result = $('#provider-add-result')
+  if (result) { result.textContent = `已填入「${entry.name}」的地址，粘贴 API Key 后点添加`; result.className = 'settings-feedback ok' }
+  // Keep it pending: the settings sheet re-renders itself after background
+  // refreshes, and a second render would otherwise blank the fields again.
+  // Typing a key (or adding the provider) is what ends the prefill.
+}
+
 function bindSettingsActions() {
+  $('#add-key')?.addEventListener('input', () => { state.pendingProvider = null }, { once: true })
+  $('#provider-add')?.addEventListener('pointerdown', () => { state.pendingProvider = null }, { once: true })
+  $('#provider-guide-inline')?.addEventListener('click', () => { void toggleProviderQuick() })
+  $('#provider-quick')?.addEventListener('click', event => {
+    const pick = event.target.closest('[data-provider]')
+    if (!pick) return
+    $('#provider-quick').hidden = true
+    void applyProviderGuide(pick.dataset.provider)
+  })
   const pairNow = async button => {
     const name = $('#device-name')?.value.trim() || '我的手机'
     if (name.length > 40) {
@@ -2600,6 +2760,7 @@ async function refreshStatus() {
   try {
     const data = await api('/api/health')
     applyStatus(data.status)
+    applyCapabilities(data.platform)
   } catch {
     // Keep the last known status.
   }
@@ -2854,6 +3015,16 @@ async function main() {
   setTimeout(() => void refreshStatus(), 2500)
   setTimeout(() => void refreshStatus(), 7000)
   setTimeout(() => void refreshStatus(), 12000)
+  // Capabilities decide which quick actions exist; fetch them once immediately
+  // so a macOS/Windows user never sees a button that cannot work.
+  void refreshStatus()
+  const pendingProvider = new URLSearchParams(location.search).get('provider')
+  if (pendingProvider) {
+    // The guide hands off with ?provider=<id>; drop it from the URL so a refresh
+    // does not re-open the prefill.
+    history.replaceState({}, '', location.pathname + location.hash)
+    setTimeout(() => { void applyProviderGuide(pendingProvider) }, 500)
+  }
   connect()
   setInterval(() => {
     if (state.wsReady) sendWs({ kind: 'ping' })

@@ -1,0 +1,95 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#0b0f14">
+  <title>安装 · Jarvis</title>
+  <link rel="icon" href="/icons/jarvis.svg" type="image/svg+xml">
+  <link rel="manifest" href="/manifest.webmanifest">
+  <link rel="stylesheet" href="/styles.css">
+  <link rel="stylesheet" href="/providers.css">
+  <script src="/theme-boot.js"></script>
+</head>
+<body class="pv-body">
+  <header class="pv-topbar">
+    <a class="pv-brand" href="/">
+      <span class="pv-orb" aria-hidden="true"></span>
+      <span>JARVIS</span>
+    </a>
+    <nav class="pv-nav" aria-label="站点导航">
+      <a href="/">对话</a>
+      <a href="/providers">模型服务</a>
+      <a href="/pair">配对手机</a>
+    </nav>
+  </header>
+
+  <main class="pv-main">
+    <section class="pv-hero">
+      <p class="eyebrow">INSTALL</p>
+      <h1>把 Jarvis 装成 App，<br>以后双击就能用。</h1>
+      <p class="pv-lead">
+        Jarvis 是一个跑在你自己电脑上的应用。装成 App 之后没有地址栏、没有标签页，
+        和普通软件一样；手机上可以“添加到主屏幕”，像微信一样一点就开。
+        同一个局域网里，手机连的就是这台电脑上的 Jarvis，数据不经过任何第三方。
+      </p>
+      <p class="pv-count" id="install-detect" role="status" aria-live="polite">正在识别你的设备…</p>
+      <div class="pv-toolbar" style="margin-bottom:26px">
+        <button class="pv-primary" id="install-now" type="button" hidden>安装到这台设备</button>
+        <button class="pv-secondary" id="install-copy" type="button">复制当前地址</button>
+      </div>
+    </section>
+
+    <section class="pv-help" style="margin-top:8px">
+      <h2>你的设备怎么装</h2>
+      <div class="pv-help-grid" id="install-steps"></div>
+    </section>
+
+    <section class="pv-help">
+      <h2>三种用法，按需要选</h2>
+      <div class="pv-help-grid">
+        <article>
+          <h3>① 浏览器直接用（零安装）</h3>
+          <p>打开地址就能用。适合偶尔用、或者借用别人电脑时——记得用完清除本站数据，令牌在浏览器里。</p>
+        </article>
+        <article>
+          <h3>② 装成 App（推荐）</h3>
+          <p>Chrome / Edge 地址栏右侧点“安装”，macOS 用 Safari 的“添加到程序坞”，手机上“添加到主屏幕”。有独立图标、独立窗口、支持离线打开外壳。</p>
+        </article>
+        <article>
+          <h3>③ 常驻后台 + 开机自启</h3>
+          <p>把服务装成用户级服务，登录即启动，手机随时能连。<code>bash scripts/install-service.sh</code>（Linux systemd）。</p>
+        </article>
+        <article>
+          <h3>桌面窗口（无双击安装包）</h3>
+          <p>已经有 Chrome/Edge 的话，<code>npm run app</code> 会直接开一个无地址栏的窗口，效果和装出来的 App 一样，不需要额外打包。</p>
+        </article>
+      </div>
+    </section>
+
+    <section class="pv-help">
+      <h2>常见问题</h2>
+      <div class="pv-help-grid">
+        <article>
+          <h3>手机上打不开？</h3>
+          <p>手机和电脑要在同一个 Wi-Fi。在电脑上设置 <code>JARVIS_HOST=0.0.0.0</code> 并重启，再用电脑的局域网 IP 访问；跨网段请用 Tailscale 之类的私有网络，不要直接暴露到公网。</p>
+        </article>
+        <article>
+          <h3>提示“需要访问令牌”</h3>
+          <p>新设备先配对：电脑上「设置 → 设备 → 生成配对码」，手机上打开 <code>/pair</code> 输入六位数字。配对成功后浏览器会记住凭据 30 天。</p>
+        </article>
+        <article>
+          <h3>Windows / macOS 能跑吗？</h3>
+          <p>能。对话、记忆、提醒、文件、远端模型都可用；屏幕捕获与摄像头目前只支持 Linux。<span id="install-platform-note"></span></p>
+        </article>
+        <article>
+          <h3>离线能用吗？</h3>
+          <p>外壳页面可以离线打开，但对话需要模型：本地 Ollama 不需要网络，远端供应商必须联网。</p>
+        </article>
+      </div>
+    </section>
+  </main>
+
+  <script src="/install.js"></script>
+</body>
+</html>

@@ -1,0 +1,102 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#0b0f14">
+  <title>模型服务 · Jarvis</title>
+  <link rel="icon" href="/icons/jarvis.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="/styles.css">
+  <link rel="stylesheet" href="/providers.css">
+  <script src="/theme-boot.js"></script>
+</head>
+<body class="pv-body">
+  <header class="pv-topbar">
+    <a class="pv-brand" href="/">
+      <span class="pv-orb" aria-hidden="true"></span>
+      <span>JARVIS</span>
+    </a>
+    <nav class="pv-nav" aria-label="站点导航">
+      <a href="/">对话</a>
+      <a href="/install">安装 App</a>
+      <a href="/pair">配对手机</a>
+      <button class="pv-theme" id="pv-theme" type="button" aria-label="切换深浅色">◐</button>
+    </nav>
+  </header>
+
+  <main class="pv-main">
+    <section class="pv-hero">
+      <p class="eyebrow">MODEL PROVIDERS</p>
+      <h1>选一个模型服务，<br>三步接上。</h1>
+      <p class="pv-lead">
+        Jarvis 本身不带模型额度：它连接你选的供应商。国内供应商大多可以直连，
+        国际供应商需要自备网络。填错也不会把已有配置弄坏——新供应商保存后才生效，
+        而且可以随时切换或删除。
+      </p>
+      <ol class="pv-steps">
+        <li><b>1</b><span>在供应商官网注册，创建 API Key</span></li>
+        <li><b>2</b><span>点下面的「用这个供应商」，地址和模型自动填好</span></li>
+        <li><b>3</b><span>粘贴 Key，点「添加」——完事</span></li>
+      </ol>
+      <div class="pv-toolbar">
+        <div class="pv-filters" role="tablist" aria-label="按区域筛选">
+          <button type="button" class="pv-chip active" data-filter="all" role="tab" aria-selected="true">全部</button>
+          <button type="button" class="pv-chip" data-filter="cn" role="tab" aria-selected="false">国内直连</button>
+          <button type="button" class="pv-chip" data-filter="global" role="tab" aria-selected="false">国际</button>
+          <button type="button" class="pv-chip" data-filter="local" role="tab" aria-selected="false">本机模型</button>
+        </div>
+        <label class="pv-search">
+          <span class="sr-only">搜索供应商</span>
+          <input id="pv-search" type="search" placeholder="搜索名字、标签或模型…" autocomplete="off">
+        </label>
+      </div>
+      <p class="pv-count" id="pv-count" role="status" aria-live="polite">正在读取供应商列表…</p>
+    </section>
+
+    <section class="pv-grid" id="pv-grid" aria-label="供应商列表"></section>
+
+    <section class="pv-help">
+      <h2>还是拿不定主意？</h2>
+      <div class="pv-help-grid">
+        <article>
+          <h3>完全不想花钱</h3>
+          <p>先装 <b>Ollama</b> 在本机跑 3B 模型；电脑配置太低就用 <b>硅基流动</b> 的免费额度，或 <b>Gemini</b> 的免费层（免费层数据会被用于改进产品，隐私内容别走）。</p>
+        </article>
+        <article>
+          <h3>要中文、要稳定、别折腾网络</h3>
+          <p><b>DeepSeek</b> 或 <b>通义千问</b>。价格低、国内直连、支持支付宝/对公转账。</p>
+        </article>
+        <article>
+          <h3>想要最好的写作和代码</h3>
+          <p><b>Anthropic Claude</b> 或 <b>OpenAI</b>，需要能访问它们的网络。可以只把它们放在优先级第二位，日常还是走国内。</p>
+        </article>
+        <article>
+          <h3>额度不够想自动切换</h3>
+          <p>配两个以上供应商，在「设置 → 模型」里拖动优先级。额度用完、被限流、Key 失效时，Jarvis 会自动换下一个并在对话里提示。</p>
+        </article>
+      </div>
+      <p class="pv-fineprint">
+        Jarvis 不会把你的 Key 上传到任何地方：它保存在本机 <code>data/model-config.json</code>（权限 0600），
+        既不进备份也不进导出。所有请求都从这台机器直接发往供应商。
+      </p>
+    </section>
+  </main>
+
+  <dialog class="pv-sheet" id="pv-sheet" aria-labelledby="pv-sheet-title">
+    <div class="pv-sheet-head">
+      <div>
+        <p class="pv-sheet-region" id="pv-sheet-region"></p>
+        <h2 id="pv-sheet-title"></h2>
+      </div>
+      <button class="pv-close" id="pv-sheet-close" type="button" aria-label="关闭">✕</button>
+    </div>
+    <div class="pv-sheet-body" id="pv-sheet-body"></div>
+    <div class="pv-sheet-actions">
+      <button class="pv-primary" id="pv-sheet-use" type="button">用这个供应商</button>
+      <a class="pv-secondary" id="pv-sheet-key" href="#" target="_blank" rel="noopener">去创建 API Key ↗</a>
+    </div>
+  </dialog>
+
+  <script src="/providers.js"></script>
+</body>
+</html>

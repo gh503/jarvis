@@ -7,6 +7,8 @@ import type { SecureFiles } from './secure-files.ts'
 import { readCalendar } from './proactive/calendar.ts'
 import { mkdir, readFile, rm, stat } from 'node:fs/promises'
 import { extname, join, resolve, sep } from 'node:path'
+import { capabilities, type Capabilities } from './platform.ts'
+import { providerCatalog } from './model/catalog.ts'
 import { WebSocket, WebSocketServer } from 'ws'
 import type { ActionManager } from './actions.ts'
 import type { ModelRouter } from './model/router.ts'
@@ -205,6 +207,7 @@ export class JarvisServer {
   private claimFailures: number[] = []
   private readonly claimFailuresByClient = new Map<string, number[]>()
   private listeningPort = 0
+  private readonly caps: Capabilities = capabilities(resolve(import.meta.dirname, '..'))
 
   constructor(private readonly deps: ServerDeps) {
     this.devices = new DeviceStore(join(deps.config.dataDir, 'devices.json'))
@@ -464,6 +467,14 @@ export class JarvisServer {
       return
     }
 
+    // Public on purpose: this is the page that teaches a new user how to get
+    // an API key in the first place, so it must work before any token exists.
+    // It contains no user data — only provider names, public URLs and steps.
+    if (request.method === 'GET' && path === '/api/providers/catalog') {
+      sendJson(response, 200, { providers: providerCatalog(), platform: this.caps })
+      return
+    }
+
     if (path.startsWith('/api/')) {
       if (!this.authorized(request, url)) {
         sendJson(response, 401, { error: 'unauthorized' })
@@ -481,6 +492,7 @@ export class JarvisServer {
         version: this.deps.config.version,
         uptimeMs: Date.now() - this.startedAt,
         status: this.deps.conversation.status(),
+        platform: this.caps,
       })
       return
     }
@@ -524,6 +536,17 @@ export class JarvisServer {
       await this.serveStatic(response, '/pair.html')
       return
     }
+
+    if (request.method === 'GET' && path === '/providers') {
+      await this.serveStatic(response, '/providers.html')
+      return
+    }
+
+    if (request.method === 'GET' && path === '/install') {
+      await this.serveStatic(response, '/install.html')
+      return
+    }
+
 
     if (request.method === 'GET' && path === '/api/bootstrap') {
       sendJson(response, 200, {

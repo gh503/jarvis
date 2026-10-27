@@ -17,7 +17,9 @@ Jarvis 是一个**单用户、单机优先**的私人助手。默认只监听 `1
 2. 配置 `JARVIS_AUTH_TOKEN`；
 3. 配置 TLS 证书和私钥（否则启动失败，fail closed）。
 
-远端请求必须带 `Authorization: Bearer` 或配对设备 Cookie；跨源写请求被
+远端请求必须带 `Authorization: Bearer` 或配对设备 Cookie（唯一例外是
+`GET /api/providers/catalog`：它只有供应商名称、公开地址与接入步骤，是给
+还没配置任何 Key 的新用户看的，不含任何本机数据）；跨源写请求被
 `SameSite`/Origin 检查拒绝（`Sec-Fetch-Site: cross-site` 也会直接拒绝）。
 设备令牌是**全权限**的，等价于主令牌；当前没有按设备限权。撤销设备或用
 `/api/privacy/erase` 擦除时，服务端会关闭对应/全部 WebSocket，撤销的令牌不能

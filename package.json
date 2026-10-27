@@ -21,7 +21,9 @@
     "backup": "node --experimental-transform-types scripts/backup.ts",
     "restore": "node --experimental-transform-types scripts/restore.ts",
     "ui:smoke": "node --experimental-transform-types scripts/ui-smoke.ts",
-    "acceptance:full": "node --experimental-transform-types scripts/acceptance-full.ts"
+    "acceptance:full": "node --experimental-transform-types scripts/acceptance-full.ts",
+    "app": "node --experimental-transform-types scripts/app.ts",
+    "package": "node --experimental-transform-types scripts/package-app.ts"
   },
   "dependencies": {
     "ws": "8.21.3"

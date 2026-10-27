@@ -119,6 +119,26 @@ test('server enforces proxy auth, CSRF and serves the shell', async () => {
 
     const local = await fetch(`${url}/api/health`)
     assert.equal(local.status, 200)
+    const healthBody = await local.json() as { platform?: { os?: string, label?: string, reasons?: Record<string, string> } }
+    assert.ok(healthBody.platform?.os, 'health reports the host OS so the UI can hide unsupported actions')
+
+    // The provider guide is a public page: it must work before anyone signs in,
+    // and its catalogue must never contain a key field.
+    const providersPage = await fetch(`${url}/providers`)
+    assert.equal(providersPage.status, 200)
+    assert.match(await providersPage.text(), /模型服务/)
+    const installPage = await fetch(`${url}/install`)
+    assert.equal(installPage.status, 200)
+    assert.match(await installPage.text(), /安装/)
+    const catalog = await fetch(`${url}/api/providers/catalog`)
+    assert.equal(catalog.status, 200)
+    const catalogText = await catalog.text()
+    assert.doesNotMatch(catalogText, /"apiKey"\s*:/)
+    const catalogBody = JSON.parse(catalogText) as { providers: Array<{ id: string, baseUrl: string, region: string }>, platform?: { os?: string } }
+    assert.ok(catalogBody.providers.length >= 15)
+    assert.ok(catalogBody.providers.every(item => /^https?:\/\//.test(item.baseUrl)))
+    assert.ok(catalogBody.providers.some(item => item.region === 'cn'))
+    assert.ok(catalogBody.providers.some(item => item.region === 'local'))
 
     const model = await fetch(`${url}/api/model`)
     assert.equal(model.status, 200)

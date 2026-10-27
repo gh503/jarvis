@@ -213,6 +213,33 @@ async function main(): Promise<void> {
     const headShell = await fetch(`${base}/`, { method: 'HEAD' })
     equal('HEAD / 返回 200', headShell.status, 200)
 
+    // ------------------------------------------------- app shell: guide pages
+    section('供应商指南与安装页')
+    const providersPage = await req(base, '/providers')
+    equal('/providers 返回 200', providersPage.status, 200)
+    includes('/providers 是供应商指南', providersPage.text, '模型服务')
+    includes('/providers 引用样式', providersPage.text, '/providers.css')
+    const providersJs = await req(base, '/providers.js')
+    includes('/providers.js 的 content-type', providersJs.headers.get('content-type') ?? '', 'javascript')
+    const installPage = await req(base, '/install')
+    equal('/install 返回 200', installPage.status, 200)
+    includes('/install 是安装引导', installPage.text, '把 Jarvis 装成 App')
+    // The guide must be readable before anyone signs in: it is the page that
+    // tells a new user how to get a key in the first place.
+    equal('代理场景下指南页仍可读', (await req(base, '/providers', { headers: PROXIED })).status, 200)
+    const catalog = await req(base, '/api/providers/catalog', { headers: PROXIED })
+    equal('供应商目录无需登录', catalog.status, 200)
+    const catalogJson = catalog.json as { providers?: any[], platform?: { os?: string } }
+    const providerCount = (catalogJson.providers ?? []).length
+    check('目录条目足够多', providerCount >= 15, `${providerCount} 条`)
+    check('目录包含国内直连供应商', (catalogJson.providers ?? []).some((item: any) => item.region === 'cn' && item.chinaDirect === true))
+    check('目录包含本机供应商', (catalogJson.providers ?? []).some((item: any) => item.region === 'local'))
+    check('目录不包含任何密钥字段', !JSON.stringify(catalogJson).includes('"apiKey":'))
+    check('目录带平台信息', Boolean(catalogJson.platform?.os))
+    const platformHealth = await req(base, '/api/health')
+    check('health 暴露平台能力', Boolean((platformHealth.json as any)?.platform?.os))
+    check('health 给出不可用原因', typeof (platformHealth.json as any)?.platform?.reasons === 'object')
+
     // ------------------------------------------------------------------ auth
     section('鉴权（模拟反向代理）')
     equal('代理头无令牌 → 401', (await req(base, '/api/health', { headers: PROXIED })).status, 401)

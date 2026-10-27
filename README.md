@@ -1,5 +1,12 @@
 # Jarvis v2 runtime
 
+Install it as an app and hand it to someone who has never opened a terminal:
+[getting-started.md](docs/getting-started.md) is the five-minute path, and
+[distribution.md](docs/distribution.md) explains the three delivery forms
+(PWA install on every platform including phones, `npm run app` desktop window,
+`npm run package` portable bundle). The in-app pages `/providers` and `/install`
+do the same job without reading any docs.
+
 Local-first ambient assistant for Linux: text/voice conversation with barge-in,
 on-demand screen OCR, single-frame camera, SQLite memory with consolidation and
 a regression eval, reminders/daily brief, optional read-only ICS calendar,
@@ -20,8 +27,13 @@ switch between local and remote independently.
 npm install
 npm run setup        # user-local models/binaries; downloads are the slow part
 npm run doctor
-npm start            # http://127.0.0.1:3081
+npm run app          # starts the server and opens it as a desktop window
 ```
+
+`npm run app` uses the Chromium `--app=` mode, so there is no Electron and no
+installer; `npm start` alone still serves <http://127.0.0.1:3081>. First-run
+users who do not want to configure anything by hand should open
+<http://127.0.0.1:3081/providers>, pick a provider, and paste one API key.
 
 Requires Node 24, Python 3.10, Ollama, ffmpeg, `arecord`, and (for screen)
 `python3-gi` + an XDG Desktop Portal. The setup script installs Ollama, Piper,
@@ -34,6 +46,8 @@ npm run typecheck
 npm test
 npm run acceptance   # unattended API/voice/OCR checks against the running server
 npm run acceptance:full  # boots a throwaway instance and re-checks everything end to end
+npm run app              # desktop window (Chromium --app), starts the server if needed
+npm run package          # portable bundle for this OS (bundles the Node runtime)
 npm run memory:eval  # 11-case recall/abstention/privacy regression suite
 JARVIS_CDP_URL=http://127.0.0.1:9223 npm run ui:smoke  # browser smoke, Chrome CDP
 JARVIS_SMOKE_UI=1 npm run acceptance:full  # also drives the real UI (needs Chrome on :9223)
@@ -49,7 +63,9 @@ bash scripts/gen-tls.sh 100.x.y.z            # optional self-signed LAN cert
 ```
 
 See [operations.md](docs/operations.md) for privacy, remote/TLS, failure
-modes and the actual latency measurements on this machine.
+modes and the actual latency measurements on this machine, and
+[providers-guide.md](docs/providers-guide.md) for per-provider setup
+(domestic and international, with key links and pricing notes).
 See [implementation-status.md](docs/implementation-status.md) for what is
 implemented vs. deliberately deferred. Model protocols are documented in
 [models.md](docs/models.md); voice transports and the WebSocket contract

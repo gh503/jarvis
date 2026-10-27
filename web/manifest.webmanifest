@@ -34,5 +34,34 @@
       "type": "image/svg+xml",
       "purpose": "any"
     }
+  ],
+  "categories": [
+    "productivity",
+    "utilities"
+  ],
+  "display_override": [
+    "window-controls-overlay",
+    "standalone",
+    "minimal-ui"
+  ],
+  "shortcuts": [
+    {
+      "name": "新对话",
+      "short_name": "对话",
+      "url": "/",
+      "description": "打开对话界面"
+    },
+    {
+      "name": "模型服务",
+      "short_name": "模型",
+      "url": "/providers",
+      "description": "供应商指南与接入指引"
+    },
+    {
+      "name": "安装与设备",
+      "short_name": "安装",
+      "url": "/install",
+      "description": "安装为 App、手机上使用"
+    }
   ]
 }

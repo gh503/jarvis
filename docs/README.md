@@ -70,6 +70,8 @@ v2 不再从“给 agent 加一个聊天窗口”出发，而是从下面这个�
 - 本地/远端语音：ASR 支持 WebSocket 流式（默认）和 HTTP；TTS 支持本地 Piper、OpenAI-compatible、Gemini、Cloudflare、Edge；两侧独立切换。
 - 多厂商模型：Gemini、Groq、硅基流动、OpenRouter、Cloudflare Workers AI 可直连；模型列表自动发现。
 - Web UI：五标签设置、外观/主题（深色/浅色/跟随系统）、PWA 离线 shell、可键盘操作的对话与观察台；细节见 [ui.md](ui.md)。
+- 安装与分发：PWA 安装（含手机）、`npm run app` 桌面窗口、`npm run package` 便携包；平台能力矩阵见 [distribution.md](distribution.md)，新手路径见 [getting-started.md](getting-started.md)。
+- 模型服务指南：`/providers` 页面 + [providers-guide.md](providers-guide.md)，覆盖 11 家国内直连、9 家国际与 3 种本机方案，含 Key 创建入口、地址、费用与常见坑。
 - 供应商池与自动切换：按优先级组成故障转移链，额度/限流/鉴权/网络错误自动换下一家，冷却持久化并实时提示。
 - 工作场景：编程 / 写作 / 研究 / 邮件 / 会议 / 报告 / 翻译 / 头脑风暴 / 学习 / 闲聊 共 10 个内置场景，各有独立的供应商链、模型、温度与提示词，自动识别或手动指定（`research` 吸收旧的 `reasoning`）。
 - 工具执行：文件、浏览器、日历、提醒；高风险动作走审批和审计。
@@ -94,7 +96,7 @@ v2 不再从“给 agent 加一个聊天窗口”出发，而是从下面这个�
 ## 平台决策
 
 - **开发与第一验收主机：Linux 桌面**（当前 Ubuntu 环境）。
-- **macOS：后续平台**，不是 v2 的第一出口；v1 的 macOS 代码不阻塞 v2。
+- **macOS / Windows：可运行**（对话、记忆、提醒、文件、远端模型、本机模型）；屏幕捕获与摄像头目前仍只支持 Linux，由 `src/platform.ts` 探测并在 UI 里标注。
 - **手机：远程客户端**，通过 Gateway/WebRTC 接入；不在手机本地跑核心。
 - **模型**：DeepSeek Harness 作为可选运行时/模型适配之一，放在 adapter 后面；v2 核心不直接依赖某个模型供应商。
 

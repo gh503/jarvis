@@ -67,6 +67,7 @@ class Cdp {
   private nextId = 1
   private pending = new Map<number, { resolve: (value: unknown) => void; reject: (error: Error) => void }>()
   readonly errors: string[] = []
+  readonly dialogs: string[] = []
 
   private constructor(private readonly socket: WebSocket) {
     socket.onmessage = event => {
@@ -83,6 +84,13 @@ class Cdp {
       if (message.method === 'Runtime.exceptionThrown') {
         const detail = (message.params as { exceptionDetails?: { text?: string; exception?: { description?: string } } })?.exceptionDetails
         this.errors.push(detail?.exception?.description || detail?.text || 'uncaught exception')
+      }
+      if (message.method === 'Page.javascriptDialogOpening') {
+        const params = message.params as { message?: string; type?: string }
+        // A native confirm() blocks the renderer, which makes the next
+        // Runtime.evaluate time out. Accept it and remember what was asked.
+        this.dialogs.push(`${params.type || 'dialog'}: ${params.message || ''}`)
+        void this.send('Page.handleJavaScriptDialog', { accept: true }).catch(() => undefined)
       }
       if (message.method === 'Log.entryAdded') {
         const entry = (message.params as { entry?: { level?: string; text?: string; url?: string } })?.entry
@@ -109,7 +117,7 @@ class Cdp {
       setTimeout(() => {
         if (!this.pending.has(id)) return
         this.pending.delete(id)
-        reject(new Error(`CDP timeout: ${method}`))
+        reject(new Error(`CDP timeout: ${method} ${String((params as { expression?: string }).expression ?? '').slice(0, 160)}`))
       }, TIMEOUT).unref()
     })
   }
@@ -278,6 +286,65 @@ async function main(): Promise<void> {
       check(assistantText.trim().length > 0, 'chat: assistant reply appears')
       await cdp.evaluate("document.querySelector('#settings-btn').click()")
       await sleep(700)
+    }
+    if (WRITE) {
+      // The provider guide is the page a new user is sent to; verify it renders,
+      // filters, and that its handoff pre-fills the settings form.
+      const origin = new URL(APP).origin
+      await cdp.send('Page.navigate', { url: `${origin}/providers` })
+      await sleep(1800)
+      const cardCount = await cdp.evaluate<number>("document.querySelectorAll('.pv-card').length")
+      check(cardCount >= 15, `providers: renders every catalogue entry (${cardCount})`)
+      await cdp.evaluate("[...document.querySelectorAll('.pv-chip')].find(el => el.dataset.filter === 'cn').click()")
+      await sleep(300)
+      const cnOnly = await cdp.evaluate<boolean>("[...document.querySelectorAll('.pv-card')].every(card => card.querySelector('.pv-badge')?.classList.contains('cn'))")
+      check(cnOnly, 'providers: region filter keeps only mainland entries')
+      await cdp.evaluate("[...document.querySelectorAll('.pv-chip')].find(el => el.dataset.filter === 'all').click()")
+      await cdp.evaluate(`(() => {
+        const input = document.querySelector('#pv-search')
+        input.value = '月之暗面'
+        input.dispatchEvent(new Event('input', { bubbles: true }))
+      })()`)
+      await sleep(300)
+      check(await cdp.evaluate<number>("document.querySelectorAll('.pv-card').length") === 1, 'providers: search narrows to one entry')
+      await cdp.evaluate("[...document.querySelectorAll('.pv-chip')].find(el => el.dataset.filter === 'all').click(); document.querySelector('#pv-search').value = ''; document.querySelector('#pv-search').dispatchEvent(new Event('input', { bubbles: true }))")
+      await sleep(300)
+
+      await cdp.evaluate("document.querySelector('[data-detail=\"siliconflow\"]').click()")
+      await sleep(400)
+      check(await cdp.evaluate<boolean>("document.querySelector('#pv-sheet').open === true"), 'providers: detail sheet opens')
+      check(await cdp.evaluate<boolean>("(document.querySelector('#pv-sheet-body')?.innerText || '').includes('https://api.siliconflow.cn/v1')"), 'providers: detail shows the base URL')
+      await cdp.evaluate("document.querySelector('#pv-sheet-close').click()")
+      await sleep(250)
+      check(await cdp.evaluate<boolean>("document.querySelector('#pv-sheet').open === false"), 'providers: detail sheet closes')
+
+      // Handoff: /?provider=siliconflow must land in 设置 → 模型 with the form filled.
+      // Click from a timer: the handler navigates, and a navigating context
+      // never answers the pending Runtime.evaluate call.
+      await cdp.evaluate("(() => { const el = document.querySelector('[data-use=\"siliconflow\"]'); setTimeout(() => el && el.click(), 0); return true })()")
+      await sleep(3600)
+      check(await cdp.evaluate<boolean>("location.pathname === '/' && !location.search"), 'providers: handoff cleans the query string')
+      check(await cdp.evaluate<boolean>("!document.querySelector('#modal').hidden && document.querySelector('#settings-panel-model')?.hidden === false"), 'providers: handoff opens the model settings panel')
+      check(await cdp.evaluate<string>("document.querySelector('#add-base')?.value || ''") === 'https://api.siliconflow.cn/v1', 'providers: handoff fills the base URL')
+      check(await cdp.evaluate<string>("document.querySelector('#add-label')?.value || ''") === '硅基流动', 'providers: handoff fills the label')
+      check(await cdp.evaluate<string>("document.querySelector('#add-protocol')?.value || ''") === 'chat-completions', 'providers: handoff selects the protocol')
+      check(await cdp.evaluate<string>("document.activeElement?.id || ''") === 'add-key', 'providers: handoff focuses the API key field')
+      check(await cdp.evaluate<boolean>("document.querySelector('#model-dirty')?.hidden === false"), 'providers: prefill marks the form unsaved')
+      // Closing now asks for confirmation (the prefill is an unsaved change).
+      await cdp.evaluate("(() => { const el = document.querySelector('#modal-close'); setTimeout(() => el && el.click(), 0); return true })()")
+      await sleep(700)
+      check(cdp.dialogs.some(message => message.includes('未保存')), 'providers: unsaved prefill warns before closing')
+      check(await cdp.evaluate<boolean>("document.querySelector('#modal').hidden"), 'providers: confirming closes the sheet')
+
+      await cdp.send('Page.navigate', { url: `${origin}/install` })
+      await sleep(1500)
+      check(await cdp.evaluate<boolean>("(document.querySelector('#install-detect')?.textContent || '').includes('检测到')"), 'install: detects the current device')
+      check(await cdp.evaluate<number>("document.querySelectorAll('#install-steps article').length") >= 2, 'install: renders device-specific steps')
+      await cdp.send('Page.navigate', { url: `${origin}/` })
+      await sleep(2600)
+      // The assertions below expect the settings sheet to be open.
+      await cdp.evaluate("document.querySelector('#settings-btn').click()")
+      await sleep(1200)
     }
     await cdp.evaluate("document.querySelector('[data-model-select=remote]').click()")
     await sleep(700)
