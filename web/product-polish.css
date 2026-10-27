@@ -1,0 +1,89 @@
+/* Jarvis product polish: calm surfaces, clear priority, responsive-first. */
+:root {
+  --surface-0: #080b0f;
+  --surface-1: #0d1319;
+  --surface-2: #121a22;
+  --surface-3: #18232c;
+  --focus-ring: hsl(var(--accent-h) 72% 72% / .72);
+  --shadow-soft: 0 14px 38px rgb(0 0 0 / .18);
+}
+:root[data-theme="light"] {
+  --surface-0: #f1f4f7;
+  --surface-1: #f8fafc;
+  --surface-2: #ffffff;
+  --surface-3: #eef3f5;
+  --focus-ring: hsl(168 70% 30% / .6);
+  --shadow-soft: 0 14px 38px rgb(22 36 44 / .10);
+}
+body { background: var(--surface-0); }
+.app-shell .topbar {
+  background: color-mix(in srgb, var(--surface-1) 88%, transparent);
+  border-bottom-color: rgb(var(--ink-rgb) / .12);
+}
+:root[data-theme="light"] .app-shell .topbar,
+:root[data-theme="light"] .app-shell .composer,
+:root[data-theme="light"] .app-shell .side-panel,
+:root[data-theme="light"] .studio,
+:root[data-theme="light"] #modal.settings-open {
+  background: var(--surface-1);
+}
+.brand-mark { border-radius: 12px; box-shadow: 0 8px 22px rgb(var(--accent-rgb) / .11); }
+.connection-pill, .model-pill { background: var(--surface-2); border-color: rgb(var(--ink-rgb) / .13); }
+.icon-btn:hover, .quick:hover, .prompt-chips button:hover { transform: translateY(-1px); }
+.app-shell button:focus-visible, .app-shell input:focus-visible, .app-shell textarea:focus-visible, .app-shell select:focus-visible,
+.studio button:focus-visible, .studio input:focus-visible, .studio textarea:focus-visible, .studio select:focus-visible,
+#modal.settings-open button:focus-visible, #modal.settings-open input:focus-visible, #modal.settings-open textarea:focus-visible,
+#modal.settings-open select:focus-visible, #modal.settings-open summary:focus-visible {
+  outline-color: var(--focus-ring);
+  box-shadow: 0 0 0 3px rgb(var(--accent-rgb) / .12);
+}
+.presence-panel { background: linear-gradient(180deg, rgb(var(--ink-rgb) / .025), transparent 45%); }
+.state-label { letter-spacing: -.02em; }
+.quick { border: 1px solid rgb(var(--ink-rgb) / .12); background: var(--surface-2); border-radius: 12px; transition: transform 160ms ease, border-color 160ms ease, background 160ms ease; }
+.quick:hover { border-color: rgb(var(--accent-rgb) / .38); background: rgb(var(--accent-rgb) / .08); }
+.empty-state { margin-top: clamp(18px, 5vh, 56px); }
+.empty-state h1 { letter-spacing: -.05em; }
+.prompt-chips button { background: var(--surface-2); border-color: rgb(var(--ink-rgb) / .14); transition: transform 160ms ease, border-color 160ms ease, background 160ms ease; }
+.composer { background: var(--surface-2); border-color: rgb(var(--ink-rgb) / .18); box-shadow: var(--shadow-soft); }
+.composer:focus-within { border-color: rgb(var(--accent-rgb) / .62); box-shadow: 0 0 0 3px rgb(var(--accent-rgb) / .10), var(--shadow-soft); }
+.send-btn { box-shadow: 0 6px 16px rgb(var(--accent-rgb) / .18); }
+.side-panel { background: color-mix(in srgb, var(--surface-1) 86%, transparent); }
+.side-tab.active::after { height: 2px; }
+.memory-card, .reminder-row, .runtime-block { background: var(--surface-2); border-color: rgb(var(--ink-rgb) / .11); }
+.studio, #modal.settings-open { background: var(--surface-0); }
+.studio-rail, #modal.settings-open .settings-rail { background: var(--surface-1); }
+.s-kpi, .s-panel, .settings-card, .voice-card { box-shadow: 0 8px 24px rgb(0 0 0 / .08); }
+.studio-live, .studio-healthline { letter-spacing: .02em; }
+/* The app shell owns page scrolling; keep overlay workspaces to one vertical scroller. */
+.studio { overflow: hidden; }
+.studio-main { overscroll-behavior: contain; }
+@media (max-width: 960px) {
+  .presence-panel { padding: 10px 14px; gap: 8px 12px; }
+  .orb-wrap { width: 54px; height: 54px; }
+  .orb { width: 42px; height: 42px; }
+  .orb-core { width: 15px; height: 15px; }
+  .state-hint { flex-basis: 100%; margin: 0; }
+  .quick-actions { gap: 4px; }
+  .quick { min-width: 42px; min-height: 42px; padding: 7px; }
+  .conversation-panel { min-height: calc(100svh - 150px); }
+  .side-panel { min-height: 0; }
+  .side-content { max-height: 360px; }
+  .empty-state { margin-top: 24px; }
+  body:has(.studio:not([hidden])) { overflow: hidden; }
+  .studio-shell { min-height: 0; height: 100%; }
+  .studio-main { min-height: 0; }
+}
+@media (max-width: 560px) {
+  .topbar-actions { gap: 3px; }
+  .connection-pill { display: inline-flex; padding: 6px 8px; }
+  .connection-pill .dot { margin-right: 1px; }
+  .empty-copy { max-width: 34ch; margin-bottom: 20px; }
+  .prompt-chips button { padding-inline: 11px; }
+  .composer-wrap { background: linear-gradient(180deg, transparent, var(--surface-0) 22%); padding-top: 18px; }
+  .studio-main { padding: 24px 16px 60px; }
+  .studio-header { margin-bottom: 18px; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .ambient, .orb-ring, .orb-core, .orb-scan, .particle-field { animation: none !important; }
+  .icon-btn:hover, .quick:hover, .prompt-chips button:hover { transform: none; }
+}
