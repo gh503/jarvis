@@ -112,6 +112,8 @@ async function main(): Promise<void> {
     // not only after the settings modal has been opened once.
     await sleep(1200)
     check(await cdp.evaluate<boolean>("document.querySelectorAll('#scenario-select option').length > 1"), 'home: scenario selector populated before opening settings')
+    // Regression: line-style SVG icons must declare stroke; fill:currentColor alone renders nothing.
+    check(await cdp.evaluate<boolean>(`[...document.querySelectorAll('svg path[d*="m6 6"], svg path[d*="M12 2v3"], svg path[d*="M4 7h16"]')].every(el => el.closest('svg').hasAttribute('stroke'))`), 'icons: stroke icons carry stroke attributes')
 
     await cdp.evaluate("document.querySelector('#settings-btn').click()")
     await sleep(900)
