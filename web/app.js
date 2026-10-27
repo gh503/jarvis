@@ -9,8 +9,13 @@ const state = {
   capabilities: null,
   catalog: null,
   pendingProvider: null,
-  pendingVoice: null,
   voices: null,
+  voiceSettings: null,
+  voiceStatus: null,
+  voiceCooldowns: { asr: {}, tts: {} },
+  voiceDraft: null,
+  voiceEdit: { asr: '', tts: '' },
+  voicePicker: { asr: false, tts: false },
   ws: null,
   wsReady: false,
   reconnect: 0,
@@ -50,8 +55,6 @@ const state = {
   modelSettings: null,
   modelFormId: 'local',
   modelOptions: {},
-  voiceSettings: null,
-  voiceStatus: null,
   settingsTab: 'model',
   settingsDirty: { model: false, voice: false },
   settingsLoadToken: 0,
@@ -282,6 +285,21 @@ function handleEvent(event) {
     case 'model.changed':
       void refreshStatus()
       break
+    case 'voice.failover': {
+      const labels = { quota: '额度不足', 'rate-limit': '触发限流', auth: 'Key 被拒', network: '网络异常', server: '服务异常' }[data.failure] || '不可用'
+      const kind = data.kind === 'tts' ? '语音合成' : '语音识别'
+      const until = data.cooldownUntil ? new Date(data.cooldownUntil).toLocaleTimeString('zh-CN', { hour12: false }) : ''
+      appendMessage('system', `🔁 ${kind} ${data.fromLabel || data.from} ${labels}，已自动切到 ${data.toLabel || data.to}${until ? `（冷却至 ${until}）` : ''}`)
+      if (state.voiceSettings) {
+        void api('/api/voice').then(payload => {
+          state.voiceStatus = payload.status || state.voiceStatus
+          state.voiceCooldowns = payload.cooldowns || state.voiceCooldowns
+          if (!state.settingsDirty.voice && !$('#modal').hidden && state.settingsTab === 'voice') renderVoicePanel()
+        }).catch(() => undefined)
+      }
+      void refreshStatus()
+      break
+    }
     case 'model.failover': {
       const kindLabel = { quota: '额度不足', 'rate-limit': '触发限流', auth: 'Key 被拒', network: '网络异常', server: '服务异常' }[data.kind] || '不可用'
       const to = data.to && state.modelSettings?.profiles?.find(item => item.id === data.to)?.label
@@ -1405,99 +1423,189 @@ function modelFormHtml(selected) {
   </div>`
 }
 
-function voiceSettingsHtml(settings) {
-  const asr = settings.asr || {}
-  const tts = settings.tts || {}
-  const asrRemote = asr.remote || {}
-  const ttsRemote = tts.remote || {}
-  const asrActive = settings.activeAsr === 'remote'
-  const ttsActive = settings.activeTts === 'remote'
-  const asrKeyHint = asrRemote.hasKey ? '已保存；留空保持不变' : '粘贴 API Key'
-  const ttsKeyHint = ttsRemote.hasKey ? '已保存；留空保持不变' : '粘贴 API Key'
-  return `
-    <div class="voice-grid">
-      <div class="voice-card${asrActive ? ' active' : ''}" data-voice-card="asr">
-        <div class="voice-card-head">
-          <div><span class="voice-kicker">ASR</span><strong>语音识别</strong></div>
-          <label class="source-switch"><span>来源</span>
-            <select id="asr-source" aria-label="ASR 来源">
-              <option value="local" ${asrActive ? '' : 'selected'}>本地引擎</option>
-              <option value="remote" ${asrActive ? 'selected' : ''}>远端服务</option>
-            </select>
-          </label>
+const VOICE_KIND_LABEL = { asr: '语音识别', tts: '语音合成' }
+const VOICE_ADAPTER_LABEL = {
+  auto: '自动识别', openai: 'OpenAI 兼容', gemini: 'Gemini 原生', cloudflare: 'Cloudflare 原生', edge: 'Edge TTS',
+}
+const VOICE_PRESET_IDS = {
+  asr: ['siliconflow-sensevoice', 'groq-whisper', 'openai-whisper', 'dashscope-paraformer', 'gemini-audio', 'cloudflare-whisper', 'selfhosted-funasr', 'local-faster-whisper'],
+  tts: ['edge-tts', 'siliconflow-cosyvoice', 'openai-tts', 'gemini-tts', 'cloudflare-tts', 'groq-tts', 'selfhosted-openai-tts', 'local-piper'],
+}
+
+/** Work on a copy: cancelling the sheet must not mutate the saved settings. */
+function cloneVoiceChain(chain) {
+  return (chain || []).map(entry => ({ ...entry }))
+}
+
+function ensureVoiceDraft() {
+  if (state.voiceDraft) return state.voiceDraft
+  const settings = state.voiceSettings || { asr: [], tts: [] }
+  state.voiceDraft = { asr: cloneVoiceChain(settings.asr), tts: cloneVoiceChain(settings.tts) }
+  if (!state.voiceEdit) state.voiceEdit = { asr: '', tts: '' }
+  for (const kind of ['asr', 'tts']) {
+    const chain = state.voiceDraft[kind]
+    if (!chain.find(entry => entry.id === state.voiceEdit[kind])) state.voiceEdit[kind] = chain[0]?.id || ''
+  }
+  return state.voiceDraft
+}
+
+function resetVoiceDraft() {
+  state.voiceDraft = null
+  state.voiceEdit = { asr: '', tts: '' }
+  state.voicePicker = { asr: false, tts: false }
+  ensureVoiceDraft()
+}
+
+function voiceEntry(kind, id) {
+  return ensureVoiceDraft()[kind].find(entry => entry.id === id)
+}
+
+function uniqueVoiceId(kind, base) {
+  const chain = ensureVoiceDraft()[kind]
+  const seed = /^[a-z0-9-]{1,24}$/.test(base) ? base : 'voice'
+  if (!chain.some(entry => entry.id === seed)) return seed
+  for (let index = 2; index < 50; index += 1) {
+    const candidate = `${seed}-${index}`
+    if (!chain.some(entry => entry.id === candidate)) return candidate
+  }
+  return `voice-${Date.now().toString(36)}`
+}
+
+function voiceCooling(kind, id) {
+  const entry = state.voiceCooldowns?.[kind]?.[id]
+  return entry && entry.until > Date.now() ? entry : null
+}
+
+function voiceChainHtml(kind) {
+  const chain = ensureVoiceDraft()[kind]
+  const serving = state.voiceStatus?.serving?.[kind]
+  const rows = chain.map((entry, index) => {
+    const cooling = voiceCooling(kind, entry.id)
+    const detail = kind === 'asr'
+      ? `${entry.model || '—'}${entry.kind === 'local' ? '' : ` · ${entry.transport === 'websocket' ? 'WebSocket' : 'HTTP'}`}`
+      : `${entry.model || '—'}${entry.voice ? ` · ${entry.voice}` : ''}`
+    return `<li class="voice-chain-row${state.voiceEdit[kind] === entry.id ? ' editing' : ''}" data-voice-row="${escapeHtml(entry.id)}">
+      <span class="voice-chain-order" aria-hidden="true">${index + 1}</span>
+      <div class="voice-chain-main">
+        <div class="voice-chain-title">
+          <strong>${escapeHtml(entry.label || entry.id)}</strong>
+          <span class="voice-chain-badge">${entry.kind === 'local' ? '本地引擎' : escapeHtml(VOICE_ADAPTER_LABEL[entry.adapter] || entry.adapter || '自动识别')}</span>
+          ${index === 0 ? '<span class="voice-chain-preferred">首选</span>' : ''}
+          ${serving === entry.id ? '<span class="voice-chain-live" title="最近一次请求由它处理">运行中</span>' : ''}
+          ${cooling ? `<span class="voice-chain-cooling" title="${escapeHtml(cooling.reason || '')}">冷却至 ${new Date(cooling.until).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' })}</span>` : ''}
         </div>
-        <div class="voice-presets" role="group" aria-label="语音识别快速预设">
-          <span class="voice-presets-label">快速预设</span>
-          <button class="voice-preset" type="button" data-voice-preset="local-faster-whisper">本机</button>
-          <button class="voice-preset" type="button" data-voice-preset="siliconflow-sensevoice">硅基流动</button>
-          <button class="voice-preset" type="button" data-voice-preset="groq-whisper">Groq</button>
-          <button class="voice-preset" type="button" data-voice-preset="openai-whisper">OpenAI</button>
-          <a class="voice-presets-more" href="/providers#voice" target="_blank" rel="noopener">全部语音服务 ↗</a>
-        </div>
-        <div class="voice-local-summary">${settingsDot(true)}<span>本地 <b>${escapeHtml(asr.local?.model || '—')}</b> <small>${escapeHtml(asr.local?.label || '')}</small></span></div>
-        <div class="voice-remote" data-voice-remote="asr" ${asrActive ? '' : 'hidden'}>
-          <label class="settings-field"><span>服务商</span>
-            <select id="asr-adapter">
-              <option value="auto" ${(asrRemote.adapter || 'auto') === 'auto' ? 'selected' : ''}>自动识别（按服务地址）</option>
-              <option value="openai" ${asrRemote.adapter === 'openai' ? 'selected' : ''}>OpenAI 兼容 / Groq / 硅基流动 / OpenRouter</option>
-              <option value="gemini" ${asrRemote.adapter === 'gemini' ? 'selected' : ''}>Google Gemini（原生音频）</option>
-              <option value="cloudflare" ${asrRemote.adapter === 'cloudflare' ? 'selected' : ''}>Cloudflare Workers AI</option>
-            </select>
-          </label>
-          <label class="settings-field"><span>传输方式</span>
-            <select id="asr-transport">
-              <option value="websocket" ${asrRemote.transport !== 'http' ? 'selected' : ''}>WebSocket 流式（默认）</option>
-              <option value="http" ${asrRemote.transport === 'http' ? 'selected' : ''}>HTTP 一次性上传</option>
-            </select>
-          </label>
-          <label class="settings-field" id="asr-base-field"><span>WebSocket / 服务地址</span>
-            <input id="asr-base" type="url" autocomplete="off" spellcheck="false" value="${escapeHtml(asrRemote.baseUrl || '')}" placeholder="wss://asr.example.com/v1/stream">
-          </label>
-          <div class="settings-form-grid">
-            <label class="settings-field"><span>模型</span><input id="asr-model" type="text" autocomplete="off" spellcheck="false" value="${escapeHtml(asrRemote.model || '')}" placeholder="whisper-1"></label>
-            <label class="settings-field"><span>语言</span><input id="asr-language" type="text" autocomplete="off" spellcheck="false" value="${escapeHtml(asrRemote.language || 'zh')}" placeholder="zh"></label>
-          </div>
-          <label class="settings-field"><span>API Key</span><input id="asr-key" type="password" autocomplete="new-password" value="" placeholder="${escapeHtml(asrKeyHint)}"></label>
-          <p class="settings-hint" id="asr-adapter-hint">OpenAI 兼容使用 <code>/audio/transcriptions</code>；Gemini / Cloudflare 使用各自原生音频端点。Gemini 或 Cloudflare 会自动切换为 HTTP。</p>
-        </div>
+        <div class="voice-chain-meta">${escapeHtml(detail)}${entry.kind === 'local' ? '' : entry.hasKey === false && !entry.apiKey ? ' · 未填 Key' : ''}</div>
       </div>
-      <div class="voice-card${ttsActive ? ' active' : ''}" data-voice-card="tts">
-        <div class="voice-card-head">
-          <div><span class="voice-kicker">TTS</span><strong>语音合成</strong></div>
-          <label class="source-switch"><span>来源</span>
-            <select id="tts-source" aria-label="TTS 来源">
-              <option value="local" ${ttsActive ? '' : 'selected'}>本地引擎</option>
-              <option value="remote" ${ttsActive ? 'selected' : ''}>远端 / Edge TTS</option>
-            </select>
-          </label>
-        </div>
-        <div class="voice-presets" role="group" aria-label="语音合成快速预设">
-          <span class="voice-presets-label">快速预设</span>
-          <button class="voice-preset" type="button" data-voice-preset="local-piper">本机 Piper</button>
-          <button class="voice-preset" type="button" data-voice-preset="edge-tts">Edge</button>
-          <button class="voice-preset" type="button" data-voice-preset="siliconflow-cosyvoice">硅基流动</button>
-          <button class="voice-preset" type="button" data-voice-preset="openai-tts">OpenAI</button>
-          <a class="voice-presets-more" href="/providers#voice" target="_blank" rel="noopener">全部语音服务 ↗</a>
-        </div>
-        <div class="voice-local-summary">${settingsDot(true)}<span>本地 <b>${escapeHtml((tts.local?.voice || '').split('/').pop() || '—')}</b> <small>${escapeHtml(tts.local?.label || '')}</small></span></div>
-        <div class="voice-remote" data-voice-remote="tts" ${ttsActive ? '' : 'hidden'}>
-          <label class="settings-field"><span>服务商</span>
-            <select id="tts-adapter">
-              <option value="auto" ${(ttsRemote.adapter || 'auto') === 'auto' ? 'selected' : ''}>自动识别（按服务地址）</option>
-              <option value="openai" ${ttsRemote.adapter === 'openai' ? 'selected' : ''}>OpenAI 兼容 / Groq / 硅基流动</option>
-              <option value="gemini" ${ttsRemote.adapter === 'gemini' ? 'selected' : ''}>Google Gemini（原生 TTS）</option>
-              <option value="cloudflare" ${ttsRemote.adapter === 'cloudflare' ? 'selected' : ''}>Cloudflare Workers AI</option>
-              <option value="edge" ${ttsRemote.adapter === 'edge' ? 'selected' : ''}>Edge TTS（本机命令，免费）</option>
-            </select>
-          </label>
-          <label class="settings-field" id="tts-base-field"><span>服务地址</span><input id="tts-base" type="url" autocomplete="off" spellcheck="false" value="${escapeHtml(ttsRemote.baseUrl || '')}" placeholder="https://api.openai.com/v1"></label>
-          <div class="settings-form-grid">
-            <label class="settings-field"><span>模型</span><input id="tts-model" type="text" autocomplete="off" spellcheck="false" value="${escapeHtml(ttsRemote.model || '')}" placeholder="tts-1"></label>
-            <label class="settings-field"><span>音色</span><input id="tts-voice" type="text" autocomplete="off" spellcheck="false" value="${escapeHtml(ttsRemote.voice || '')}" placeholder="alloy / Kore / zh-CN-XiaoxiaoNeural"></label>
-          </div>
-          <label class="settings-field" id="tts-key-field"><span>API Key</span><input id="tts-key" type="password" autocomplete="new-password" value="" placeholder="${escapeHtml(ttsKeyHint)}"></label>
-          <p class="settings-hint" id="tts-adapter-hint">OpenAI 兼容使用 <code>/audio/speech</code>；Gemini / Cloudflare 使用原生接口；Edge TTS 需要本机安装 <code>edge-tts</code>。</p>
-        </div>
+      <div class="voice-chain-actions">
+        <button type="button" class="voice-icon" data-voice-move="up" data-voice-kind="${kind}" data-voice-id="${escapeHtml(entry.id)}" aria-label="上移" ${index === 0 ? 'disabled' : ''}>↑</button>
+        <button type="button" class="voice-icon" data-voice-move="down" data-voice-kind="${kind}" data-voice-id="${escapeHtml(entry.id)}" aria-label="下移" ${index === chain.length - 1 ? 'disabled' : ''}>↓</button>
+        <button type="button" class="voice-icon" data-voice-edit="${kind}" data-voice-id="${escapeHtml(entry.id)}" aria-label="编辑">✎</button>
+        <button type="button" class="voice-icon danger" data-voice-remove="${kind}" data-voice-id="${escapeHtml(entry.id)}" aria-label="删除" ${chain.length <= 1 ? 'disabled' : ''}>✕</button>
+      </div>
+    </li>`
+  }).join('')
+  const coolingCount = chain.filter(entry => voiceCooling(kind, entry.id)).length
+  return `<div class="voice-chain-head">
+      <span class="voice-chain-count">${chain.length} 个服务${coolingCount ? ` · ${coolingCount} 个冷却中` : ''}</span>
+      <button type="button" class="voice-add" data-voice-add="${kind}">+ 添加${VOICE_KIND_LABEL[kind]}</button>
+    </div>
+    <ol class="voice-chain" id="voice-chain-${kind}" aria-label="${VOICE_KIND_LABEL[kind]}优先级">${rows}</ol>
+    <p class="settings-hint">从上到下依次尝试。额度不足、Key 失效、限流、网络或服务端错误会自动切到下一个，并把它冷却一段时间；参数写错（4xx）不会静默切换。</p>
+    ${state.voicePicker?.[kind] ? voicePresetHtml(kind) : ''}`
+}
+
+function voicePresetHtml(kind) {
+  const presets = (state.voices || []).filter(entry => entry.kind === kind)
+    .filter(entry => VOICE_PRESET_IDS[kind].includes(entry.id))
+    .sort((a, b) => VOICE_PRESET_IDS[kind].indexOf(a.id) - VOICE_PRESET_IDS[kind].indexOf(b.id))
+  if (!presets.length) {
+    return `<div class="voice-preset-row" data-voice-picker="${kind}"><span class="settings-hint">常见预设未加载，点“添加”会创建一个空白远端服务，手动填写即可。</span>
+      <button type="button" class="voice-add" data-voice-blank="${kind}">空白远端服务</button></div>`
+  }
+  const buttons = presets.map(entry => `<button type="button" class="voice-preset" data-voice-preset-kind="${kind}" data-voice-preset-id="${escapeHtml(entry.id)}">${escapeHtml(entry.name)}</button>`).join('')
+  return `<div class="voice-preset-row" data-voice-picker="${kind}">
+    <span class="voice-presets-label">常见预设</span>${buttons}
+    <button type="button" class="voice-add" data-voice-blank="${kind}">空白远端服务</button>
+    <a class="voice-presets-more" href="/providers#voice" target="_blank" rel="noopener">全部语音服务 ↗</a>
+  </div>`
+}
+
+function voiceFormHtml(kind) {
+  const entry = voiceEntry(kind, state.voiceEdit[kind])
+  if (!entry) return ''
+  const local = entry.kind === 'local'
+  const adapters = kind === 'asr'
+    ? [['auto', '自动识别（按服务地址）'], ['openai', 'OpenAI 兼容'], ['gemini', 'Google Gemini（原生音频）'], ['cloudflare', 'Cloudflare Workers AI']]
+    : [['auto', '自动识别（按服务地址）'], ['openai', 'OpenAI 兼容'], ['gemini', 'Google Gemini（原生 TTS）'], ['cloudflare', 'Cloudflare Workers AI'], ['edge', 'Edge TTS（本机命令，免费）']]
+  const field = (name, label, value, options = {}) => {
+    const attrs = `data-voice-field="${name}" data-voice-kind="${kind}"`
+    if (name === 'adapter') {
+      return `<label class="settings-field"><span>服务商</span><select ${attrs} id="${kind}-adapter">${adapters.map(([valueId, name]) => `<option value="${valueId}" ${String(value || 'auto') === valueId ? 'selected' : ''}>${name}</option>`).join('')}</select></label>`
+    }
+    if (name === 'transport') {
+      const disabled = entry.adapter === 'gemini' || entry.adapter === 'cloudflare'
+      return `<label class="settings-field"><span>传输方式</span><select ${attrs} id="${kind}-transport" ${disabled ? 'disabled' : ''}>
+        <option value="websocket" ${value !== 'http' ? 'selected' : ''}>WebSocket 流式</option>
+        <option value="http" ${value === 'http' ? 'selected' : ''}>HTTP 一次性上传</option></select></label>`
+    }
+    if (name === 'apiKey') {
+      const hint = entry.hasKey ? '已保存；留空保持不变' : '粘贴 API Key'
+      return `<label class="settings-field"><span>API Key</span><input ${attrs} type="password" autocomplete="new-password" value="" placeholder="${hint}" ${options.id ? `id="${options.id}"` : ''}></label>`
+    }
+    const type = name === 'baseUrl' ? 'url' : 'text'
+    const extra = name === 'baseUrl' ? 'autocomplete="off" spellcheck="false"' : ''
+    return `<label class="settings-field"><span>${label}</span><input ${attrs} type="${type}" ${extra} value="${escapeHtml(value ?? '')}" placeholder="${escapeHtml(options.placeholder || '')}" ${options.id ? `id="${options.id}"` : ''}></label>`
+  }
+  const header = `<div class="voice-form-head">
+      <strong>${local ? '本地引擎' : '远端服务'} · ${escapeHtml(entry.label || entry.id)}</strong>
+      <button type="button" class="voice-add" data-voice-cancel="${kind}">收起</button>
+    </div>`
+  if (local) {
+    return `<div class="voice-form" data-voice-form="${kind}">${header}
+      ${field('label', '名称', entry.label, { id: `${kind}-label` })}
+      <div class="settings-form-grid">
+        ${field('model', '模型', entry.model, { placeholder: kind === 'asr' ? 'small' : 'piper', id: `${kind}-model` })}
+        ${kind === 'asr' ? field('language', '语言', entry.language, { id: `${kind}-language` }) : field('voice', '音色', entry.voice, { id: `${kind}-voice` })}
+      </div>
+      <p class="settings-hint">本地引擎不出网、无调用费${kind === 'asr' ? '；首次识别要加载模型，会慢几秒' : '；音色数量取决于本机安装的模型'}。</p>
+    </div>`
+  }
+  const keyField = kind === 'tts' && entry.adapter === 'edge' ? '' : field('apiKey', 'API Key', '', { id: `${kind}-key` })
+  const baseField = kind === 'tts' && entry.adapter === 'edge'
+    ? '<p class="settings-hint">Edge TTS 调用本机命令行，不需要地址和 Key。</p>'
+    : field('baseUrl', '服务地址', entry.baseUrl, { id: `${kind}-base`, placeholder: 'https://api.openai.com/v1' })
+  return `<div class="voice-form" data-voice-form="${kind}">${header}
+    ${field('label', '名称', entry.label, { id: `${kind}-label`, placeholder: '例如 硅基流动' })}
+    <div class="settings-form-grid">
+      ${field('adapter', '服务商', entry.adapter || 'auto')}
+      ${kind === 'asr' ? field('transport', '传输方式', entry.transport) : ''}
+    </div>
+    ${baseField}
+    <div class="settings-form-grid">
+      ${field('model', '模型', entry.model, { placeholder: kind === 'asr' ? 'whisper-1' : 'tts-1', id: `${kind}-model` })}
+      ${kind === 'asr' ? field('language', '语言', entry.language, { id: `${kind}-language` }) : field('voice', '音色', entry.voice, { placeholder: 'alloy / Kore / zh-CN-XiaoxiaoNeural', id: `${kind}-voice` })}
+    </div>
+    ${keyField}
+  </div>`
+}
+
+function voicePanelHtml() {
+  ensureVoiceDraft()
+  const status = state.voiceStatus
+  return `<div class="settings-section-head">
+      <div><h3>语音模型</h3><p>ASR 与 TTS 各自是一条优先级链，可以配多个服务；前一个失效时自动切换。</p></div>
+      <span class="settings-chip">${ensureVoiceDraft().asr.length + ensureVoiceDraft().tts.length} 个服务</span>
+    </div>
+    <div class="voice-grid">
+      <div class="voice-card" data-voice-card="asr">
+        <div class="voice-card-head"><div><span class="voice-kicker">ASR</span><strong>语音识别</strong></div></div>
+        ${voiceChainHtml('asr')}
+        ${voiceFormHtml('asr')}
+      </div>
+      <div class="voice-card" data-voice-card="tts">
+        <div class="voice-card-head"><div><span class="voice-kicker">TTS</span><strong>语音合成</strong></div></div>
+        ${voiceChainHtml('tts')}
+        ${voiceFormHtml('tts')}
       </div>
     </div>
     <div class="settings-savebar">
@@ -1506,6 +1614,11 @@ function voiceSettingsHtml(settings) {
       <button type="button" class="model-action primary" id="voice-save">保存语音设置</button>
     </div>`
 }
+
+function voiceSettingsHtml(settings) {
+  return voicePanelHtml()
+}
+
 
 function settingsPanelsHtml(selected, settings) {
   return `
@@ -2141,128 +2254,242 @@ function bindAppearance() {
   })
 }
 
-function bindVoiceSettings() {
-  const sync = kind => {
-    const source = $(`#${kind}-source`)
-    const remote = $(`[data-voice-remote="${kind}"]`)
-    if (source && remote) remote.hidden = source.value !== 'remote'
+function applyVoiceAdapterDefaults(entry, kind) {
+  const adapter = entry.adapter || 'auto'
+  if (adapter === 'gemini') {
+    if (!entry.baseUrl) entry.baseUrl = 'https://generativelanguage.googleapis.com/v1beta'
+    if (!entry.model) entry.model = kind === 'asr' ? 'gemini-2.0-flash' : 'gemini-2.5-flash-preview-tts'
+    if (kind === 'tts' && !entry.voice) entry.voice = 'Kore'
+    if (kind === 'asr') entry.transport = 'http'
+  } else if (adapter === 'cloudflare') {
+    if (!entry.baseUrl) entry.baseUrl = 'https://api.cloudflare.com/client/v4/accounts/<ACCOUNT_ID>/ai/v1'
+    if (!entry.model) entry.model = kind === 'asr' ? '@cf/openai/whisper' : '@cf/myshell-ai/melotts'
+    if (kind === 'tts' && !entry.voice) entry.voice = 'zh'
+    if (kind === 'asr') entry.transport = 'http'
+  } else if (adapter === 'edge') {
+    entry.baseUrl = ''
+    entry.apiKey = ''
+    if (!entry.model) entry.model = 'edge-tts'
+    if (!entry.voice) entry.voice = 'zh-CN-XiaoxiaoNeural'
   }
-  const applyPreset = (kind, adapter) => {
-    const base = $(`#${kind}-base`)
-    const model = $(`#${kind}-model`)
-    const voice = kind === 'tts' ? $('#tts-voice') : null
-    if (adapter === 'gemini') {
-      if (base && !base.value.trim()) base.value = 'https://generativelanguage.googleapis.com/v1beta'
-      if (model && !model.value.trim()) model.value = kind === 'asr' ? 'gemini-3.5-transcribe' : 'gemini-3.8-flash-tts'
-      if (voice && !voice.value.trim()) voice.value = 'Kore'
-    } else if (adapter === 'cloudflare') {
-      if (base) base.placeholder = 'https://api.cloudflare.com/client/v4/accounts/<ACCOUNT_ID>/ai/v1'
-      if (model && !model.value.trim()) model.value = kind === 'asr' ? '@cf/openai/whisper' : '@cf/myshell-ai/melotts'
-    } else if (adapter === 'edge') {
-      if (model && !model.value.trim()) model.value = 'edge-tts'
-      if (voice && !voice.value.trim()) voice.value = 'zh-CN-XiaoxiaoNeural'
-    }
+}
+
+function renderVoicePanel() {
+  const panel = $('#settings-panel-voice')
+  if (!panel) return
+  panel.innerHTML = voicePanelHtml()
+  const dirty = $('#voice-dirty')
+  if (dirty) dirty.hidden = !state.settingsDirty.voice
+}
+
+function voiceProfileFromCatalog(entry) {
+  const kind = entry.kind
+  const local = !entry.baseUrl
+  return {
+    id: uniqueVoiceId(kind, local ? 'local' : entry.id),
+    label: entry.name.slice(0, 64),
+    kind: local ? 'local' : 'remote',
+    transport: entry.transport || 'http',
+    baseUrl: entry.baseUrl,
+    model: entry.model,
+    voice: entry.voice || '',
+    language: entry.language || 'zh',
+    adapter: entry.adapter || 'auto',
+    apiKey: '',
+    hasKey: false,
   }
-  const syncAdapter = kind => {
-    const adapter = $(`#${kind}-adapter`)?.value || 'auto'
-    const edge = kind === 'tts' && adapter === 'edge'
-    const native = adapter === 'gemini' || adapter === 'cloudflare'
-    const baseField = $(`#${kind}-base-field`)
-    if (baseField) baseField.hidden = edge
-    if (kind === 'tts') {
-      const keyField = $('#tts-key-field')
-      if (keyField) keyField.hidden = edge
-      if (edge) {
-        const model = $('#tts-model')
-        const voice = $('#tts-voice')
-        if (model && !model.value.trim()) model.value = 'edge-tts'
-        if (voice && !voice.value.trim()) voice.value = 'zh-CN-XiaoxiaoNeural'
-        if (voice) voice.placeholder = 'zh-CN-XiaoxiaoNeural'
-      }
-    }
-    if (kind === 'asr') {
-      const transport = $('#asr-transport')
-      if (transport && native) {
-        transport.value = 'http'
-        transport.disabled = true
-      } else if (transport) {
-        transport.disabled = false
-      }
-    }
-    const hint = $(`#${kind}-adapter-hint`)
-    if (hint) {
-      hint.textContent = edge
-        ? 'Edge TTS 调用本机 edge-tts 命令，需要联网且没有官方 SLA；首次使用前运行 python3 -m pip install --user edge-tts。'
-        : native
-          ? 'Gemini / Cloudflare 使用各自原生音频端点，不使用 OpenAI /audio/* 路径；模型和音色名以对应控制台为准。'
-          : 'OpenAI 兼容使用 /audio/* 路径；Groq、硅基流动、OpenRouter 等按各自模型与音频能力选择。'
-    }
+}
+
+function addVoiceEntry(kind, entry, options = {}) {
+  const chain = ensureVoiceDraft()[kind]
+  chain.unshift(entry)
+  state.voiceEdit[kind] = entry.id
+  state.voicePicker[kind] = false
+  markSettingsDirty('voice')
+  renderVoicePanel()
+  const form = document.querySelector(`[data-voice-form="${kind}"]`)
+  form?.scrollIntoView({ block: 'center', behavior: 'smooth' })
+  form?.classList.add('flash')
+  setTimeout(() => form?.classList.remove('flash'), 1600)
+  const key = document.getElementById(`${kind}-key`)
+  if (key) key.focus({ preventScroll: true })
+  else $('#voice-save')?.focus({ preventScroll: true })
+  const result = $('#voice-result')
+  if (result && options.notice) {
+    result.textContent = options.notice
+    result.className = 'settings-feedback ok'
   }
-  $$('[data-voice-preset]').forEach(button => {
-    button.addEventListener('click', () => { void applyVoiceGuide(button.dataset.voicePreset) })
-  })
-  for (const kind of ['asr', 'tts']) {
-    $(`#${kind}-key`)?.addEventListener('input', () => { state.pendingVoice = null }, { once: true })
-    const source = $(`#${kind}-source`)
-    source?.addEventListener('change', () => {
-      sync(kind)
-      markSettingsDirty('voice')
+}
+
+async function saveVoiceSettings() {
+  const button = $('#voice-save')
+  const result = $('#voice-result')
+  const original = button?.textContent || '保存语音设置'
+  if (button) { button.disabled = true; button.textContent = '保存中…' }
+  if (result) { result.textContent = '正在校验并切换语音运行时…'; result.className = 'settings-feedback' }
+  const chain = ensureVoiceDraft()
+  const strip = entry => {
+    const { hasKey, ...rest } = entry
+    if (!rest.apiKey) delete rest.apiKey
+    return rest
+  }
+  try {
+    const data = await api('/api/voice/apply', {
+      method: 'POST',
+      body: JSON.stringify({ asr: chain.asr.map(strip), tts: chain.tts.map(strip) }),
     })
-    const adapter = $(`#${kind}-adapter`)
-    adapter?.addEventListener('change', () => {
-      applyPreset(kind, adapter.value)
-      syncAdapter(kind)
-      markSettingsDirty('voice')
-    })
-    syncAdapter(kind)
-  }
-  $('#voice-save')?.addEventListener('click', async event => {
-    state.pendingVoice = null
-    const button = event.currentTarget
-    const result = $('#voice-result')
-    const original = button.textContent
-    button.disabled = true
-    button.textContent = '保存中…'
+    state.voiceSettings = data.settings
+    state.voiceStatus = data.status
+    state.voiceCooldowns = data.cooldowns ?? state.voiceCooldowns
+    state.settingsDirty.voice = false
+    resetVoiceDraft()
+    renderVoicePanel()
+    // renderVoicePanel rebuilt the savebar, so re-query instead of writing to
+    // the detached nodes captured before the render.
+    const feedback = $('#voice-result')
+    if (feedback) {
+      const asr = data.status?.asr
+      const tts = data.status?.tts
+      feedback.textContent = `已生效：ASR ${asr?.label || '—'}（${asr?.chain?.length || 1} 个）· TTS ${tts?.label || '—'}（${tts?.chain?.length || 1} 个）`
+      feedback.className = 'settings-feedback ok'
+    }
+    await refreshStatus()
+    updateSettingsOverview()
+    appendMessage('system', `语音设置已保存：ASR ${data.status?.asr?.label ?? ''} · TTS ${data.status?.tts?.label ?? ''}`)
+  } catch (error) {
     if (result) {
-      result.textContent = '正在校验并切换语音运行时…'
-      result.className = 'settings-feedback'
+      result.textContent = `保存失败：${error.message}`
+      result.className = 'settings-feedback bad'
     }
-    try {
-      const data = await api('/api/voice/apply', {
-        method: 'POST',
-        body: JSON.stringify({
-          activeAsr: $('#asr-source')?.value || 'local',
-          activeTts: $('#tts-source')?.value || 'local',
-          asr: { remote: { adapter: $('#asr-adapter')?.value || 'auto', transport: $('#asr-transport')?.value || 'websocket', baseUrl: $('#asr-base')?.value.trim() || '', model: $('#asr-model')?.value.trim() || '', language: $('#asr-language')?.value.trim() || 'zh', apiKey: $('#asr-key')?.value.trim() || '' } },
-          tts: { remote: { adapter: $('#tts-adapter')?.value || 'auto', baseUrl: $('#tts-base')?.value.trim() || '', model: $('#tts-model')?.value.trim() || '', voice: $('#tts-voice')?.value.trim() || '', apiKey: $('#tts-key')?.value.trim() || '' } },
-        }),
+  } finally {
+    const live = $('#voice-save')
+    if (live) { live.disabled = false; live.textContent = original }
+    else if (button) { button.disabled = false; button.textContent = original }
+  }
+}
+
+function bindVoiceSettings() {
+  const panel = $('#settings-panel-voice')
+  if (!panel) return
+  const touch = () => {
+    markSettingsDirty('voice')
+    const dirty = $('#voice-dirty')
+    if (dirty) dirty.hidden = false
+  }
+
+  panel.addEventListener('input', event => {
+    const field = event.target.closest('[data-voice-field]')
+    if (!field) return
+    const kind = field.dataset.voiceKind
+    const entry = voiceEntry(kind, state.voiceEdit[kind])
+    if (!entry) return
+    entry[field.dataset.voiceField] = field.value
+    touch()
+  })
+
+  panel.addEventListener('change', event => {
+    const field = event.target.closest('[data-voice-field]')
+    if (!field) return
+    const kind = field.dataset.voiceKind
+    const entry = voiceEntry(kind, state.voiceEdit[kind])
+    if (!entry) return
+    const name = field.dataset.voiceField
+    entry[name] = field.value
+    if (name === 'adapter') applyVoiceAdapterDefaults(entry, kind)
+    touch()
+    renderVoicePanel()
+  })
+
+  panel.addEventListener('click', async event => {
+    const save = event.target.closest('#voice-save')
+    if (save) { await saveVoiceSettings(); return }
+
+    const add = event.target.closest('[data-voice-add]')
+    if (add) {
+      const kind = add.dataset.voiceAdd
+      state.voicePicker[kind] = !state.voicePicker[kind]
+      if (state.voicePicker[kind] && !state.voices) await loadVoiceCatalog()
+      renderVoicePanel()
+      return
+    }
+
+    const blank = event.target.closest('[data-voice-blank]')
+    if (blank) {
+      const kind = blank.dataset.voiceBlank
+      addVoiceEntry(kind, {
+        id: uniqueVoiceId(kind, 'voice'),
+        label: kind === 'asr' ? '新的识别服务' : '新的合成服务',
+        kind: 'remote', transport: 'http', baseUrl: '', model: '', voice: '', language: 'zh',
+        adapter: 'openai', apiKey: '', hasKey: false,
+      }, { notice: '已加入一个空白远端服务，填写地址和 Key 后保存' })
+      return
+    }
+
+    const preset = event.target.closest('[data-voice-preset-id]')
+    if (preset) {
+      const kind = preset.dataset.voicePresetKind
+      const entry = (state.voices || []).find(item => item.id === preset.dataset.voicePresetId)
+      if (!entry) return
+      const local = !entry.baseUrl
+      const existing = ensureVoiceDraft()[kind].find(item => local ? item.kind === 'local' : item.baseUrl === entry.baseUrl)
+      if (existing) {
+        state.voiceEdit[kind] = existing.id
+        state.voicePicker[kind] = false
+        renderVoicePanel()
+        const result = $('#voice-result')
+        if (result) { result.textContent = `已经在列表里：${existing.label}，保存后按顺序生效`; result.className = 'settings-feedback ok' }
+        return
+      }
+      addVoiceEntry(kind, voiceProfileFromCatalog(entry), {
+        notice: local ? `已选中「${entry.name}」（本地引擎，无需 Key）` : `已加入「${entry.name}」并设为首选，粘贴 Key 后保存`,
       })
-      state.voiceSettings = data.settings
-      state.voiceStatus = data.status
-      clearSettingsDirty('voice')
-      if (result) {
-        result.textContent = `已生效：ASR ${data.status.asr.label} · TTS ${data.status.tts.label}`
-        result.className = 'settings-feedback ok'
-      }
-      await refreshStatus()
-      for (const kind of ['asr', 'tts']) {
-        $(`[data-voice-card="${kind}"]`)?.classList.toggle('active', data.status[kind].kind === 'remote')
-      }
-      const chip = $('#settings-panel-voice .settings-chip')
-      if (chip) chip.textContent = voiceLabel()
-      updateSettingsOverview()
-      appendMessage('system', `语音设置已保存：ASR ${data.status.asr.kind === 'remote' ? '远端' : '本地'} · TTS ${data.status.tts.kind === 'remote' ? '远端' : '本地'}`)
-    } catch (error) {
-      if (result) {
-        result.textContent = `保存失败：${error.message}`
-        result.className = 'settings-feedback bad'
-      }
-    } finally {
-      button.disabled = false
-      button.textContent = original
+      return
+    }
+
+    const edit = event.target.closest('[data-voice-edit]')
+    if (edit) {
+      state.voiceEdit[edit.dataset.voiceEdit] = edit.dataset.voiceId
+      renderVoicePanel()
+      return
+    }
+
+    const cancel = event.target.closest('[data-voice-cancel]')
+    if (cancel) {
+      state.voiceEdit[cancel.dataset.voiceCancel] = ''
+      renderVoicePanel()
+      return
+    }
+
+    const move = event.target.closest('[data-voice-move]')
+    if (move) {
+      const kind = move.dataset.voiceKind
+      const chain = ensureVoiceDraft()[kind]
+      const index = chain.findIndex(entry => entry.id === move.dataset.voiceId)
+      const target = move.dataset.voiceMove === 'up' ? index - 1 : index + 1
+      if (index < 0 || target < 0 || target >= chain.length) return
+      const [item] = chain.splice(index, 1)
+      chain.splice(target, 0, item)
+      touch()
+      renderVoicePanel()
+      return
+    }
+
+    const remove = event.target.closest('[data-voice-remove]')
+    if (remove) {
+      const kind = remove.dataset.voiceRemove
+      const chain = ensureVoiceDraft()[kind]
+      if (chain.length <= 1) return
+      const index = chain.findIndex(entry => entry.id === remove.dataset.voiceId)
+      if (index < 0) return
+      const [removed] = chain.splice(index, 1)
+      if (state.voiceEdit[kind] === removed.id) state.voiceEdit[kind] = chain[0]?.id || ''
+      touch()
+      renderVoicePanel()
+      return
     }
   })
 }
+
 
 function renderSettings(options = {}) {
   if (!state.modelSettings) return
@@ -2288,7 +2515,6 @@ function renderSettings(options = {}) {
     const body = $('.settings-modal .modal-body')
     if (body) body.scrollTop = scrollTop
     applyPendingProvider()
-    applyPendingVoice()
   })
 }
 
@@ -2311,9 +2537,12 @@ async function showSettings(options = {}) {
   if (voiceResult.status === 'fulfilled') {
     state.voiceSettings = voiceResult.value.settings
     state.voiceStatus = voiceResult.value.status
+    state.voiceCooldowns = voiceResult.value.cooldowns || { asr: {}, tts: {} }
+    resetVoiceDraft()
   } else {
     state.voiceSettings = null
     state.voiceStatus = null
+    state.voiceDraft = null
   }
   if (modelResult.status === 'fulfilled') {
     state.modelSettings = modelResult.value.settings
@@ -2546,64 +2775,32 @@ async function applyVoiceGuide(id, options = {}) {
     return
   }
   if ($('#modal').hidden) await showSettings({ tab: 'voice' })
-  else activateSettingsTab('voice')
-  // Self-hosted presets are "local" in the catalogue but still need the remote
-  // source switch: they talk HTTP to a server that happens to be on loopback.
-  const remote = Boolean(entry.baseUrl)
-  if (!remote) {
-    const source = $(`#${entry.kind}-source`)
-    if (source) {
-      source.value = 'local'
-      source.dispatchEvent(new Event('change', { bubbles: true }))
+  else if (state.settingsTab !== 'voice') activateSettingsTab('voice')
+  ensureVoiceDraft()
+  const kind = entry.kind
+  const chain = state.voiceDraft[kind]
+  const local = !entry.baseUrl
+  const existing = chain.find(item => local ? item.kind === 'local' : (item.baseUrl && item.baseUrl === entry.baseUrl))
+  if (existing) {
+    state.voiceEdit[kind] = existing.id
+    state.voicePicker[kind] = false
+    markSettingsDirty('voice')
+    renderVoicePanel()
+    const result = $('#voice-result')
+    if (result) {
+      result.textContent = local
+        ? `「${existing.label}」已经在链里（本地引擎，无需 Key），保存后生效`
+        : `「${existing.label}」已经在链里；粘贴 Key 或调整顺序后保存`
+      result.className = 'settings-feedback ok'
     }
-    const feedback = $('#voice-result')
-    if (feedback) {
-      feedback.textContent = `「${entry.name}」是本地引擎：保持“本地引擎”即可，保存后生效`
-      feedback.className = 'settings-feedback ok'
-    }
-    if (options.focus !== false) $('#voice-save')?.focus({ preventScroll: true })
+    if (options.focus !== false) document.getElementById(`${kind}-key`)?.focus({ preventScroll: true })
     return
   }
-  state.pendingVoice = entry
-  applyPendingVoice()
-}
-
-function applyPendingVoice() {
-  const entry = state.pendingVoice
-  if (!entry) return
-  const source = $(`#${entry.kind}-source`)
-  if (!source) return
-  const setValue = (selector, value, event = 'input') => {
-    const element = $(selector)
-    if (!element) return
-    element.value = value
-    element.dispatchEvent(new Event(event, { bubbles: true }))
-  }
-  source.value = 'remote'
-  source.dispatchEvent(new Event('change', { bubbles: true }))
-  setValue(`#${entry.kind}-adapter`, entry.adapter || 'auto', 'change')
-  if (entry.kind === 'asr') {
-    setValue('#asr-transport', entry.transport || 'http', 'change')
-    setValue('#asr-language', entry.language || 'zh')
-  }
-  setValue(`#${entry.kind}-base`, entry.baseUrl)
-  setValue(`#${entry.kind}-model`, entry.model)
-  if (entry.kind === 'tts') setValue('#tts-voice', entry.voice || '')
-  markSettingsDirty('voice')
-  const card = document.querySelector(`[data-voice-card="${entry.kind}"]`)
-  card?.scrollIntoView({ block: 'center', behavior: 'smooth' })
-  card?.classList.add('flash')
-  setTimeout(() => card?.classList.remove('flash'), 1800)
-  const key = $(`#${entry.kind}-key`)
-  if (entry.adapter === 'edge' || !entry.keyUrl) key?.focus({ preventScroll: true })
-  else key?.focus({ preventScroll: true })
-  const result = $('#voice-result')
-  if (result) {
-    result.textContent = `已填入「${entry.name}」（${VOICE_REGION_LABEL[entry.region] || entry.region}）：粘贴 API Key 后点“保存语音设置”`
-    result.className = 'settings-feedback ok'
-  }
-  // Typing a key or saving ends the pending prefill; a re-render would
-  // otherwise blank the fields before the user gets there.
+  addVoiceEntry(kind, voiceProfileFromCatalog(entry), {
+    notice: local
+      ? `已选中「${entry.name}」（本地引擎，无需 Key），保存后生效`
+      : `已把「${entry.name}」加到${VOICE_KIND_LABEL[kind]}链首位，粘贴 Key 后保存`,
+  })
 }
 
 function capabilityListHtml() {

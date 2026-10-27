@@ -7,7 +7,7 @@ export type VoiceSource = 'local' | 'remote'
 export type AsrTransport = 'websocket' | 'http'
 
 export interface AsrProfile {
-  id: VoiceSource
+  id: string
   label: string
   kind: VoiceSource
   transport: AsrTransport
@@ -19,7 +19,7 @@ export interface AsrProfile {
 }
 
 export interface TtsProfile {
-  id: VoiceSource
+  id: string
   label: string
   kind: VoiceSource
   baseUrl: string
@@ -29,11 +29,15 @@ export interface TtsProfile {
   adapter?: VoiceAdapter
 }
 
+/**
+ * ASR and TTS are ordered failover chains, not single slots. Index 0 is the
+ * preferred provider; when it is parked (quota, auth, rate limit, network) the
+ * runtime walks to the next entry. The local engine is just another entry, so
+ * "cloud first, local as the safety net" is expressible.
+ */
 export interface VoiceSettings {
-  activeAsr: VoiceSource
-  activeTts: VoiceSource
-  asr: { local: AsrProfile; remote: AsrProfile }
-  tts: { local: TtsProfile; remote: TtsProfile }
+  asr: AsrProfile[]
+  tts: TtsProfile[]
 }
 
 export interface PublicAsrProfile extends Omit<AsrProfile, 'apiKey'> {
@@ -43,18 +47,14 @@ export interface PublicTtsProfile extends Omit<TtsProfile, 'apiKey'> {
   hasKey: boolean
 }
 
-export interface VoiceUpdate {
-  activeAsr?: VoiceSource
-  activeTts?: VoiceSource
-  asr?: { local?: Partial<AsrProfile>; remote?: Partial<AsrProfile> }
-  tts?: { local?: Partial<TtsProfile>; remote?: Partial<TtsProfile> }
+export interface PublicVoiceSettings {
+  asr: PublicAsrProfile[]
+  tts: PublicTtsProfile[]
 }
 
-export interface PublicVoiceSettings {
-  activeAsr: VoiceSource
-  activeTts: VoiceSource
-  asr: { local: PublicAsrProfile; remote: PublicAsrProfile }
-  tts: { local: PublicTtsProfile; remote: PublicTtsProfile }
+export interface VoiceUpdate {
+  asr?: Array<Partial<AsrProfile>>
+  tts?: Array<Partial<TtsProfile>>
 }
 
 export interface VoiceDefaults {
@@ -64,35 +64,33 @@ export interface VoiceDefaults {
   ttsVoice: string
 }
 
-function source(value: unknown, fallback: VoiceSource): VoiceSource {
-  return value === 'remote' || value === 'local' ? value : fallback
-}
+const ID_PATTERN = /^[a-z0-9-]{1,32}$/
 
 function transport(value: unknown, fallback: AsrTransport): AsrTransport {
   return value === 'http' || value === 'websocket' ? value : fallback
 }
 
 function asrProfile(value: Partial<AsrProfile>, fallback: AsrProfile): AsrProfile {
-  const id = value.id === 'remote' || value.id === 'local' ? value.id : fallback.id
+  const id = typeof value.id === 'string' && ID_PATTERN.test(value.id) ? value.id : fallback.id
   return {
     id,
     label: String(value.label ?? fallback.label).slice(0, 64),
-    kind: id,
+    kind: value.kind === 'local' || value.kind === 'remote' ? value.kind : id === 'local' ? 'local' : fallback.kind,
     transport: transport(value.transport, fallback.transport),
     baseUrl: String(value.baseUrl ?? fallback.baseUrl ?? '').trim(),
     model: String(value.model ?? fallback.model ?? '').trim(),
     apiKey: String(value.apiKey ?? fallback.apiKey ?? ''),
-    language: String(value.language ?? fallback.language ?? 'zh').trim().slice(0, 16) || 'zh',
+    language: String(value.language ?? fallback.language ?? 'zh').trim().slice(0, 16),
     adapter: normalizeVoiceAdapter(value.adapter ?? fallback.adapter),
   }
 }
 
 function ttsProfile(value: Partial<TtsProfile>, fallback: TtsProfile): TtsProfile {
-  const id = value.id === 'remote' || value.id === 'local' ? value.id : fallback.id
+  const id = typeof value.id === 'string' && ID_PATTERN.test(value.id) ? value.id : fallback.id
   return {
     id,
     label: String(value.label ?? fallback.label).slice(0, 64),
-    kind: id,
+    kind: value.kind === 'local' || value.kind === 'remote' ? value.kind : id === 'local' ? 'local' : fallback.kind,
     baseUrl: String(value.baseUrl ?? fallback.baseUrl ?? '').trim(),
     model: String(value.model ?? fallback.model ?? '').trim(),
     voice: String(value.voice ?? fallback.voice ?? '').trim(),
@@ -125,139 +123,65 @@ function validateSecret(apiKey: string): void {
   if (apiKey.includes('\n') || apiKey.includes('\r') || apiKey.length > 4096) throw new Error('API Key 不合法')
 }
 
-export function validateVoiceSettings(settings: VoiceSettings): VoiceSettings {
-  // A local-only setup must be saved without forcing the person to fill a
-  // remote provider first. Remote fields are validated when they are set, and
-  // strictly when that side is actually active.
-  const asrRemote = settings.asr.remote
-  if (normalizeVoiceAdapter(asrRemote.adapter) === 'edge') throw new Error('Edge TTS 只能用于语音合成，不能作为 ASR')
-  const asrAdapter = resolveAsrAdapter(asrRemote)
-  asrRemote.adapter = normalizeVoiceAdapter(asrRemote.adapter)
+function validateAsr(profile: AsrProfile, index: number): void {
+  if (normalizeVoiceAdapter(profile.adapter) === 'edge') throw new Error('Edge TTS 只能用于语音合成，不能作为 ASR')
+  if (profile.kind === 'local') {
+    if (profile.baseUrl) throw new Error(`本地 ASR（${profile.label}）不需要服务地址`)
+    return
+  }
+  const label = profile.label || `第 ${index + 1} 个 ASR 服务`
+  const adapter = resolveAsrAdapter(profile)
   // Native Gemini/Cloudflare audio endpoints are HTTP-only. Normalizing here
   // keeps old saved WebSocket settings usable instead of rejecting them.
-  if (asrAdapter !== 'openai') asrRemote.transport = 'http'
-  if (asrRemote.baseUrl) {
-    validateRemoteUrl(
-      asrRemote.baseUrl,
-      asrRemote.label,
-      asrRemote.transport === 'websocket' ? ['http:', 'https:', 'ws:', 'wss:'] : ['http:', 'https:'],
-    )
-    validateSecret(asrRemote.apiKey)
-    if (!['websocket', 'http'].includes(asrRemote.transport)) throw new Error('ASR 传输方式不合法')
-  } else if (settings.activeAsr === 'remote') {
-    throw new Error(`${asrRemote.label} 还没有填写服务地址`)
-  }
-  if (settings.activeAsr === 'remote' && !asrRemote.model) throw new Error('远端 ASR 模型不能为空')
-
-  const ttsRemote = settings.tts.remote
-  const ttsAdapter = resolveTtsAdapter(ttsRemote)
-  ttsRemote.adapter = normalizeVoiceAdapter(ttsRemote.adapter)
-  if (ttsAdapter === 'edge') {
-    // Edge TTS is a local command, not an HTTP endpoint. It still uses the
-    // remote slot so the rest of the runtime can switch engines uniformly.
-    ttsRemote.baseUrl = ''
-    ttsRemote.apiKey = ''
-    if (!ttsRemote.model) ttsRemote.model = 'edge-tts'
-  } else if (ttsRemote.baseUrl) {
-    validateRemoteUrl(ttsRemote.baseUrl, ttsRemote.label, ['http:', 'https:'])
-    validateSecret(ttsRemote.apiKey)
-  } else if (settings.activeTts === 'remote') {
-    throw new Error(`${ttsRemote.label} 还没有填写服务地址`)
-  }
-  if (settings.activeTts === 'remote' && !ttsRemote.model) throw new Error('远端 TTS 模型不能为空')
-  if (settings.activeTts === 'remote' && !ttsRemote.voice) throw new Error('远端 TTS 音色不能为空')
-  if (!['local', 'remote'].includes(settings.activeAsr) || !['local', 'remote'].includes(settings.activeTts)) {
-    throw new Error('语音来源不合法')
-  }
-  return settings
+  if (adapter !== 'openai') profile.transport = 'http'
+  if (!profile.baseUrl) throw new Error(`${label} 还没有填写服务地址`)
+  validateRemoteUrl(profile.baseUrl, label, profile.transport === 'websocket' ? ['http:', 'https:', 'ws:', 'wss:'] : ['http:', 'https:'])
+  validateSecret(profile.apiKey)
+  if (!['websocket', 'http'].includes(profile.transport)) throw new Error('ASR 传输方式不合法')
+  if (!profile.model) throw new Error(`${label} 的模型不能为空`)
+  profile.adapter = normalizeVoiceAdapter(profile.adapter)
 }
 
-export class VoiceSettingsStore {
-  private loaded: VoiceSettings | null = null
-
-  constructor(
-    private readonly file: string,
-    private readonly defaults: VoiceDefaults,
-  ) {}
-
-  private defaultSettings(): VoiceSettings {
-    const localAsr: AsrProfile = {
-      id: 'local', label: `本地 ${this.defaults.asrEngine}`, kind: 'local', transport: 'http',
-      baseUrl: '', model: this.defaults.asrModel, apiKey: '', language: this.defaults.asrLanguage, adapter: 'auto',
-    }
-    const remoteAsr: AsrProfile = {
-      id: 'remote', label: '远端 ASR', kind: 'remote', transport: 'websocket',
-      baseUrl: '', model: 'whisper-1', apiKey: '', language: this.defaults.asrLanguage, adapter: 'auto',
-    }
-    const localTts: TtsProfile = {
-      id: 'local', label: '本地 Piper', kind: 'local', baseUrl: '', model: 'piper', voice: this.defaults.ttsVoice, apiKey: '', adapter: 'auto',
-    }
-    const remoteTts: TtsProfile = {
-      id: 'remote', label: '远端 TTS', kind: 'remote', baseUrl: '', model: 'tts-1', voice: 'alloy', apiKey: '', adapter: 'auto',
-    }
-    return {
-      activeAsr: 'local', activeTts: 'local',
-      asr: { local: localAsr, remote: remoteAsr },
-      tts: { local: localTts, remote: remoteTts },
-    }
+function validateTts(profile: TtsProfile, index: number): void {
+  const label = profile.label || `第 ${index + 1} 个 TTS 服务`
+  if (profile.kind === 'local') {
+    if (profile.baseUrl) throw new Error(`本地 TTS（${profile.label}）不需要服务地址`)
+    return
   }
-
-  /** Erase saved speech providers and remote keys; back to local defaults. */
-  async resetToDefaults(): Promise<VoiceSettings> {
-    await rm(this.file, { force: true })
-    this.loaded = this.defaultSettings()
-    return this.loaded
+  const adapter = resolveTtsAdapter(profile)
+  profile.adapter = normalizeVoiceAdapter(profile.adapter)
+  if (adapter === 'edge') {
+    // Edge TTS is a local command, not an HTTP endpoint.
+    profile.baseUrl = ''
+    profile.apiKey = ''
+    if (!profile.model) profile.model = 'edge-tts'
+    if (!profile.voice) throw new Error(`${label} 的音色不能为空`)
+    return
   }
+  if (!profile.baseUrl) throw new Error(`${label} 还没有填写服务地址`)
+  validateRemoteUrl(profile.baseUrl, label, ['http:', 'https:'])
+  validateSecret(profile.apiKey)
+  if (!profile.model) throw new Error(`${label} 的模型不能为空`)
+  if (!profile.voice) throw new Error(`${label} 的音色不能为空`)
+}
 
-  async load(): Promise<VoiceSettings> {
-    if (this.loaded) return this.loaded
-    let saved: Partial<VoiceSettings> = {}
-    try {
-      await chmod(this.file, 0o600).catch(() => undefined)
-      saved = JSON.parse(await readFile(this.file, 'utf8')) as Partial<VoiceSettings>
-    } catch {
-      // First run.
-    }
-    const base = this.defaultSettings()
-    const settings: VoiceSettings = {
-      activeAsr: source(saved.activeAsr, base.activeAsr),
-      activeTts: source(saved.activeTts, base.activeTts),
-      asr: {
-        local: asrProfile(saved.asr?.local ?? {}, base.asr.local),
-        remote: asrProfile(saved.asr?.remote ?? {}, base.asr.remote),
-      },
-      tts: {
-        local: ttsProfile(saved.tts?.local ?? {}, base.tts.local),
-        remote: ttsProfile(saved.tts?.remote ?? {}, base.tts.remote),
-      },
-    }
-    this.loaded = settings
-    return settings
-  }
+function validateChain<T extends { id: string; kind: VoiceSource }>(kind: string, chain: T[], validateOne: (profile: T, index: number) => void): void {
+  if (!Array.isArray(chain) || chain.length === 0) throw new Error(`${kind} 至少需要一个服务`)
+  if (chain.length > 12) throw new Error(`${kind} 最多 12 个服务；再多了切换顺序也没人看得过来`)
+  const ids = new Set<string>()
+  chain.forEach((profile, index) => {
+    if (!ID_PATTERN.test(profile.id)) throw new Error(`${kind} 的服务 id 不合法（${profile.id}）`)
+    if (ids.has(profile.id)) throw new Error(`${kind} 的服务 id 重复（${profile.id}）`)
+    ids.add(profile.id)
+    validateOne(profile, index)
+  })
+  if (chain.filter(profile => profile.kind === 'local').length > 1) throw new Error(`${kind} 只能有一个本地引擎`)
+}
 
-  async save(settings: VoiceSettings): Promise<void> {
-    validateVoiceSettings(settings)
-    await mkdir(dirname(this.file), { recursive: true, mode: 0o700 })
-    const temporary = `${this.file}.${process.pid}.tmp`
-    await writeFile(temporary, `${JSON.stringify(settings, null, 2)}\n`, { mode: 0o600 })
-    await chmod(temporary, 0o600)
-    await rename(temporary, this.file)
-    await chmod(this.file, 0o600).catch(() => undefined)
-    this.loaded = settings
-  }
-
-  publicView(settings: VoiceSettings): PublicVoiceSettings {
-    const hide = <T extends { apiKey: string }>(profile: T) => {
-      const { apiKey, ...rest } = profile
-      return { ...rest, hasKey: Boolean(apiKey) }
-    }
-    return {
-      activeAsr: settings.activeAsr,
-      activeTts: settings.activeTts,
-      asr: { local: hide(settings.asr.local), remote: hide(settings.asr.remote) },
-      tts: { local: hide(settings.tts.local), remote: hide(settings.tts.remote) },
-    }
-  }
+export function validateVoiceSettings(settings: VoiceSettings): VoiceSettings {
+  validateChain('ASR', settings.asr, validateAsr)
+  validateChain('TTS', settings.tts, validateTts)
+  return settings
 }
 
 function sameEndpoint(left: string, right: string): boolean {
@@ -283,31 +207,151 @@ function assertKeyStaysWithEndpoint(label: string, before: string, after: string
   throw new Error(`${label} 更换服务地址后需要重新输入 API Key，避免把旧密钥发给新地址`)
 }
 
+export class VoiceSettingsStore {
+  private loaded: VoiceSettings | null = null
+
+  constructor(
+    private readonly file: string,
+    private readonly defaults: VoiceDefaults,
+  ) {}
+
+  private localAsr(): AsrProfile {
+    return {
+      id: 'local', label: `本地 ${this.defaults.asrEngine}`, kind: 'local', transport: 'http',
+      baseUrl: '', model: this.defaults.asrModel, apiKey: '', language: this.defaults.asrLanguage, adapter: 'auto',
+    }
+  }
+
+  private localTts(): TtsProfile {
+    return {
+      id: 'local', label: '本地 Piper', kind: 'local', baseUrl: '',
+      model: 'piper', voice: this.defaults.ttsVoice, apiKey: '', adapter: 'auto',
+    }
+  }
+
+  private defaultSettings(): VoiceSettings {
+    return { asr: [this.localAsr()], tts: [this.localTts()] }
+  }
+
+  /** Erase saved speech providers and remote keys; back to local defaults. */
+  async resetToDefaults(): Promise<VoiceSettings> {
+    await rm(this.file, { force: true })
+    this.loaded = this.defaultSettings()
+    return this.loaded
+  }
+
+  private legacyAsrRemote(): AsrProfile {
+    return {
+      id: 'remote', label: '远端 ASR', kind: 'remote', transport: 'websocket',
+      baseUrl: '', model: 'whisper-1', apiKey: '', language: this.defaults.asrLanguage, adapter: 'auto',
+    }
+  }
+
+  private legacyTtsRemote(): TtsProfile {
+    return { id: 'remote', label: '远端 TTS', kind: 'remote', baseUrl: '', model: 'tts-1', voice: 'alloy', apiKey: '', adapter: 'auto' }
+  }
+
+  /**
+   * Migrate the pre-chain shape ({activeAsr, asr:{local,remote}}) into an
+   * ordered chain. The old "active" side becomes the preferred entry so an
+   * existing setup keeps behaving as before until it is edited.
+   */
+  private migrate(saved: unknown): VoiceSettings {
+    const value = (saved ?? {}) as {
+      activeAsr?: unknown
+      activeTts?: unknown
+      asr?: { local?: Partial<AsrProfile>; remote?: Partial<AsrProfile> }
+      tts?: { local?: Partial<TtsProfile>; remote?: Partial<TtsProfile> }
+    }
+    const asrLocal = asrProfile(value.asr?.local ?? {}, this.localAsr())
+    const asrRemote = asrProfile(value.asr?.remote ?? {}, this.legacyAsrRemote())
+    const ttsLocal = ttsProfile(value.tts?.local ?? {}, this.localTts())
+    const ttsRemote = ttsProfile(value.tts?.remote ?? {}, this.legacyTtsRemote())
+    // Only keep the old remote slot when it was actually configured; an empty
+    // placeholder in the chain would produce a 4xx that cannot fail over.
+    const usableAsr = Boolean(asrRemote.baseUrl)
+    const usableTts = Boolean(ttsRemote.baseUrl) || resolveTtsAdapter(ttsRemote) === 'edge'
+    const asr = value.activeAsr === 'remote' && usableAsr ? [asrRemote, asrLocal] : [asrLocal, ...(usableAsr ? [asrRemote] : [])]
+    const tts = value.activeTts === 'remote' && usableTts ? [ttsRemote, ttsLocal] : [ttsLocal, ...(usableTts ? [ttsRemote] : [])]
+    return { asr, tts }
+  }
+
+  async load(): Promise<VoiceSettings> {
+    if (this.loaded) return this.loaded
+    let saved: unknown = null
+    try {
+      await chmod(this.file, 0o600).catch(() => undefined)
+      saved = JSON.parse(await readFile(this.file, 'utf8'))
+    } catch {
+      // First run.
+    }
+    const migrated = this.migrate(saved)
+    const base = this.defaultSettings()
+    const rawAsr = (saved as { asr?: unknown } | null)?.asr
+    const rawTts = (saved as { tts?: unknown } | null)?.tts
+    const asr = (Array.isArray(rawAsr) ? rawAsr as Array<Partial<AsrProfile>> : migrated.asr)
+      .map(item => asrProfile(item, base.asr[0]))
+    const tts = (Array.isArray(rawTts) ? rawTts as Array<Partial<TtsProfile>> : migrated.tts)
+      .map(item => ttsProfile(item, base.tts[0]))
+    const settings: VoiceSettings = { asr: asr.length ? asr : base.asr, tts: tts.length ? tts : base.tts }
+    try {
+      validateVoiceSettings(settings)
+    } catch {
+      // A chain with one invalid entry must not take the local engine down
+      // with it: fall back to the local-only chain.
+      return { asr: [base.asr[0]], tts: [base.tts[0]] }
+    }
+    this.loaded = settings
+    return settings
+  }
+
+  async save(settings: VoiceSettings): Promise<void> {
+    validateVoiceSettings(settings)
+    await mkdir(dirname(this.file), { recursive: true, mode: 0o700 })
+    const temporary = `${this.file}.${process.pid}.tmp`
+    await writeFile(temporary, `${JSON.stringify(settings, null, 2)}\n`, { mode: 0o600 })
+    await chmod(temporary, 0o600)
+    await rename(temporary, this.file)
+    await chmod(this.file, 0o600).catch(() => undefined)
+    this.loaded = settings
+  }
+
+  publicView(settings: VoiceSettings): PublicVoiceSettings {
+    const hide = <T extends { apiKey: string }>(profile: T) => {
+      const { apiKey, ...rest } = profile
+      return { ...rest, hasKey: Boolean(apiKey) }
+    }
+    return { asr: settings.asr.map(hide), tts: settings.tts.map(hide) }
+  }
+}
+
 /** Merge a browser update while treating an empty key as "keep the saved key". */
 export function mergeVoiceUpdate(current: VoiceSettings, input: VoiceUpdate): VoiceSettings {
-  assertKeyStaysWithEndpoint(
-    '远端 ASR',
-    current.asr.remote.baseUrl,
-    input.asr?.remote?.baseUrl ?? current.asr.remote.baseUrl,
-    Boolean(input.asr?.remote?.apiKey?.trim()),
-  )
-  assertKeyStaysWithEndpoint(
-    '远端 TTS',
-    current.tts.remote.baseUrl,
-    input.tts?.remote?.baseUrl ?? current.tts.remote.baseUrl,
-    Boolean(input.tts?.remote?.apiKey?.trim()),
-  )
+  const mergeChain = <T extends { id: string; baseUrl: string; apiKey: string; label: string }>(
+    kind: string,
+    currentChain: T[],
+    incoming: Array<Partial<T>> | undefined,
+    normalizeOne: (value: Partial<T>, fallback: T) => T,
+  ): T[] => {
+    if (!Array.isArray(incoming)) return currentChain
+    return incoming.map((value, index) => {
+      const previous = currentChain.find(item => item.id === value.id) ?? currentChain[index] ?? currentChain[0]
+      const label = String(value.label ?? previous.label)
+      assertKeyStaysWithEndpoint(
+        label || `${kind} 第 ${index + 1} 个服务`,
+        previous.baseUrl,
+        value.baseUrl ?? previous.baseUrl,
+        Boolean(value.apiKey?.trim()),
+      )
+      return normalizeOne(
+        { ...previous, ...value, apiKey: value.apiKey?.trim() ? value.apiKey.trim() : previous.apiKey },
+        previous,
+      )
+    })
+  }
   const next: VoiceSettings = {
-    activeAsr: source(input.activeAsr, current.activeAsr),
-    activeTts: source(input.activeTts, current.activeTts),
-    asr: {
-      local: asrProfile({ ...current.asr.local, ...(input.asr?.local ?? {}), id: 'local', kind: 'local' }, current.asr.local),
-      remote: asrProfile({ ...current.asr.remote, ...(input.asr?.remote ?? {}), id: 'remote', kind: 'remote', apiKey: input.asr?.remote?.apiKey?.trim() ? input.asr.remote.apiKey.trim() : current.asr.remote.apiKey }, current.asr.remote),
-    },
-    tts: {
-      local: ttsProfile({ ...current.tts.local, ...(input.tts?.local ?? {}), id: 'local', kind: 'local' }, current.tts.local),
-      remote: ttsProfile({ ...current.tts.remote, ...(input.tts?.remote ?? {}), id: 'remote', kind: 'remote', apiKey: input.tts?.remote?.apiKey?.trim() ? input.tts.remote.apiKey.trim() : current.tts.remote.apiKey }, current.tts.remote),
-    },
+    asr: mergeChain('ASR', current.asr, input.asr as Array<Partial<AsrProfile>> | undefined, asrProfile),
+    tts: mergeChain('TTS', current.tts, input.tts as Array<Partial<TtsProfile>> | undefined, ttsProfile),
   }
   return validateVoiceSettings(next)
 }

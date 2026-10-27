@@ -190,3 +190,44 @@ WebSocket 协议 → 浏览器交互（可选）→ 重启持久化 → 备份�
 - 国内可直连的语音 API 目前就三家（硅基流动 ASR/TTS、阿里百炼）；讯飞/腾讯/火山
   不是 OpenAI 兼容协议，没有硬造预设。
 - Groq TTS 仅英文、Gemini TTS 是 preview 模型，都在卡片里写明了。
+
+## 8. 第四轮：ASR / TTS 也是多条优先级链（同日）
+
+### 8.1 新增
+
+| 项 | 位置 |
+|---|---|
+| 链式设置 | `src/voice/settings.ts`：`asr[]` / `tts[]` 有序数组，首项即首选；旧 `{local,remote}` 文件自动迁移 |
+| 故障切换 | `src/voice/runtime.ts`：按顺序尝试，复用 `src/model/failover.ts` 的错误分类与冷却；`voice.failover` 事件 |
+| 冷却持久化 | `src/voice/health.ts` → `<dataDir>/voice-health.json`（0600，擦除时一并清理） |
+| 设置界面 | 设置 → 语音：两条链的列表、↑↓ 调序、编辑/删除、从目录添加、冷却徽标、运行中标记 |
+| 接口 | `GET /api/voice` 返回 `settings.asr[]`、`status.asr.chain[]`、`cooldowns`；`POST /api/voice/apply` 收整条链 |
+| 文档 | [voice-providers.md](voice-providers.md) §0.1：错误类型 → 冷却时长 → 行为对照表 |
+
+### 8.2 验证
+
+| 检查 | 结果 |
+|---|---|
+| `npm test` | **127 / 127**（新增链校验/迁移/调序/Key 绑定 + 真实 HTTP 402、401、400 的失败切换） |
+| `npm run acceptance:full` | **212 / 212**（新增链形状、顺序持久化、链内不泄漏 Key、恢复本地） |
+| `npm run ui:smoke`（真实浏览器） | 通过，0 浏览器错误；覆盖两条链渲染、目录添加、本地引擎去重、`?voice=` 交接 |
+| 浏览器驱动保存/调序/删除（临时实例 :3099） | 添加 OpenAI TTS → 保存后 `/api/voice` 为 `openai-tts,local`；下移后保存为 `local,openai-tts`；删除后回到 `local`；全程无 `apiKey` 泄漏 |
+| 真实切换证据 | 单测里第一个 ASR 返回 402 后落到本地引擎、第二次请求不再打到 402 服务；TTS 401 后切本地并写入 `auth` 冷却 |
+
+### 8.3 过程中修掉的真问题
+
+1. **冷却文件逃过擦除**：`privacy erase` 只删 `voice-config.json`，`voice-health.json`
+   还留着服务商 id 与截断的错误文本。补上 `clearHealth()`，并让运行时在擦除后用
+   本地默认链重建，否则状态栏仍会显示已擦除的供应商。
+2. **4xx 不能静默切换**：最初所有错误都尝试下一个服务，会把“模型名写错”伪装成
+   “备用服务也挂了”。现在 `client`/`other` 直接抛错，只有额度/限流/Key/网络/5xx 才切换。
+3. **空槽位会变成死链**：旧文件里未配置的 remote 不再塞进链，否则每次请求都先撞
+   一个必然失败的 4xx。
+
+### 8.4 诚实边界
+
+- 单测里的“远端”是本地起的 HTTP stub，只证明**协议形状与切换路径**；没有真实调用
+  九家 ASR / 八家 TTS 的线上额度，冷却时长是按错误分类推断的。
+- Edge TTS 依赖本机 `edge-tts` 命令；命令缺失被归为 `server` 错误（5 分钟冷却）才会切走，
+  而不是每次请求都重试。
+- 链最多 12 个服务；再多顺序没人维护，校验直接拒绝。

@@ -899,11 +899,10 @@ export class JarvisServer {
         sendJson(response, 503, { error: '语音运行时未启用' })
         return
       }
-      const settings = await this.deps.voiceSettings.load()
       sendJson(response, 200, {
         settings: this.deps.voice.settingsView(),
         status: this.deps.voice.status(),
-        local: settings.tts.local.kind,
+        cooldowns: this.deps.voice.cooldowns(),
       })
       return
     }
@@ -921,7 +920,7 @@ export class JarvisServer {
         await this.deps.conversation.refreshVoiceReadiness()
         const status = this.deps.voice.status()
         this.deps.bus.emit('voice.changed', { asr: status.asr, tts: status.tts })
-        sendJson(response, 200, { settings, status })
+        sendJson(response, 200, { settings, status, cooldowns: this.deps.voice.cooldowns() })
       } catch (error) {
         sendJson(response, errorStatus(error, 409), { error: error instanceof Error ? error.message : String(error) })
       }
@@ -1002,8 +1001,10 @@ export class JarvisServer {
       if (this.deps.voiceSettings) {
         const voiceDefaults = await this.deps.voiceSettings.resetToDefaults()
         voiceReset = true
-        await this.deps.voice?.reconfigure().catch(() => undefined)
-        void voiceDefaults
+        await this.deps.voice?.clearHealth?.().catch(() => undefined)
+        // Rebuild the chain in memory too, otherwise status keeps advertising
+        // the providers whose keys were just erased.
+        await this.deps.voice?.apply(voiceDefaults).catch(() => undefined)
       }
       // Rotate only after the files that used the old key are gone.
       this.deps.secure.rotate()

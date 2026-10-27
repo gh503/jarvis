@@ -23,6 +23,7 @@ import { WhisperTranscriber } from './voice/asr.ts'
 import { FasterWhisperTranscriber } from './voice/faster-whisper.ts'
 import { PiperSynthesizer } from './voice/tts.ts'
 import { VoiceRuntime } from './voice/runtime.ts'
+import { VoiceHealthStore } from './voice/health.ts'
 import { VoiceSettingsStore } from './voice/settings.ts'
 
 async function main(): Promise<void> {
@@ -104,12 +105,15 @@ async function main(): Promise<void> {
     asrLanguage: 'zh',
     ttsVoice: config.voice.piperVoice,
   })
+  const voiceHealth = new VoiceHealthStore(join(config.dataDir, 'voice-health.json'))
   const voice = new VoiceRuntime({
     store: voiceSettings,
     localTranscriber: transcriber,
     localSynthesizer: synthesizer,
     ffmpeg: config.voice.ffmpeg,
     logger: logger.child('voice'),
+    health: voiceHealth,
+    emit: (event, payload) => bus.emit(event, payload),
   })
   await voice.initialize()
   const screen = new ScreenCapture(config, logger.child('screen'))
@@ -146,7 +150,7 @@ async function main(): Promise<void> {
   // TTS warm-up. The HTTP server can open while Whisper is still loading; the
   // status endpoint now reports `voice.asrState` so the UI can explain why the
   // first utterance is queued instead of looking frozen.
-  if (voice.status().activeAsr === 'local') {
+  if (voice.status().asr.kind === 'local') {
     void voice.start().catch(error => logger.warn('ASR warm-up failed', { error: String(error) }))
   }
   void ocr.start().catch(error => logger.warn('OCR warm-up failed', { error: String(error) }))

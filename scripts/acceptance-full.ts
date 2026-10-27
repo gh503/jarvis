@@ -418,9 +418,23 @@ async function main(): Promise<void> {
     const voice = await req(base, '/api/voice')
     check('语音设置可读', Boolean(voice.json?.settings && voice.json?.status))
     excludes('语音设置不泄漏 Key', voice.text, '"apiKey"')
-    const badVoice = await post(base, '/api/voice/apply', { activeAsr: 'remote', asr: { remote: { baseUrl: 'not-a-url' } } })
+    const badVoice = await post(base, '/api/voice/apply', { asr: [{ id: 'remote', label: '远端 ASR', kind: 'remote', transport: 'http', baseUrl: 'not-a-url', model: 'whisper-1' }] })
     equal('非法语音地址 → 409', badVoice.status, 409)
     equal('回滚后 ASR 仍本地', (await req(base, '/api/voice')).json?.status?.asr?.kind, 'local')
+    check('语音设置是优先级链', Array.isArray((voice.json?.settings as any)?.asr) && Array.isArray((voice.json?.settings as any)?.tts))
+    check('语音状态暴露链与冷却', Array.isArray((voice.json?.status as any)?.asr?.chain) && typeof voice.json?.cooldowns === 'object')
+    const pool = await post(base, '/api/voice/apply', {
+      asr: [
+        { id: 'acc-primary', label: '验收主用', kind: 'remote', transport: 'http', baseUrl: 'https://asr.example.com/v1', model: 'whisper-1', language: 'zh' },
+        { id: 'local', label: '本地', kind: 'local', transport: 'http', baseUrl: '', model: 'tiny', language: 'zh' },
+      ],
+    })
+    equal('多 ASR 服务可保存', pool.status, 200)
+    const poolState = await req(base, '/api/voice')
+    equal('链顺序按要求保存', ((poolState.json?.settings as any)?.asr ?? []).map((entry: any) => entry.id).join(','), 'acc-primary,local')
+    excludes('链里也不泄漏 Key', poolState.text, '"apiKey"')
+    equal('恢复本地单服务', (await post(base, '/api/voice/apply', { asr: [{ id: 'local', label: '本地', kind: 'local', transport: 'http', baseUrl: '', model: 'tiny', language: 'zh' }] })).status, 200)
+    equal('恢复后链长度 1', (((await req(base, '/api/voice')).json?.settings as any)?.asr ?? []).length, 1)
     equal('空音频 → 400', (await req(base, '/api/voice', { method: 'POST', body: new Uint8Array(0), headers: { 'content-type': 'audio/wav' } })).status, 400)
 
     // --------------------------------------------------------------- sensors

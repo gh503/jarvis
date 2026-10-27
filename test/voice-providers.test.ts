@@ -178,17 +178,22 @@ test('voice settings support Edge TTS without an HTTP address and normalize nati
   })
   const base = await store.load()
   const settings = mergeVoiceUpdate(base, {
-    activeTts: 'remote',
-    tts: { remote: { adapter: 'edge', voice: 'zh-CN-XiaoxiaoNeural', model: '', baseUrl: '', apiKey: '' } },
-    asr: { remote: { adapter: 'gemini', baseUrl: 'https://generativelanguage.googleapis.com/v1beta', model: 'gemini-3.5-transcribe', transport: 'websocket' } },
+    tts: [
+      { id: 'edge', kind: 'remote', adapter: 'edge', voice: 'zh-CN-XiaoxiaoNeural', model: '', baseUrl: '', apiKey: '' },
+      { ...base.tts[0], apiKey: '' },
+    ],
+    asr: [
+      { id: 'gemini', kind: 'remote', adapter: 'gemini', baseUrl: 'https://generativelanguage.googleapis.com/v1beta', model: 'gemini-3.5-transcribe', transport: 'websocket' },
+      { ...base.asr[0], apiKey: '' },
+    ],
   })
-  assert.equal(settings.tts.remote.adapter, 'edge')
-  assert.equal(settings.tts.remote.baseUrl, '')
-  assert.equal(settings.tts.remote.model, 'edge-tts')
-  assert.equal(settings.asr.remote.transport, 'http')
+  assert.equal(settings.tts[0].adapter, 'edge')
+  assert.equal(settings.tts[0].baseUrl, '')
+  assert.equal(settings.tts[0].model, 'edge-tts')
+  assert.equal(settings.asr[0].transport, 'http')
   await store.save(settings)
   const loaded = await store.load()
-  assert.equal(loaded.tts.remote.adapter, 'edge')
+  assert.equal(loaded.tts[0].adapter, 'edge')
   await rm(dir, { recursive: true, force: true })
 })
 

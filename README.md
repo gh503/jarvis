@@ -33,6 +33,10 @@ npm run app          # starts the server and opens it as a desktop window
 The same guide covers speech: `/providers#voice` lists nine ASR and eight TTS
 presets (local, mainland, international) and hands any of them into
 设置 → 语音 with the adapter, endpoint, model and voice already filled.
+ASR and TTS are each an **ordered chain**: add several providers, put the local
+engine last as the safety net, and a failing provider (quota, bad key, rate
+limit, network) is parked and skipped automatically — the same rule the LLM
+provider pool uses.
 
 `npm run app` uses the Chromium `--app=` mode, so there is no Electron and no
 installer; `npm start` alone still serves <http://127.0.0.1:3081>. First-run

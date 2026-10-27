@@ -183,8 +183,8 @@ async function main(): Promise<void> {
       onboarding: Boolean(document.querySelector('#onboard-again')),
       modelSelect: document.querySelector('#model-name')?.tagName === 'SELECT',
       protocols: Boolean(document.querySelector('#model-protocol') || document.querySelector('[data-model-select=remote]')),
-      voice: Boolean(document.querySelector('#asr-source') && document.querySelector('#tts-source') && document.querySelector('#voice-save')),
-      adapters: Boolean(document.querySelector('#asr-adapter') && document.querySelector('#tts-adapter') && document.querySelectorAll('#tts-adapter option').length === 5),
+      voice: Boolean(document.querySelector('#voice-chain-asr') && document.querySelector('#voice-chain-tts') && document.querySelector('#voice-save') && document.querySelectorAll('[data-voice-add]').length === 2),
+      adapters: Boolean(document.querySelector('#provider-add-card') && document.querySelector('#scenario-card')),
       pool: Boolean(document.querySelector('#provider-add-card') && document.querySelector('#scenario-card') && document.querySelector('#scenario-save')),
       scenarioSelect: Boolean(document.querySelector('#scenario-select')),
       tabs: document.querySelectorAll('[data-settings-tab]').length,
@@ -196,8 +196,8 @@ async function main(): Promise<void> {
     check(settings.onboarding, 'settings: onboarding replay')
     check(settings.modelSelect, 'settings: model list is a selector')
     check(settings.protocols, 'settings: three LLM protocols')
-    check(settings.voice, 'settings: ASR/TTS source controls')
-    check(settings.adapters, 'settings: provider adapters (OpenAI/Gemini/Cloudflare/Edge)')
+    check(settings.voice, 'settings: ASR/TTS priority chains with add buttons')
+    check(settings.adapters, 'settings: provider pool card still present')
     check(settings.pool, 'settings: provider pool + scenario card')
     check(settings.scenarioSelect, 'composer: scenario selector')
     await cdp.evaluate("document.querySelector('[data-settings-tab=\"appearance\"]').click()")
@@ -371,16 +371,27 @@ async function main(): Promise<void> {
       await sleep(3800)
       check(await cdp.evaluate<boolean>("location.pathname === '/' && !location.search"), 'providers: voice handoff cleans the query string')
       check(await cdp.evaluate<boolean>("!document.querySelector('#modal').hidden && document.querySelector('#settings-panel-voice')?.hidden === false"), 'providers: voice handoff opens the voice panel')
-      check(await cdp.evaluate<string>("document.querySelector('#asr-source')?.value || ''") === 'remote', 'providers: voice handoff switches ASR to remote')
+      check(await cdp.evaluate<number>("document.querySelectorAll('#voice-chain-asr li').length") === 2, 'providers: handoff appends a second ASR provider to the chain')
+      check(await cdp.evaluate<boolean>("(document.querySelector('#voice-chain-asr li')?.textContent || '').includes('OpenAI')"), 'providers: new provider becomes the preferred entry')
       check(await cdp.evaluate<string>("document.querySelector('#asr-base')?.value || ''") === 'https://api.openai.com/v1', 'providers: voice handoff fills the endpoint')
       check(await cdp.evaluate<string>("document.querySelector('#asr-model')?.value || ''") === 'whisper-1', 'providers: voice handoff fills the model')
       check(await cdp.evaluate<string>("document.querySelector('#asr-adapter')?.value || ''") === 'openai', 'providers: voice handoff selects the adapter')
       check(await cdp.evaluate<boolean>("document.querySelector('#voice-dirty')?.hidden === false"), 'providers: voice prefill marks the form unsaved')
 
-      // The inline presets inside the settings sheet must work without the guide.
-      await cdp.evaluate("[...document.querySelectorAll('[data-voice-preset]')].find(el => el.dataset.voicePreset === 'local-piper').click()")
+      // Add-from-catalogue inside the settings sheet: TTS gets a remote entry,
+      // then the existing local engine is reused instead of duplicated.
+      await cdp.evaluate("document.querySelector('[data-voice-add=\"tts\"]').click()")
+      await sleep(900)
+      check(await cdp.evaluate<number>("document.querySelectorAll('[data-voice-preset-id]').length") >= 5, 'settings: add panel lists catalogue presets')
+      await cdp.evaluate("document.querySelector('[data-voice-preset-id=\"openai-tts\"]').click()")
       await sleep(500)
-      check(await cdp.evaluate<string>("document.querySelector('#tts-source')?.value || ''") === 'local', 'settings: local TTS preset switches back to the local engine')
+      check(await cdp.evaluate<number>("document.querySelectorAll('#voice-chain-tts li').length") === 2, 'settings: adding a TTS preset extends the chain')
+      check(await cdp.evaluate<number>("document.querySelectorAll('#tts-adapter option').length") === 5, 'settings: remote TTS adapter offers OpenAI/Gemini/Cloudflare/Edge')
+      await cdp.evaluate("document.querySelector('[data-voice-add=\"tts\"]').click()")
+      await sleep(400)
+      await cdp.evaluate("document.querySelector('[data-voice-preset-id=\"local-piper\"]').click()")
+      await sleep(400)
+      check(await cdp.evaluate<boolean>("document.querySelectorAll('#voice-chain-tts li').length === 2"), 'settings: picking an existing local engine does not duplicate it')
       check(await cdp.evaluate<boolean>("(document.querySelector('#voice-result')?.textContent || '').includes('本地引擎')"), 'settings: local preset explains that no key is needed')
 
       await cdp.evaluate("(() => { const el = document.querySelector('#modal-close'); setTimeout(() => el && el.click(), 0); return true })()")
