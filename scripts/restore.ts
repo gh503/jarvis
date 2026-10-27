@@ -8,6 +8,7 @@ import { spawnSync } from 'node:child_process'
 import { defaultDataDir } from '../src/config.ts'
 import { runProcess } from '../src/util/process.ts'
 import { SessionStore } from '../src/sessions.ts'
+import { normalize, type ServerInput } from '../src/mcp/settings.ts'
 
 const args = process.argv.slice(2)
 const archive = args.find(arg => !arg.startsWith('--'))
@@ -94,6 +95,42 @@ try {
       }
     } finally {
       check.close()
+    }
+  }
+
+  // A memory restore must never restart external MCP processes or reuse a prior
+  // verification. If the archive omitted secrets, preserve destination credentials
+  // privately but revoke their activation as well. Importing normalize is pure.
+  const stagedMcp = join(work, 'mcp-config.json')
+  const retainedMcp = join(dataDir, 'mcp-config.json')
+  const mcpSource = existsSync(stagedMcp) ? stagedMcp : existsSync(retainedMcp) ? retainedMcp : undefined
+  if (mcpSource) {
+    try {
+      const readMcp = async (file: string) => {
+        const info = await lstat(file)
+        if (!info.isFile() || info.nlink !== 1 || info.size > 1_000_000) throw new Error('Invalid MCP configuration')
+        const input = JSON.parse(await readFile(file, 'utf8'))
+        if (!input || typeof input !== 'object' || Array.isArray(input) || !Number.isSafeInteger(input.revision) || input.revision < 0 || input.revision >= Number.MAX_SAFE_INTEGER || !Array.isArray(input.servers) || input.servers.length > 32) throw new Error('Invalid MCP configuration')
+        const servers = input.servers.map((server: ServerInput) => normalize(server))
+        if (new Set(servers.map((server: {id:string}) => server.id)).size !== servers.length) throw new Error('Invalid MCP configuration')
+        return { revision: input.revision as number, servers }
+      }
+      const input = await readMcp(mcpSource)
+      const existing = mcpSource !== retainedMcp && existsSync(retainedMcp) ? await readMcp(retainedMcp) : undefined
+      const servers = input.servers.map((normalized: ReturnType<typeof normalize>) => {
+        normalized.enabled = false
+        if (normalized.preset) {
+          delete normalized.preset.validatedFingerprint
+          delete normalized.preset.verifiedAt
+          delete normalized.preset.lastErrorCode
+        }
+        return normalized
+      })
+      if (new Set(servers.map((server: {id:string}) => server.id)).size !== servers.length) throw new Error('Invalid MCP configuration')
+      await writeFile(stagedMcp, JSON.stringify({ revision: Math.max(input.revision, existing?.revision ?? 0) + 1, servers }, null, 2) + '\n', { mode: 0o600 })
+    } catch {
+      // JSON parsing and URL validation errors can embed credentials; never echo them.
+      throw new Error('Invalid MCP configuration; restore aborted before changing destination')
     }
   }
 

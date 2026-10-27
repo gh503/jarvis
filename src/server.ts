@@ -23,6 +23,7 @@ import type { FileTools } from './local-tools/files.ts'
 import type { TaskTools } from './local-tools/tasks.ts'
 import type { ToolJournal } from './tool-journal.ts'
 import type { McpManager } from './mcp/manager.ts'
+import { PresetError, type McpPresets } from './mcp/presets.ts'
 import { RevisionConflict, type ServerInput } from './mcp/settings.ts'
 import { SessionStoreError, type SessionStore } from './sessions.ts'
 import { ProfileError, type ProfileStore, type ProfileEntryInput, type ProfilePersonInput } from './profile.ts'
@@ -57,6 +58,7 @@ export interface ServerDeps {
   tools?: ToolRuntime
   toolJournal?: ToolJournal
   mcp?: McpManager
+  presets?: McpPresets
   profile?: ProfileStore
   reminders: ReminderStore
   policy: ProactivePolicy
@@ -756,6 +758,66 @@ export class JarvisServer {
       return
     }
 
+    if (path === '/api/mcp/services' || path.startsWith('/api/mcp/services/')) {
+      const presets = this.deps.presets
+      if (!presets) throw new HttpError(503, '服务连接未启用')
+      if (path === '/api/mcp/services' && request.method === 'GET') {
+        try { sendJson(response, 200, presets.snapshot()) } catch { throw new HttpError(500, '服务连接操作失败，请稍后重试') }
+        return
+      }
+      const match = /^\/api\/mcp\/services\/([a-zA-Z0-9_-]{1,48})(?:\/(configure|verify|toggle))?$/.exec(path)
+      if (!match || ['__proto__', 'constructor', 'prototype'].includes(match[1])) throw new HttpError(400, '服务标识不合法')
+      const action = match[2]
+      if (!(request.method === 'POST' && action || request.method === 'DELETE' && !action)) throw new HttpError(405, '服务接口不支持此操作')
+      const body = await readJson(request, 100_000)
+      const fields = action === 'configure' ? ['expectedRevision', 'credentials', 'mode'] : action === 'toggle' ? ['expectedRevision', 'enabled'] : ['expectedRevision']
+      if (Object.keys(body).some(key => !fields.includes(key))) throw new HttpError(400, '服务请求包含未知字段')
+      if (!Number.isSafeInteger(body.expectedRevision) || (body.expectedRevision as number) < 0) throw new HttpError(400, 'expectedRevision 必填且须为非负整数')
+      if (action === 'configure') {
+        if ('mode' in body && body.mode !== 'read' && body.mode !== 'write') throw new HttpError(400, '服务模式不合法')
+        if ('credentials' in body) {
+          const credentials = body.credentials
+          if (!credentials || typeof credentials !== 'object' || Array.isArray(credentials) || Object.getPrototypeOf(credentials) !== Object.prototype ||
+              Object.keys(credentials).length > 10 || Object.entries(credentials).some(([key, value]) =>
+                !/^[a-zA-Z][a-zA-Z0-9_]{0,63}$/.test(key) || ['__proto__', 'constructor', 'prototype'].includes(key) || typeof value !== 'string' || value.length > 8192)) throw new HttpError(400, '服务凭据格式不合法')
+        }
+      }
+      if (action === 'toggle' && typeof body.enabled !== 'boolean') throw new HttpError(400, 'enabled 必须是布尔值')
+      this.assertModelMutable()
+      this.changingMcp = true
+      try {
+        await this.deps.conversation.quiesce()
+        await this.deps.tools?.quiesce()
+        await this.deps.taskTools?.quiesce()
+        const revision = body.expectedRevision as number
+        const snapshot = action === 'configure' ? await presets.configure(match[1], body as Parameters<McpPresets['configure']>[1])
+          : action === 'verify' ? await presets.verify(match[1], revision)
+          : action === 'toggle' ? await presets.toggle(match[1], body.enabled as boolean, revision)
+          : await presets.disconnect(match[1], revision)
+        sendJson(response, 200, snapshot)
+      } catch (error) {
+        // Only trusted error classes and fixed messages may cross this boundary.
+        if (error instanceof RevisionConflict) sendJson(response, 409, { error: 'MCP 配置已变化，请刷新后重试', code: 'REVISION_CONFLICT' })
+        else {
+          const errors = {
+            AUTH_REQUIRED: { status: 400, error: '服务授权无效，请检查凭据' },
+            RATE_LIMITED: { status: 429, error: '服务请求过于频繁，请稍后重试' },
+            UNREACHABLE: { status: 502, error: '无法连接服务，请稍后重试' },
+            INVALID_SERVER: { status: 400, error: '服务配置无效，请检查配置' },
+            TIMEOUT: { status: 504, error: '服务连接超时，请稍后重试' },
+            INVALID_INPUT: { status: 400, error: '服务请求无效，请检查输入' },
+            NOT_FOUND: { status: 404, error: '服务不存在' },
+            UNAVAILABLE: { status: 503, error: '服务暂不可用' },
+          }
+          const safe = error instanceof PresetError && Object.hasOwn(errors, error.code) ? errors[error.code] : undefined
+          sendJson(response, safe?.status ?? 500, { error: safe?.error ?? '服务连接操作失败，请稍后重试', ...(safe ? { code: (error as PresetError).code } : {}) })
+        }
+      } finally {
+        try { this.deps.conversation.resumeAdmissions() } finally { this.changingMcp = false }
+      }
+      return
+    }
+
     const mcpMatch = /^\/api\/mcp\/servers\/([a-zA-Z0-9_-]{1,48})(\/reconnect)?$/.exec(path)
     if ((path === '/api/mcp/servers' && request.method === 'POST') ||
         (mcpMatch && ((!mcpMatch[2] && request.method === 'DELETE') || (mcpMatch[2] && request.method === 'POST')))) {
@@ -765,6 +827,7 @@ export class JarvisServer {
       if (body.expectedRevision !== undefined && (!Number.isSafeInteger(body.expectedRevision) || body.expectedRevision < 0)) throw new HttpError(400, 'expectedRevision 不合法')
       if (request.method === 'DELETE' && body.expectedRevision === undefined) throw new HttpError(400, 'expectedRevision 必填')
       if (path === '/api/mcp/servers' && (typeof body.id !== 'string' || !/^[a-zA-Z0-9_-]{1,48}$/.test(body.id))) throw new HttpError(400, 'MCP server id 不合法')
+      if ((mcpMatch?.[1] ?? body.id)?.startsWith('preset-')) throw new HttpError(403, '预置服务请通过服务连接接口管理')
       // Recheck after reading the body: another request may have started erasing.
       if (this.erasing || this.changingMcp || this.changingModel || this.changingLocalSettings || this.deps.conversation.status().busy) throw new HttpError(409, '请先停止回复或等待配置更新完成')
       this.changingMcp = true
@@ -1382,7 +1445,8 @@ export class JarvisServer {
       // Memory-only deletion never changes MCP configuration.
       if (this.deps.mcp) {
         try {
-          for (const server of this.deps.mcp.snapshot().servers) {
+          if (this.deps.mcp.erase) await this.deps.mcp.erase()
+          else for (const server of this.deps.mcp.snapshot().servers) {
             await this.deps.mcp.remove(server.id, this.deps.mcp.snapshot().revision)
           }
         } catch {

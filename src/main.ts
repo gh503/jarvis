@@ -10,6 +10,7 @@ import { ToolRuntime } from './tools.ts'
 import { builtinTools } from './builtin-tools.ts'
 import { discoveryTool } from './tool-discovery.ts'
 import { McpManager } from './mcp/manager.ts'
+import { McpPresets } from './mcp/presets.ts'
 import { reminderTools } from './reminder-tools.ts'
 import { LocalToolSettings } from './local-tools/settings.ts'
 import { FileTools } from './local-tools/files.ts'
@@ -146,6 +147,7 @@ async function main(): Promise<void> {
   const toolJournal = new ToolJournal(sessions)
   const mcp = new McpManager({file:join(config.dataDir,'mcp-config.json'),onChanged:()=>bus.emit('mcp.changed',{at:Date.now()})})
   await mcp.initialize()
+  const presets = new McpPresets({manager:mcp})
   const localSettings = new LocalToolSettings(join(config.dataDir,'local-tools.json'),join(config.dataDir,'artifacts'))
   await localSettings.load()
   const localVision = async (bytes:Buffer,prompt:string,signal:AbortSignal) => {
@@ -224,7 +226,7 @@ async function main(): Promise<void> {
 
   const server = new JarvisServer({
     localSettings, fileTools, taskTools,
-    tools, toolJournal, mcp,
+    tools, toolJournal, mcp, presets,
     config,
     bus,
     attention,

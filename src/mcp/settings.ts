@@ -10,6 +10,7 @@ export interface ServerConfig {
   command?: string; args?: string[]; cwd?: string; env?: Record<string, string>
   url?: string; headers?: Record<string, string>; destination: 'local' | 'remote'
   tools: Record<string, ToolPolicy>
+  preset?: { id: string; version: number; mode: 'read' | 'write'; credentials: Record<string, string>; validatedFingerprint?: string; verifiedAt?: string; lastErrorCode?: string }
 }
 export type ServerInput = Partial<Omit<ServerConfig, 'id' | 'transport'>> & Pick<ServerConfig, 'id' | 'transport'> & { expectedRevision?: number }
 export interface Settings { revision: number; servers: ServerConfig[] }
@@ -53,13 +54,23 @@ export function normalize(input: ServerInput, previous?: ServerConfig): ServerCo
       config.tools[name] = { enabled: policy.enabled, permission: policy.permission, usage: policy.usage, effect: policy.effect }
     }
   }
+  if (merged.preset !== undefined) {
+    const p = merged.preset
+    const keys = ['id', 'version', 'mode', 'credentials', 'validatedFingerprint', 'verifiedAt', 'lastErrorCode']
+    if (!p || typeof p !== 'object' || Object.keys(p).some(k => !keys.includes(k)) || !/^[a-zA-Z0-9_-]{1,41}$/.test(p.id) || input.id !== `preset-${p.id}` || !Number.isSafeInteger(p.version) || p.version < 1 || !['read', 'write'].includes(p.mode)) throw new Error('Invalid preset metadata')
+    if (p.validatedFingerprint !== undefined && !/^[a-f0-9]{64}$/.test(p.validatedFingerprint)) throw new Error('Invalid preset fingerprint')
+    if (p.verifiedAt !== undefined && (typeof p.verifiedAt !== 'string' || !Number.isFinite(Date.parse(p.verifiedAt)))) throw new Error('Invalid verification date')
+    if (p.lastErrorCode !== undefined && !['AUTH_REQUIRED', 'RATE_LIMITED', 'UNREACHABLE', 'INVALID_SERVER', 'TIMEOUT'].includes(p.lastErrorCode)) throw new Error('Invalid preset error')
+    config.preset = { ...p, credentials: dictionary(p.credentials) }
+  }
   return config
 }
 export function publicConfig(config: ServerConfig) {
   // Command arguments, working directory and URL query/path can also contain credentials.
   return { id: config.id, name: config.name, enabled: config.enabled, transport: config.transport, destination: config.destination, tools: structuredClone(config.tools),
     command: config.command ? '[configured]' : undefined, argsCount: config.args?.length ?? 0, hasCwd: !!config.cwd,
-    url: config.url ? new URL(config.url).origin : undefined, hasEnv: !!Object.keys(config.env ?? {}).length, hasHeaders: !!Object.keys(config.headers ?? {}).length }
+    preset: config.preset ? { id: config.preset.id, mode: config.preset.mode, verifiedAt: config.preset.verifiedAt, configured: true } : undefined,
+    url: config.url ? (config.preset ? '[configured]' : new URL(config.url).origin) : undefined, hasEnv: !!Object.keys(config.env ?? {}).length, hasHeaders: !!Object.keys(config.headers ?? {}).length }
 }
 async function acquireLock(file: string): Promise<() => Promise<void>> {
   // Never unlink this inode: the kernel owns lock lifetime, including parent crashes.

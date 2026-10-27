@@ -25,7 +25,7 @@
 
 ## 工具与 MCP
 
-设置 → 系统 → 工具打开工具目录、MCP 服务配置和本轮调用记录。模型来源的高级设置中需显式开启「原生工具调用」；不支持的模型保留普通聊天。每轮工具请求固定到实际选中的具体模型，避免后续工具结果跨供应商故障转移。Ollama、OpenAI Chat Completions / Responses、Anthropic 均使用原生协议。
+设置 → 系统 → **服务连接**打开面向普通用户的预置目录；**高级：自定义 MCP**保留自定义服务器、工具目录和调用记录。模型来源的高级设置中需显式开启「原生工具调用」；不支持的模型保留普通聊天。每轮工具请求固定到实际选中的具体模型，避免后续工具结果跨供应商故障转移。Ollama、OpenAI Chat Completions / Responses、Anthropic 均使用原生协议。
 
 调用确认展示具体参数、会话与回合；同意仅适用于这一项调用，过期、取消或配置变化后不能继续执行。结果未知表示操作可能已经执行，不等于失败或撤销；系统停止后续调用，不自动重放。历史回答可打开对应调用记录；重启将未完成调用标为未知。执行记录与会话同库，删除会话会级联删除，导出附带调用记录，SQLite 备份完整保留。
 
@@ -34,6 +34,33 @@ MCP 支持 stdio 和 Streamable HTTP，默认服务器停用、工具需确认�
 资源列表和读取按需调用；不转发服务器系统指令，不启用 sampling、elicitation、OAuth、订阅或 MCP prompt 模板。工具定义和输出 schema 在可终止的限时线程中校验。MCP 返回文本/结构化结果有大小上限，二进制不直接进入模型。超过模型预算的目录不会全部暴露；模型可用 `tool_search` 按需发现外部工具，下一步经隐私与容量复检加载定义。工具结果保留调用/结果配对，过长内容缩短并明确标注。使用本地结果及未知结果的回合从后续上下文和摘要中排除。
 
 接口：`GET /api/tools`、`GET /api/tools/calls?sessionId=…&turnId=…`、`POST /api/tools/approvals/:id`；`GET /api/mcp`、`POST /api/mcp/servers`、`DELETE /api/mcp/servers/:id`、`POST /api/mcp/servers/:id/reconnect`。配置修改使用版本校验，忙碌时返回 409；不会中途切换执行权限。全量隐私清空包含 MCP 配置及凭据，普通记忆删除保留配置。
+
+### 服务连接：只填写必要凭据
+
+目录按「生活」「办公」「开发」「通用」分类，可搜索名称和说明。用户不需要填写服务 URL、启动命令、协议或 JSON：这些由预置配置维护。每张卡片的「设置、用法与限制」包含申请步骤、提问示例、账号前置条件，以及「官方凭据设置」「官方使用文档」「前往服务商撤销授权」链接。可配置表示 Jarvis 提供对应接入模板，不代表每个账号都具有服务权限。
+
+连接顺序为 **连接服务 → 保存配置 → 验证连接 → 手动启用**。保存新凭据或更新已有字段会先停用连接并要求重新验证；验证成功不会自动启用。验证只执行 MCP 初始化和工具发现，不执行真实业务查询，因此不能证明密钥有余额、拥有目标资源权限或全部接口可用。和风、飞书的本地适配器尤其需要在启用后通过明确的真实查询检验服务商认证；真实查询可能消耗额度。目录状态包括未配置、已停用、连接中、已连接、连接失败、待验证；错误说明不能代替服务商控制台中的账号状态。
+
+已保存的字段不回显，编辑时留空保留原值；只有本次填写的字段会提交。凭据草稿只保留在当前表单，关闭或取消编辑会清空。版本冲突保留草稿且不自动重试，用户需明确重新加载并丢弃草稿。连接动作与其他模型、工具配置变更共享忙碌和版本检查，不能在执行途中悄悄切换凭据或权限。
+
+| 预置服务 | 用户填写 | 当前开放能力与前置条件 |
+|---|---|---|
+| 高德地图 | Web 服务 Key | 地点、地址、路线、距离和天气；酒店/景点仅位置查询，不含房价房态、票务或订单。使用[高德控制台](https://console.amap.com/dev/key)的「Web服务」Key，不是 JavaScript API 安全密钥；[官方 MCP 文档](https://lbs.amap.com/api/mcp-server/gettingstarted)说明配额与使用条件 |
+| 和风天气 | API Key + 账号 API Host | 城市检索、实况和每日预报；Host 从账号控制台复制，只填主机名。使用 [Jarvis 对官方 API 的适配器](https://dev.qweather.com/docs/configuration/api-host/)，不是和风官方 MCP；[凭据入口](https://console.qweather.com/project)。工具坐标采用纬度在前、经度在后，保留来源、单位与归属标注；API Key 后续调用限制及认证迁移以官方公告为准 |
+| Tavily 搜索 | API Key | 公开资料搜索与网页提取，不开放批量爬取或自动研究；查询词及 URL 会发送给服务商。[申请密钥](https://app.tavily.com/home) · [官方文档](https://docs.tavily.com/documentation/mcp) |
+| Context7 | API Key | 软件库识别与技术文档查询；普通查询不需 Management access，不应发送私有代码或凭据。[申请密钥](https://context7.com/dashboard) · [官方文档](https://context7.com/docs/resources/all-clients) |
+| GitHub | Fine-grained PAT | 只读仓库文件、Issue、PR 等；选择所需仓库，按需仅授予 Contents、Issues、Pull requests 读取权限，组织可能需审批。不开放提交代码、合并或删除。[创建 Token](https://github.com/settings/personal-access-tokens/new) · [官方 MCP 文档](https://github.com/github/github-mcp-server/blob/main/docs/remote-server.md) |
+| Notion | Notion MCP Token | 仅面向官方提供此 Token 的 Business / Enterprise 工作区所有者；普通 REST Integration Token 不能替代。没有 New MCP token 入口的账号目前不能使用本预置，普通 OAuth 尚未接入。只读搜索与读取页面。[Developer portal](https://www.notion.so/developers) · [官方条件与步骤](https://developers.notion.com/guides/mcp/get-started-with-mcp) |
+| 飞书文档 | App ID + App Secret | 企业自建应用身份；只读新版 docx 正文和知识库节点。先申请并发布所需权限，再将资源授权给应用；聊天时提供文档 ID 或知识库节点 Token。没有全文搜索、个人 OAuth、Office 格式处理、表格编辑、上传下载或发消息能力。[创建应用](https://open.feishu.cn/app) · [官方正文 API](https://open.feishu.cn/document/server-docs/docs/docs/docx-v1/document/raw_content) |
+| Jira / Confluence | 账号邮箱 + Scoped API Token | 组织管理员须先允许 Rovo MCP 的 API Token 登录；Token 选择所需 Jira/Confluence agent-interface 读取与搜索范围。内部构造 Basic 认证，用户无需拼编码或请求头；不提供 OAuth、通用执行、修改或删除。[创建 Token](https://id.atlassian.com/manage-profile/security/api-tokens) · [官方认证说明](https://support.atlassian.com/atlassian-ai-gateway/docs/configure-authentication-via-api-token/) |
+
+**WPS 办公、酒店与票务预订目前是不可用的说明卡片**：不显示凭据输入或连接动作，不收集 Token，也不会伪造成功状态。WPS 云文档尚无已核验的可部署预置；本地文件管理不等于完整 Office 格式处理。酒店、景点位置可以用高德查询，但实时房态、价格、预订和付款尚未接入。
+
+当前八个可配置预置均只读，只允许目录内明确列出的查询工具；服务商新增或未知工具默认禁止，不能凭工具自报的只读注解自动放行。返回内容默认仅供本地模型使用，服务请求按远端目标处理，包括以 stdio 启动、实际调用公网 API 的和风和飞书适配器。本机进程不等于离线或沙箱。预置连接由服务目录管理，高级自定义界面不能借用保留的预置 ID，或改写其地址、命令及策略。
+
+三个管理动作分别是：**停用**停止后续调用但保留凭据；**断开并清除本地凭据**删除 Jarvis 保存的连接与凭据；**前往服务商撤销授权**打开官方管理入口，由用户撤销 Token 或应用授权。断开本机不撤销其他客户端的授权。凭据存于权限 `0600` 的私有 `mcp-config.json`，不返回模型或浏览器；只有 `--include-secrets` 备份才纳入该文件。恢复时所有 MCP 连接均停用，预置验证时间与验证指纹被清除，需重新验证并手动启用；即使备份未包含密钥而保留目标环境原有凭据，也会撤销这些连接的启用状态。此操作不撤销服务商授权，仍应检查凭据有效期和资源权限。验证连接也不构成带真实凭据的端到端验收。
+
+服务目录接口为 `GET /api/mcp/services`、`POST /api/mcp/services/:id/configure`、`POST /api/mcp/services/:id/verify`、`POST /api/mcp/services/:id/toggle` 和 `DELETE /api/mcp/services/:id`；变更携带 `expectedRevision`。高级自定义 MCP 接口继续保留，不绕过预置连接保护。
 
 ## 本地工具、任务与目录授权
 
@@ -168,7 +195,7 @@ Shell 依赖 Linux `/usr/bin/bwrap` 和可用的隔离能力；探测失败时�
 ## 4. PWA 与离线
 
 `web/sw.js` 是 network-first 的 shell 缓存，版本号在 `CACHE` 常量（当前
-`jarvis-shell-v30`）：
+`jarvis-shell-v31`）：
 
 - 只缓存 GET 同源请求；`/api/*`、`/ws`、带 `token` 参数的 URL 一律不缓存。
 - 导航请求离线时回退到 `/`；脚本/样式等非导航请求离线返回 503，不会把 HTML 当 JS。

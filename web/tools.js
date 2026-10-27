@@ -16,7 +16,7 @@
   const ended = item => endedTurns.has(turnKey(item)) || endedCalls.has(callKey(item))
   const dialog = el('dialog', 'tools-dialog'); dialog.id = 'tools-dialog'; dialog.setAttribute('aria-labelledby', 'tools-title')
   const header = el('header', 'tools-header'), title = el('h2', '', '工具与 MCP'); title.id = 'tools-title'
-  header.append(title, button('关闭', () => dialog.close()))
+  header.append(title, button('服务连接', () => { dialog.close(); window.dispatchEvent(new CustomEvent('jarvis:mcp-services-open')) }), button('关闭', () => dialog.close()))
   const notice = el('p', 'tools-notice'); notice.setAttribute('role', 'status'); notice.setAttribute('aria-live', 'polite')
   const body = el('div', 'tools-body'), pending = el('section', 'tools-section'), history = el('section', 'tools-section'), catalog = el('section', 'tools-section'), servers = el('section', 'tools-section'), editPane = el('section', 'tools-editor'); editPane.hidden = true
   body.append(pending, history, catalog, servers, editPane); dialog.append(header, notice, body)
@@ -103,13 +103,17 @@
     } catch (error) { if (ticket === historyEpoch) { heading(history, '调用记录', button('重试', loadHistory)); history.append(el('p', 'tools-warning', error.message)) } }
   }
   function renderServers() {
-    heading(servers, 'MCP 连接', button('添加连接', () => openEditor()))
+    heading(servers, '高级：自定义 MCP', button('添加自定义连接', () => openEditor()))
     if (!mcp.servers?.length) servers.append(el('p', 'tools-help', '尚未添加 MCP 连接。'))
     for (const server of mcp.servers || []) {
       const card = el('article', 'tools-card'), actions = el('div', 'tools-actions')
       card.append(el('h4', '', server.id), el('p', 'tools-meta', `${server.enabled ? '已启用' : '已停用'} · ${server.transport} · ${pretty(server.status || '连接状态未知')}`), el('p', 'tools-help', destinations[server.destination] || '资料去向未设置'))
       if (server.error) card.append(el('p', 'tools-warning', pretty(server.error)))
-      actions.append(button('编辑', () => openEditor(server)), button('重新连接', () => reconnect(server.id))); card.append(actions); servers.append(card)
+      if (server.preset || String(server.id || '').startsWith('preset-')) {
+        card.append(el('p', 'tools-help', '由服务连接管理'))
+        actions.append(button('服务连接', () => { dialog.close(); window.dispatchEvent(new CustomEvent('jarvis:mcp-services-open')) }))
+      } else actions.append(button('编辑', () => openEditor(server)), button('重新连接', () => reconnect(server.id)))
+      card.append(actions); servers.append(card)
     }
   }
   async function reconnect(id) {

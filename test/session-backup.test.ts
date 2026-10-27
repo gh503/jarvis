@@ -123,10 +123,10 @@ test('legacy archive preserves existing sessions and sidecars byte for byte with
   assert.equal(store.list().items[0].title, 'Keep existing sessions')
 })
 
-test('default backup excludes MCP credentials and restore preserves existing MCP config', t => {
+test('default backup excludes MCP credentials and restore disables existing MCP config', t => {
   const { source, target, archive } = fixture(t)
-  const config = JSON.stringify({ servers: [{ id: 'fixture', headers: { Authorization: 'Bearer synthetic-source-token' } }] })
-  const existing = JSON.stringify({ servers: [{ id: 'existing', env: { TOKEN: 'synthetic-existing-token' } }] })
+  const config = JSON.stringify({ revision: 1, servers: [{ id: 'fixture', enabled: true, transport: 'streamable-http', url: 'https://example.invalid/mcp', headers: { Authorization: 'Bearer synthetic-source-token' } }] })
+  const existing = JSON.stringify({ revision: 4, servers: [{ id: 'existing', enabled: true, transport: 'stdio', command: 'node', env: { TOKEN: 'synthetic-existing-token' } }] })
   writeFileSync(join(source, 'mcp-config.json'), config, { mode: 0o600 })
   writeFileSync(join(target, 'mcp-config.json'), existing, { mode: 0o600 })
   const backup = success(script('backup.ts', source, [archive]))
@@ -139,18 +139,21 @@ test('default backup excludes MCP credentials and restore preserves existing MCP
   assert.equal(JSON.parse(manifest.stdout).files.includes('mcp-config.json'), false)
   assert.equal(manifest.stdout.includes('synthetic-source-token'), false)
   const restored = success(script('restore.ts', target, [archive, '--yes', '--force']))
-  assert.equal(restored.restored.includes('mcp-config.json'), false)
-  assert.equal(readFileSync(join(target, 'mcp-config.json'), 'utf8'), existing)
+  assert.equal(restored.restored.includes('mcp-config.json'), true)
+  const retained = JSON.parse(readFileSync(join(target, 'mcp-config.json'), 'utf8'))
+  assert.equal(retained.revision, 5)
+  assert.equal(retained.servers[0].enabled, false)
+  assert.equal(retained.servers[0].env.TOKEN, 'synthetic-existing-token')
   assert.equal(readFileSync(join(restored.safety, 'mcp-config.json'), 'utf8'), existing)
 })
 
 test('explicit secret backup restores MCP credential bytes privately and preserves prior config', t => {
   const { source, target, archive } = fixture(t)
-  const config = JSON.stringify({ servers: [
-    { id: 'remote-fixture', url: 'https://example.invalid/mcp', headers: { Authorization: 'Bearer synthetic-remote-token' } },
-    { id: 'local-fixture', command: 'example', env: { TOKEN: 'synthetic-env-token' } },
+  const config = JSON.stringify({ revision: 9, servers: [
+    { id: 'remote-fixture', enabled: true, transport: 'streamable-http', url: 'https://example.invalid/mcp', headers: { Authorization: 'Bearer synthetic-remote-token' } },
+    { id: 'local-fixture', enabled: true, transport: 'stdio', command: 'example', env: { TOKEN: 'synthetic-env-token' } },
   ] }, null, 2) + '\n'
-  const existing = '{"servers":[],"previous":"synthetic-old-secret"}\n'
+  const existing = '{"revision":3,"servers":[]}\n'
   writeFileSync(join(source, 'mcp-config.json'), config, { mode: 0o600 })
   writeFileSync(join(target, 'mcp-config.json'), existing, { mode: 0o600 })
   const backup = success(script('backup.ts', source, [archive, '--include-secrets']))
@@ -165,7 +168,11 @@ test('explicit secret backup restores MCP credential bytes privately and preserv
   assert.equal(manifest.stdout.includes('synthetic-remote-token'), false)
   const restored = success(script('restore.ts', target, [archive, '--yes', '--force']))
   assert.ok(restored.restored.includes('mcp-config.json'))
-  assert.equal(readFileSync(join(target, 'mcp-config.json'), 'utf8'), config)
+  const restoredConfig = JSON.parse(readFileSync(join(target, 'mcp-config.json'), 'utf8'))
+  assert.equal(restoredConfig.revision, 10)
+  assert.ok(restoredConfig.servers.every((server: {enabled:boolean}) => server.enabled === false))
+  assert.equal(restoredConfig.servers[0].headers.Authorization, 'Bearer synthetic-remote-token')
+  assert.equal(restoredConfig.servers[1].env.TOKEN, 'synthetic-env-token')
   assert.equal(statSync(join(target, 'mcp-config.json')).mode & 0o777, 0o600)
   assert.equal(readFileSync(join(restored.safety, 'mcp-config.json'), 'utf8'), existing)
   assert.equal(statSync(restored.safety).mode & 0o777, 0o700)

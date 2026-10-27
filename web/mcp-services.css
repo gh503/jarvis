@@ -1,0 +1,39 @@
+.mcp-services-dialog,.mcp-services-confirm{color:var(--text,#e6edf5);background:var(--panel,#141c27);border:1px solid var(--border,#38465b);border-radius:18px;padding:24px;box-sizing:border-box;box-shadow:0 24px 90px #0008;color-scheme:dark}
+.mcp-services-dialog{width:min(960px,calc(100vw - 24px));max-height:calc(100dvh - 24px);overflow:auto}
+.mcp-services-confirm{width:min(460px,calc(100vw - 24px));max-height:calc(100dvh - 24px);overflow:auto}
+.mcp-services-dialog::backdrop,.mcp-services-confirm::backdrop{background:#020711b8;backdrop-filter:blur(4px)}
+.mcp-services-dialog *,.mcp-services-confirm *{box-sizing:border-box}
+.mcp-services-dialog h2,.mcp-services-confirm h2{font-size:1.3rem;margin:0}
+.mcp-services-dialog h3{font-size:1.1rem;margin:10px 0}
+.mcp-services-dialog p,.mcp-services-confirm p{line-height:1.65;overflow-wrap:anywhere}
+.mcp-services-row,.mcp-services-actions,.mcp-services-links{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
+.mcp-services-row{justify-content:space-between}
+.mcp-services-filters{display:flex;gap:10px;flex-wrap:wrap;margin:16px 0}
+.mcp-services-filters input{flex:1;min-width:120px}
+.mcp-services-dialog input,.mcp-services-dialog select{font:inherit;background:var(--bg,#0b111b);color:inherit;border:1px solid var(--border,#526078);border-radius:8px;min-height:44px;padding:10px;max-width:100%}
+.mcp-services-button{font:inherit;font-size:.9rem;cursor:pointer;color:inherit;background:var(--bg,#101925);border:1px solid var(--border,#526078);border-radius:9px;min-height:44px;padding:9px 14px;white-space:normal;overflow-wrap:anywhere}
+.mcp-services-primary{background:#245d96;color:#fff;border-color:#5091d2}
+.mcp-services-danger{color:#ffb4ad}
+.mcp-services-button:disabled{opacity:.5;cursor:not-allowed}
+.mcp-services-dialog :focus-visible,.mcp-services-confirm :focus-visible{outline:3px solid #7bbcff;outline-offset:3px}
+.mcp-services-catalog{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:14px}
+.mcp-services-card{min-width:0;border:1px solid var(--border,#38465b);border-radius:12px;padding:16px;background:var(--bg,#0e1621)}
+.mcp-services-category{font-size:.8rem;color:var(--muted,#b2c0d3)}
+.mcp-services-muted,.mcp-services-field small{color:var(--muted,#b2c0d3);font-size:.88rem;line-height:1.6}
+.mcp-services-status{font-weight:650}
+.mcp-services-error{color:#ffb4ad}
+.mcp-services-notice{line-height:1.6;margin:12px 0;overflow-wrap:anywhere}
+.mcp-services-notice button{margin:8px}
+.mcp-services-help{font-size:.9rem;line-height:1.6;margin:14px 0;overflow-wrap:anywhere}
+.mcp-services-help summary{cursor:pointer;min-height:36px}
+.mcp-services-help h4{margin:12px 0 6px}
+.mcp-services-help ul{padding-left:22px}
+.mcp-services-links a{color:#8ec7ff;text-underline-offset:3px}
+.mcp-services-editor{margin-top:18px;border:1px solid var(--border,#526078);border-radius:12px;padding:18px}
+.mcp-services-field{display:flex;flex-direction:column;gap:7px;margin:15px 0}
+.mcp-services-dialog hr{border:0;border-top:1px solid var(--border,#38465b);margin:22px 0 14px}
+[data-theme="light"] .mcp-services-dialog,[data-theme="light"] .mcp-services-confirm{color-scheme:light;background:#f8fafc;color:#18283c}
+[data-theme="light"] .mcp-services-muted,[data-theme="light"] .mcp-services-category,[data-theme="light"] .mcp-services-field small{color:#4a5c72}
+[data-theme="light"] .mcp-services-links a{color:#155a9e}
+[data-theme="light"] .mcp-services-error,[data-theme="light"] .mcp-services-danger{color:#a12820}
+@media(max-width:600px){.mcp-services-dialog,.mcp-services-confirm{padding:15px}.mcp-services-catalog{grid-template-columns:minmax(0,1fr)}.mcp-services-filters input{flex-basis:100%}.mcp-services-filters select{flex:1;min-width:0}.mcp-services-editor{padding:12px}.mcp-services-actions>*{flex:1}.mcp-services-row h2{font-size:1.15rem}}

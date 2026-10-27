@@ -2038,7 +2038,7 @@ function settingsPanelsHtml(selected, settings) {
       <div class="settings-stat-grid" id="settings-runtime">${settingsRuntimeHtml()}</div>
       <div class="settings-card">
         <div class="settings-card-head"><div><h4>工具与 MCP</h4><p>管理连接、工具权限和资料去向，查看待批准的调用。</p></div></div>
-        <div class="settings-actions"><button type="button" class="model-action" id="tools-open" aria-haspopup="dialog">管理工具与 MCP</button><button type="button" class="model-action" id="local-tools-open" aria-haspopup="dialog">本地工具与任务</button></div>
+        <div class="settings-actions"><button type="button" class="model-action" id="mcp-services-open" aria-haspopup="dialog">服务连接</button><button type="button" class="model-action" id="local-tools-open" aria-haspopup="dialog">本地工具与任务</button><button type="button" class="model-action" id="tools-open" aria-haspopup="dialog">高级：自定义 MCP</button></div>
       </div>
       <div class="settings-card">
         <div class="settings-card-head"><div><h4>安装与平台</h4><p>装成 App、在手机上用，以及这台机器支持哪些能力。</p></div></div>
@@ -3528,6 +3528,7 @@ function bind() {
   $('#modal-close').addEventListener('click', () => closeModal())
   $('#modal').addEventListener('click', event => { if (event.target === $('#modal')) closeModal() })
   $('#modal-body').addEventListener('click', event => {
+    if (event.target.closest('#mcp-services-open')) window.dispatchEvent(new CustomEvent('jarvis:mcp-services-open'))
     if (event.target.closest('#local-tools-open')) window.dispatchEvent(new CustomEvent('jarvis:local-tools-open', { detail: { sessionId: state.selectedSessionId } }))
   })
   $('#modal-body').addEventListener('input', event => {
@@ -3539,7 +3540,7 @@ function bind() {
     else if (event.target.closest('[data-settings-panel="voice"]')) markSettingsDirty('voice')
   })
   document.addEventListener('keydown', event => {
-    if ($('#local-tools-dialog')?.open || $('#local-tools-question')?.open || $('#profile-dialog')?.open || $('#history-confirm').open || $('#history-dialog').open) return
+    if ($('#mcp-services-dialog')?.open || $('#mcp-services-confirm')?.open || $('#tools-dialog')?.open || $('#local-tools-dialog')?.open || $('#local-tools-question')?.open || $('#profile-dialog')?.open || $('#history-confirm').open || $('#history-dialog').open) return
     if (!$('#action-modal').hidden) {
       if (event.key === 'Tab') trapModalFocus(event, $('#action-modal .modal'))
       if (event.key === 'Escape') {

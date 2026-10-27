@@ -62,6 +62,55 @@ file grants, web, Shell and skills are disabled until reauthorized. Stop Jarvis
 before a cross-file-consistent backup and before restoring; separate database
 snapshots do not guarantee one shared instant with output files.
 
+## Service connections without MCP configuration
+
+Open **设置 → 系统 → 服务连接** for the curated life, office, developer and
+general service catalogue. Each card supplies official credential links, setup
+steps, usage examples and limitations. Users enter only the required key/token
+or account fields; Jarvis maintains endpoints, commands and transport settings.
+**高级：自定义 MCP** remains available for custom servers, but cannot edit or
+impersonate reserved preset connections.
+
+| Service | Required fields | Current scope |
+|---|---|---|
+| Amap | Web Service Key | Read-only places, routes, distances and weather; hotel/scenic POIs are not live booking inventory |
+| QWeather | API Key + account API Host | City lookup, current weather and daily forecast through a Jarvis adapter of the official API, not an official QWeather MCP |
+| Tavily | API Key | Public search and extraction with source links; no crawl/research tools |
+| Context7 | API Key | Library and technical-documentation queries; no management access required |
+| GitHub | Fine-grained PAT | Selected repositories and read-only contents, issues and PRs; no commits or merges |
+| Notion | Notion MCP Token | Conditional Business/Enterprise owner access; ordinary REST Integration Tokens are not interchangeable |
+| Feishu documents | App ID + App Secret | Application-authorized docx content and wiki-node lookup by explicit document ID/node token; no search, personal OAuth, spreadsheet editing, uploads or messaging |
+| Jira / Confluence | Account email + scoped API Token | Organization must allow MCP API-token authentication; scoped read/search only, no OAuth or generic execution |
+
+WPS and hotel/ticket booking are explicitly **unavailable informational cards**:
+no credential collection and no pretend connection. Local file tools do not imply
+full Office-format support; map locations do not imply prices, availability or
+orders. QWeather requires the host assigned in its console, uses latitude before
+longitude, retains source attribution, and remains subject to the provider's
+announced API Key limitations. Feishu uses a Jarvis adapter of official APIs and
+application identity, not the user's personal permissions.
+
+**Save → verify → manually enable.** Saving credentials disables the connection
+and requires fresh verification. Verification only initializes MCP and discovers
+tools; it does not execute a business query or establish account balance/resource
+access. Local adapters may handshake successfully before the provider checks the
+key on the first actual query. All current presets use explicit read-only tool
+allowlists; unknown/new tools are denied. Results default to local-model use, and
+requests are treated as remote even when the adapter runs through local stdio.
+
+Disabling retains credentials. Disconnecting deletes local credentials but does
+not revoke provider-side authorization; use the card's official revocation link
+for that. Saved fields are never echoed; blank edits preserve existing values.
+Private `mcp-config.json` is stored with mode `0600` and enters backups only with
+`--include-secrets`. Restore disables every MCP connection and clears preset
+verification, requiring verification and manual enablement again. This also
+applies to retained destination credentials when the archive omits secrets;
+provider-side authorization is not revoked.
+No personal-account OAuth flow is currently implemented. See the
+[service catalogue guide](docs/ui.md#服务连接只填写必要凭据) for official links,
+minimal permissions and the exact connection lifecycle. A successful connection
+check is not a claim of live credential-backed integration testing.
+
 ## Quick start
 
 ```bash
