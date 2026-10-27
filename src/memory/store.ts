@@ -102,6 +102,7 @@ function trustForSource(source: MemoryInput['sourceKind']): MemoryInput['trust']
 
 export class MemoryStore {
   private readonly db: DatabaseSync
+  private eraseGeneration = 0
   private readonly embedder: Embedder
   private readonly now: () => Date
   private readonly logger?: Logger
@@ -247,6 +248,7 @@ export class MemoryStore {
   }
 
   async add(input: MemoryInput): Promise<MemoryItem> {
+    const generation = this.eraseGeneration
     const content = normalizeContent(input.content)
     if (!content) throw new Error('memory content cannot be empty')
     if (content.length > 8000) throw new Error('memory content is too long')
@@ -290,6 +292,7 @@ export class MemoryStore {
         this.logger?.warn('embedding failed; storing without vector', { error: String(error) })
       }
     }
+    if (generation !== this.eraseGeneration) throw new Error('Memory write cancelled by privacy erase')
     this.insertItem(item, embedding)
     this.event(item.id, 'created', item.sourceKind)
     if (input.resolveConflicts && item.status === 'confirmed') {
@@ -640,6 +643,7 @@ export class MemoryStore {
   }
 
   async consolidate(): Promise<ConsolidationStats> {
+    const generation = this.eraseGeneration
     const started = Date.now()
     const at = this.at()
     const now = this.now().getTime()
@@ -720,11 +724,13 @@ export class MemoryStore {
       if (item.sensitivity !== 'standard' && !embedderIsLocal) continue
       try {
         const vector = await this.embedder.embed(`${item.gist}\n${item.content}`)
+        if (generation !== this.eraseGeneration) throw new Error('Consolidation cancelled by privacy erase')
         if (vector) {
           this.db.prepare('UPDATE memory_items SET embedding = ? WHERE id = ?').run(encodeEmbedding(vector), item.id)
           embedded += 1
         }
       } catch (error) {
+        if (generation !== this.eraseGeneration) throw error
         this.logger?.warn('consolidation embedding failed', { id: item.id, error: String(error) })
       }
     }
@@ -881,6 +887,7 @@ export class MemoryStore {
   }
 
   eraseAll(): { items: number; episodes: number; reminders: number; links: number; events: number } {
+    this.eraseGeneration++
     const count = (table: string): number => {
       const row = this.db.prepare(`SELECT COUNT(*) AS n FROM ${table}`).get() as Record<string, unknown>
       return num(row.n)

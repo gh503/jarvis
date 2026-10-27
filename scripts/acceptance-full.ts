@@ -379,7 +379,7 @@ async function main(): Promise<void> {
     const huge = await post(base, '/api/chat', { text: 'y'.repeat(1_500_000) })
     equal('超大请求体 → 413', huge.status, 413)
     const parallel = await Promise.all([1, 2, 3].map(index => post(base, '/api/chat', { text: `并发测试 ${index}` })))
-    check('并发 3 条对话全部成功', parallel.every(item => item.status === 200 && item.json?.reply))
+    check('并发请求明确返回完成或忙碌，不伪造回复', parallel.some(item => item.status === 200 && item.json?.reply) && parallel.every(item => item.status === 200 || (item.status === 409 && item.json?.busy === true)))
 
     // ----------------------------------------------------------------- model
     section('供应商池与场景')

@@ -24,9 +24,11 @@ import type { ProactivePolicy } from './proactive/policy.ts'
 import type { Capture } from './senses/screen.ts'
 import type { TuningStore } from './tuning.ts'
 import type { SecureFiles } from './secure-files.ts'
+import { SessionStoreError, type SessionStore } from './sessions.ts'
 import type { VoiceRuntimeStatus } from './voice/runtime.ts'
 
 export interface ConversationDeps {
+  sessions?: SessionStore
   config: JarvisConfig
   bus: EventBus
   attention: AttentionManager
@@ -53,11 +55,15 @@ export interface TurnOptions {
   skipAttention?: boolean
   signal?: AbortSignal
   turnId?: string
+  sessionId?: string
   /** Pin a work scenario for this turn; omit to use auto-detect/default. */
   scenario?: string
 }
 
 export interface TurnResult {
+  sessionId?: string
+  turnId?: string
+  busy?: boolean
   reply: string
   transcript?: string
   audioUrl?: string
@@ -110,11 +116,27 @@ function intentOf(raw: string): Intent {
   return { type: 'chat', text }
 }
 
+interface ActiveTurn {
+  sessionId: string
+  turnId: string
+  controller: AbortController
+  generation: number
+  startedAt: number
+  persisted: boolean
+  text: string
+  contextExcluded?: boolean
+  done: Promise<void>
+  release: () => void
+}
+
 export class Conversation {
   private readonly history: ChatMessage[] = []
-  private readonly extractor: MemoryExtractor
   private busy = false
-  private turnActive = false
+  private active: ActiveTurn | null = null
+  private generation = 0
+  private readonly auxiliary = new Set<Promise<unknown>>()
+  private admissionsBlocked = false
+  private extraction: Promise<unknown> = Promise.resolve()
   private abort: AbortController | null = null
   private followupTimer: NodeJS.Timeout | null = null
   private speechQueue: Promise<void> = Promise.resolve()
@@ -127,7 +149,6 @@ export class Conversation {
   private speechEpoch = 0
 
   constructor(private readonly deps: ConversationDeps) {
-    this.extractor = new MemoryExtractor(deps.model, deps.memory, deps.logger)
   }
 
   async initialize(): Promise<void> {
@@ -212,6 +233,7 @@ export class Conversation {
       ollamaOk: this.lastHealth.ok,
       ollamaError: this.lastHealth.error ?? null,
       busy: this.busy,
+      activeTurn: this.active ? { sessionId: this.active.sessionId, turnId: this.active.turnId } : null,
       focus: this.deps.policy.isFocus(),
       quiet: this.deps.policy.isQuiet(),
       attention: this.deps.attention.snapshot(),
@@ -238,7 +260,13 @@ export class Conversation {
   }
 
   async speakText(text: string): Promise<string | undefined> {
-    return await this.speak(text)
+    if (this.admissionsBlocked) return undefined
+    return this.trackAuxiliary(this.speak(text))
+  }
+
+  private async trackAuxiliary<T>(task: Promise<T>): Promise<T> {
+    this.auxiliary.add(task)
+    try { return await task } finally { this.auxiliary.delete(task) }
   }
 
   async refreshModel(): Promise<boolean> {
@@ -276,80 +304,171 @@ export class Conversation {
     }
   }
 
-  async handleText(input: string, options: TurnOptions = {}): Promise<TurnResult> {
-    const text = input.trim()
-    if (!text) return { reply: '我在，说吧。' }
-    if (this.busy) {
-      const reply = '我还在处理上一件事；你可以点“停止”，或者等我一下。'
-      this.deps.bus.emit('assistant.done', { text: reply, busy: true })
-      return { reply }
+  private identity(turn: ActiveTurn) {
+    return { sessionId: turn.sessionId, turnId: turn.turnId }
+  }
+
+  private valid(turn: ActiveTurn): boolean {
+    return this.active === turn && turn.generation === this.generation && !turn.controller.signal.aborted
+  }
+
+  private check(turn: ActiveTurn): void {
+    if (!this.valid(turn)) throw new Error('Turn cancelled')
+  }
+
+  private emitTurn(type: string, data: Record<string, unknown>, turn = this.active): void {
+    if (turn && turn.generation === this.generation && !turn.controller.signal.aborted) {
+      this.deps.bus.emit(type, { ...data, ...this.identity(turn) })
     }
-    this.busy = true
-    this.turnActive = true
-    this.abort = new AbortController()
-    this.turnAudioUrls = []
-    const turnEpoch = ++this.speechEpoch
-    this.turnId = options.turnId ?? randomUUID()
-    if (!options.turnId) this.turnStartedAt = Date.now()
-    this.deps.policy.noteInteraction()
-    this.clearFollowup()
-    this.deps.bus.emit('turn.start', {
-      turnId: this.turnId,
-      source: options.source ?? 'text',
-      text: text.slice(0, 500),
-      at: new Date(this.turnStartedAt).toISOString(),
-    })
-    try {
-      if (!options.skipAttention) await this.prepareUnderstanding()
-      this.deps.bus.emit('user.message', { text, source: options.source ?? 'text' })
-      const intent = intentOf(text)
-      const update = intent.type === 'chat' ? await this.resolveStatementUpdate(text) : null
-      const result = update ?? await this.route(intent, text, options)
-      const reply = result.reply.trim() || '我在。'
-      const wantsVoice = Boolean(options.voice || intent.type === 'look')
-      const audioUrl = wantsVoice && !result.audioSpoken && turnEpoch === this.speechEpoch ? await this.speak(reply) : undefined
-      if (turnEpoch !== this.speechEpoch) return { ...result, reply, audioUrl: undefined, cancelled: true }
-      this.history.push({ role: 'user', content: text })
-      this.history.push({ role: 'assistant', content: reply })
-      const maxHistory = Math.max(2, Math.round(this.deps.tuning.number('conversation.maxHistory')))
-      while (this.history.length > maxHistory) this.history.shift()
-      this.deps.memory.addEpisode({
-        startedAt: new Date(Date.now() - 1000).toISOString(),
-        endedAt: new Date().toISOString(),
-        summary: `用户：${text.slice(0, 500)}\nJarvis：${reply.slice(0, 800)}`,
-        sourceRef: `turn:${randomUUID()}`,
-      })
-      void this.extractor.maybeExtract(text, reply, `turn:${randomUUID()}`)
-      this.deps.bus.emit('assistant.done', {
-        turnId: this.turnId,
-        text: reply,
-        audioUrl,
-        contextUsed: result.contextUsed ?? [],
-        memoryIds: result.memoryIds ?? [],
-        durationMs: Date.now() - this.turnStartedAt,
-      })
-      this.finishAttention()
-      return { ...result, reply, audioUrl }
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error)
-      // User cancellation is not a failure: cancel() already emitted
-      // assistant.cancelled, and a second assistant.done would create a
-      // duplicate bubble in the transcript.
-      if (this.abort?.signal.aborted) {
-        this.deps.attention.reset('cancel')
-        this.clearFollowup()
-        return { reply: '好，停了。', cancelled: true }
+  }
+
+  private reserve(options: TurnOptions): ActiveTurn | TurnResult {
+    const turnId = options.turnId ?? randomUUID()
+    if (this.busy || this.admissionsBlocked) {
+      return { reply: '我还在处理上一件事；你可以点“停止”，或者等我一下。', busy: true,
+        sessionId: options.sessionId ?? this.active?.sessionId ?? 'default', turnId }
+    }
+    const previous = this.deps.sessions?.getTurn(turnId)
+    if (previous) {
+      if ((options.sessionId && options.sessionId !== previous.assistant.sessionId)
+        || previous.assistant.status === 'streaming') {
+        return { reply: 'Turn identity conflict', error: 'Turn identity conflict', sessionId: options.sessionId, turnId }
       }
-      this.deps.logger.error('turn failed', { error: message })
-      const reply = `我这边出了点问题：${message}`
-      this.deps.bus.emit('assistant.done', { turnId: this.turnId, text: reply, error: message, durationMs: Date.now() - this.turnStartedAt })
-      this.deps.attention.reset('error')
-      this.clearFollowup()
-      return { reply, error: message }
+      return { sessionId: previous.assistant.sessionId, turnId, reply: previous.assistant.content,
+        cancelled: previous.assistant.status === 'cancelled',
+        error: previous.assistant.status === 'error' ? previous.assistant.error ?? 'Turn failed' : undefined }
+    }
+    const sessionId = options.sessionId ?? this.deps.sessions?.getOrCreateDefault().id ?? 'default'
+    if (this.deps.sessions) {
+      const session = this.deps.sessions.get(sessionId)
+      if (!session) throw new SessionStoreError('NOT_FOUND', '会话不存在或已删除')
+      if (session.archived) throw new SessionStoreError('CONFLICT', '请先取消归档，再继续对话')
+    }
+    let release!: () => void
+    const done = new Promise<void>(resolve => { release = resolve })
+    const turn: ActiveTurn = { sessionId, turnId, controller: new AbortController(), generation: this.generation,
+      startedAt: Date.now(), persisted: false, text: '', done, release }
+    this.active = turn
+    this.busy = true
+    this.abort = turn.controller
+    this.turnId = turnId
+    this.turnStartedAt = turn.startedAt
+    this.turnAudioUrls = []
+    this.speechEpoch++
+    this.clearFollowup()
+    this.deps.policy.noteInteraction()
+    return turn
+  }
+
+  private persistStart(turn: ActiveTurn, text: string, options: TurnOptions): TurnResult | undefined {
+    this.check(turn)
+    turn.text = text
+    const pair = this.deps.sessions?.beginTurn(turn.sessionId, turn.turnId, text, options.source ?? 'text', options.scenario)
+    turn.persisted = true
+    if (pair && pair.assistant.status !== 'streaming') {
+      return { ...this.identity(turn), reply: pair.assistant.content, cancelled: pair.assistant.status === 'cancelled',
+        error: pair.assistant.status === 'error' ? pair.assistant.error ?? 'Turn failed' : undefined }
+    }
+  }
+
+  private finishStore(turn: ActiveTurn, result: TurnResult): void {
+    if (!turn.persisted || turn.generation !== this.generation) return
+    this.deps.sessions?.finishTurn(turn.turnId, { text: result.cancelled ? undefined : result.reply,
+      status: result.cancelled ? 'cancelled' : result.error ? 'error' : 'complete', error: result.error,
+      metadata: { contextUsed: result.contextUsed ?? [], memoryIds: result.memoryIds ?? [], contextExcluded: Boolean(turn.contextExcluded) } })
+  }
+
+  async handleText(input: string, options: TurnOptions = {}): Promise<TurnResult> {
+    const prior = options.turnId ? this.deps.sessions?.getTurn(options.turnId) : undefined
+    if (prior && (prior.user.content !== input.trim() || prior.user.source !== (options.source ?? 'text')
+      || prior.user.scenario !== (options.scenario ?? null) || (options.sessionId && options.sessionId !== prior.user.sessionId))) {
+      throw new SessionStoreError('CONFLICT', 'Turn identity conflicts with an existing request')
+    }
+    const turn = this.reserve(options)
+    if (!('controller' in turn)) return turn
+    turn.text = input.trim()
+    return this.runTurn(turn, options, async () => input.trim())
+  }
+
+  private async runTurn(turn: ActiveTurn, options: TurnOptions, readText: () => Promise<string>): Promise<TurnResult> {
+    const onAbort = () => this.cancel(this.identity(turn))
+    options.signal?.addEventListener('abort', onAbort, { once: true })
+    try {
+      if (options.signal?.aborted) onAbort()
+      this.check(turn)
+      if (options.source !== 'voice' && turn.text) this.persistStart(turn, turn.text, options)
+      this.emitTurn('turn.start', { source: options.source ?? 'text', at: new Date(turn.startedAt).toISOString() }, turn)
+      if (!options.skipAttention) await this.prepareUnderstanding()
+      const text = await readText()
+      this.check(turn)
+      if (!text) throw new Error(options.source === 'voice' ? 'empty_asr' : 'empty_input')
+      const duplicate = this.persistStart(turn, text, options)
+      if (duplicate) return duplicate
+      this.emitTurn('user.message', { text, source: options.source ?? 'text' }, turn)
+      const intent = intentOf(text)
+      turn.contextExcluded = intent.type !== 'chat'
+      const update = intent.type === 'chat' ? await this.resolveStatementUpdate(text) : null
+      this.check(turn)
+      const result = update ?? await this.route(intent, text, { ...options, ...this.identity(turn), signal: turn.controller.signal })
+      this.check(turn)
+      const reply = result.reply.trim() || '我在。'
+      const audioUrl = (options.voice || intent.type === 'look') && !result.audioSpoken ? await this.speak(reply) : undefined
+      await this.speechQueue
+      this.check(turn)
+      const completed = { ...result, ...this.identity(turn), reply, audioUrl: audioUrl ?? this.turnAudioUrls[0] }
+      if (!result.error) {
+        this.deps.memory.addEpisode({ startedAt: new Date(turn.startedAt).toISOString(), endedAt: new Date().toISOString(),
+          summary: `用户：${text.slice(0, 500)}\nJarvis：${reply.slice(0, 800)}`, sourceRef: `turn:${turn.turnId}` })
+        // Guard extraction's post-model writes against cancellation/reset and drain it before release.
+        const memory = new Proxy(this.deps.memory, { get: (target, key) => {
+          const value = Reflect.get(target, key)
+          if (typeof value !== 'function') return value
+          return (...args: unknown[]) => { this.check(turn); return value.apply(target, args) }
+        } })
+        this.extraction = new MemoryExtractor(this.deps.model, memory, this.deps.logger).maybeExtract(text, reply, `turn:${turn.turnId}`)
+        await this.extraction
+        this.check(turn)
+      }
+      if (!result.error) {
+        if (!this.deps.sessions && !turn.contextExcluded) {
+          this.history.push({ role: 'user', content: text }, { role: 'assistant', content: reply })
+          const maxHistory = Math.max(2, Math.round(this.deps.tuning.number('conversation.maxHistory')))
+          while (this.history.length > maxHistory) this.history.splice(0, 2)
+        }
+      }
+      this.finishStore(turn, completed)
+      this.emitTurn('assistant.done', { text: reply, audioUrl: completed.audioUrl, error: result.error,
+        contextUsed: result.contextUsed ?? [], memoryIds: result.memoryIds ?? [], durationMs: Date.now() - turn.startedAt }, turn)
+      this.finishAttention()
+      return completed
+    } catch (error) {
+      const cancelled = !this.valid(turn)
+      const message = error instanceof Error ? error.message : String(error)
+      // ASR failures still produce a durable failed voice turn.
+      if (!turn.persisted && turn.generation === this.generation) {
+        this.deps.sessions?.beginTurn(turn.sessionId, turn.turnId, turn.text || (options.source === 'voice' ? '[语音输入]' : '[空输入]'), options.source ?? 'text', options.scenario)
+        turn.persisted = true
+      }
+      const result = { ...this.identity(turn), reply: cancelled ? '好，停了。' : `我这边出了点问题：${message}`,
+        ...(cancelled ? { cancelled: true } : { error: message }) }
+      this.finishStore(turn, result)
+      if (!cancelled) {
+        this.emitTurn('assistant.done', { text: result.reply, error: message, durationMs: Date.now() - turn.startedAt }, turn)
+        this.deps.attention.reset('error')
+        this.clearFollowup()
+      }
+      return result
     } finally {
-      this.busy = false
-      this.turnActive = false
-      this.abort = null
+      options.signal?.removeEventListener('abort', onAbort)
+      await this.speechQueue
+      await this.extraction
+      if (this.active === turn) {
+        this.busy = false
+        this.active = null
+        this.abort = null
+      }
+      if (turn.generation === this.generation) this.deps.bus.emit('turn.end', this.identity(turn))
+      turn.release()
     }
   }
 
@@ -361,6 +480,7 @@ export class Conversation {
    */
   private async resolveStatementUpdate(text: string): Promise<TurnResult | null> {
     if (text.length > 180 || /[?？]\s*$/.test(text) || /(哪里|什么|为什么|怎么|吗|呢)/.test(text)) return null
+    if (this.active) this.check(this.active)
     const candidates = conflictCandidates(text, this.deps.memory.list({ includeSensitive: true, limit: 200 }))
       .filter(item => item.kind === 'semantic')
     if (candidates.length === 0) return null
@@ -375,7 +495,7 @@ export class Conversation {
       status: 'confirmed',
       resolveConflicts: true,
     })
-    this.deps.bus.emit('memory.pinned', { id: item.id })
+    this.emitTurn('memory.pinned', { id: item.id })
     return {
       reply: `好，我更新了：${item.gist}。之前记的是“${candidates[0].gist}”，已经不再采用。`,
       memoryIds: [item.id],
@@ -430,7 +550,7 @@ export class Conversation {
       status: 'confirmed',
       resolveConflicts: true,
     })
-    this.deps.bus.emit('memory.pinned', { id: item.id })
+    this.emitTurn('memory.pinned', { id: item.id })
     return { reply: `记住了：${item.gist}`, memoryIds: [item.id] }
   }
 
@@ -445,7 +565,9 @@ export class Conversation {
 
   private async forget(query: string): Promise<TurnResult> {
     if (!query) return { reply: '要忘掉哪件事？给我一个关键词。' }
+    const turn = this.active!
     const result = await this.deps.memory.recall(query, { limit: 5, includeSensitive: true })
+    this.check(turn)
     if (result.items.length === 0) return { reply: '我没找到相关记忆。' }
     if (result.items.length > 1) {
       const list = result.items.map(item => `- ${item.gist}`).join('\n')
@@ -491,20 +613,24 @@ export class Conversation {
     if (!this.modelReady) {
       return {
         reply: `模型还没准备好（${this.deps.model.status?.().label ?? '本地'} / ${this.deps.model.model}）。请打开设置里的“模型来源”测试连接或切换模型。`,
+        error: 'model_unavailable',
         contextUsed: [],
       }
     }
+    const turn = this.active!
     const modelSettings = this.deps.modelSettings ? await this.deps.modelSettings.load().catch(() => null) : null
+    this.check(turn)
     const scenarios: ScenarioConfig[] = modelSettings?.scenarios ?? []
     const pinned = options.scenario && scenarios.some(item => item.id === options.scenario && item.enabled) ? options.scenario : null
     const scenarioId = pinned
       ?? (modelSettings?.scenarioAuto === false ? (modelSettings?.defaultScenario ?? SCENARIO_CHAT) : detectScenario(text, scenarios))
     const scenario = scenarios.find(item => item.id === scenarioId && item.enabled)
     if (scenario && scenario.id !== SCENARIO_CHAT) {
-      this.deps.bus.emit('assistant.scenario', { turnId: this.turnId, scenario: scenario.id, label: scenario.label, pinned: Boolean(pinned) })
+      this.emitTurn('assistant.scenario', { turnId: this.turnId, scenario: scenario.id, label: scenario.label, pinned: Boolean(pinned) })
     }
 
     const recall = await this.deps.memory.recall(text, { limit: Math.round(this.deps.tuning.number('conversation.recallLimit')) })
+    this.check(turn)
     const memoryBlock = this.deps.memory.contextFor(recall.items, Math.round(this.deps.tuning.number('conversation.contextChars')))
     const contextUsed = recall.items.map(item => item.gist)
     const systemContent = [
@@ -516,7 +642,23 @@ export class Conversation {
     ]
     if (memoryBlock) messages.push({ role: 'system', content: memoryBlock })
     const maxContext = Math.max(0, Math.round(this.deps.tuning.number('conversation.maxContextMessages')))
-    if (maxContext > 0) messages.push(...this.history.slice(-maxContext))
+    const charBudget = Math.max(0, Math.round(this.deps.tuning.number('conversation.contextChars')))
+    if (maxContext > 0) {
+      if (this.deps.sessions) {
+        messages.push(...this.deps.sessions.context(options.sessionId!, maxContext, charBudget)
+          .map(item => ({ role: item.role, content: item.content } as ChatMessage)))
+      } else {
+        let used = 0
+        const context: ChatMessage[] = []
+        for (const item of this.history.slice(-maxContext).reverse()) {
+          if (used + item.content.length > charBudget) break
+          used += item.content.length
+          context.unshift(item)
+        }
+        messages.push(...context)
+      }
+    }
+    this.check(turn)
     messages.push({ role: 'user', content: text })
 
     let reply = ''
@@ -549,14 +691,17 @@ export class Conversation {
         maxTokens: scenario?.maxTokens ?? undefined,
         profileIds: scenario && scenario.profileIds.length > 0 ? scenario.profileIds : undefined,
       })) {
+        if (options.signal?.aborted) throw new Error('Turn cancelled')
+        this.check(turn)
+        this.deps.sessions?.appendDelta(options.turnId!, delta)
         reply += delta
         emitted = true
         if (options.voice) speechBuffer += delta
-        this.deps.bus.emit('assistant.delta', { turnId: this.turnId, text: delta, full: reply })
+        this.emitTurn('assistant.delta', { turnId: this.turnId, text: delta, full: reply })
         flushSpeech()
       }
     } catch (error) {
-      if (reply.trim()) return { reply: reply.trim(), contextUsed, audioSpoken: speechStarted }
+      if (reply.trim()) return { reply: reply.trim(), contextUsed, audioSpoken: speechStarted, error: error instanceof Error ? error.message : String(error) }
       throw error
     }
     if (!emitted || !reply.trim()) {
@@ -584,13 +729,16 @@ export class Conversation {
     // Pixels and the OCR text derived from them must never fail over to a
     // remote provider, so local captures use the local-only client.
     const visionClient = servingRemote && allowRemoteVision ? this.deps.model : (this.deps.model.localClient?.() ?? this.deps.model)
+    const turn = this.active!
+    this.check(turn)
     this.deps.attention.send({ type: 'context_needed', reason: target })
     let capture: Capture | null = null
     try {
       capture = target === 'screen'
         ? await this.deps.screen.capture(join(this.deps.config.dataDir, 'captures'))
         : await this.deps.camera.capture(join(this.deps.config.dataDir, 'captures'))
-      this.deps.bus.emit('sense.capture', {
+      this.check(turn)
+      this.emitTurn('sense.capture', {
         target,
         source: capture.source,
         file: capture.path,
@@ -601,8 +749,9 @@ export class Conversation {
       })
       this.deps.attention.send({ type: 'context_ready', reason: 'capture_done' })
     } catch (error) {
+      this.check(turn)
       this.deps.attention.send({ type: 'context_denied', reason: 'capture_failed' })
-      return { reply: `这次没看成：${error instanceof Error ? error.message : String(error)}` }
+      return { reply: `这次没看成：${error instanceof Error ? error.message : String(error)}`, error: String(error) }
     }
 
     this.deps.attention.send({ type: 'respond_start', reason: 'vision' })
@@ -610,7 +759,7 @@ export class Conversation {
       const reply = await describeCapture(visionClient, capture, userText, this.abort?.signal, this.deps.ocr, forceVision || target === 'camera')
       return { reply, contextUsed: [target] }
     } catch (error) {
-      return { reply: `画面看到了，但理解失败：${error instanceof Error ? error.message : String(error)}` }
+      return { reply: `画面看到了，但理解失败：${error instanceof Error ? error.message : String(error)}`, error: String(error) }
     } finally {
       // The UI still needs a URL, but the bytes should not sit in plaintext
       // after the turn. The server decrypts on read.
@@ -632,7 +781,7 @@ export class Conversation {
         if (epoch !== this.speechEpoch || turnId !== this.turnId) return
         if (url) {
           this.turnAudioUrls.push(url)
-          this.deps.bus.emit('assistant.audio', { turnId, url, text: clean })
+          this.emitTurn('assistant.audio', { turnId, url, text: clean })
         }
       })
       .catch(error => {
@@ -641,12 +790,17 @@ export class Conversation {
   }
 
   private async speak(text: string): Promise<string | undefined> {
+    const turn = this.active
+    const generation = this.generation
+    if (turn && !this.valid(turn)) return undefined
     if (!this.voiceReady.tts) return undefined
     if (!(await this.deps.synthesizer.available())) return undefined
+    if (turn && !this.valid(turn)) return undefined
     const name = `reply-${Date.now()}-${randomUUID().slice(0, 8)}.wav`
     const path = join(this.deps.config.dataDir, 'audio', name)
     try {
       await this.deps.synthesizer.synthesize(text, path)
+      if (generation !== this.generation || this.admissionsBlocked || (turn && !this.valid(turn))) return undefined
       await this.deps.secure.encryptFile(path)
       return `/api/audio/${name}`
     } catch (error) {
@@ -655,38 +809,27 @@ export class Conversation {
     }
   }
 
-  async handleAudio(buffer: Buffer, mimeType: string): Promise<TurnResult> {
+  async handleAudio(buffer: Buffer, mimeType: string, options: TurnOptions = {}): Promise<TurnResult> {
+    const prior = options.turnId ? this.deps.sessions?.getTurn(options.turnId) : undefined
+    if (prior && (prior.user.source !== 'voice' || prior.user.scenario !== (options.scenario ?? null)
+      || (options.sessionId && options.sessionId !== prior.user.sessionId))) {
+      throw new SessionStoreError('CONFLICT', 'Turn identity conflicts with an existing request')
+    }
+    const turn = this.reserve(options)
+    if (!('controller' in turn)) return turn
     const extension = mimeType.includes('wav') ? 'wav' : mimeType.includes('ogg') ? 'ogg' : mimeType.includes('mp4') ? 'm4a' : 'webm'
-    const turnId = randomUUID()
-    this.turnId = turnId
-    this.turnStartedAt = Date.now()
-    const audioEpoch = ++this.speechEpoch
-    await this.prepareUnderstanding()
     let transcript = ''
-    const asrStarted = Date.now()
-    this.deps.bus.emit('voice.asr.start', { turnId })
-    try {
+    const result = await this.runTurn(turn, { ...options, source: 'voice', voice: options.voice ?? true }, async () => {
+      this.check(turn)
+      const started = Date.now()
+      this.emitTurn('voice.asr.start', {}, turn)
       const result = await this.deps.transcriber.transcribe(buffer, extension)
-      transcript = result.text
-      this.deps.bus.emit('voice.transcribed', { turnId, text: transcript, durationMs: result.durationMs, audioMs: result.audioMs, asrMs: Date.now() - asrStarted })
-    } catch (error) {
-      this.deps.attention.reset('asr_error')
-      const reply = `没听清：${error instanceof Error ? error.message : String(error)}`
-      this.deps.bus.emit('assistant.done', { turnId, text: reply, error: reply, durationMs: Date.now() - this.turnStartedAt })
-      return { reply }
-    }
-    if (audioEpoch !== this.speechEpoch) {
-      return { reply: '好，停了。', cancelled: true }
-    }
-    if (!transcript) {
-      this.deps.attention.reset('empty_asr')
-      const reply = '我没听到声音，再说一次？'
-      this.deps.bus.emit('assistant.done', { turnId, text: reply, error: 'empty_asr', durationMs: Date.now() - this.turnStartedAt })
-      return { reply }
-    }
-    const result = await this.handleText(transcript, { source: 'voice', voice: true, skipAttention: true, turnId })
-    await this.speechQueue
-    return { ...result, transcript, audioUrl: result.audioUrl ?? this.turnAudioUrls[0] }
+      this.check(turn)
+      transcript = result.text.trim()
+      this.emitTurn('voice.transcribed', { text: transcript, durationMs: result.durationMs, audioMs: result.audioMs, asrMs: Date.now() - started }, turn)
+      return transcript
+    })
+    return { ...result, transcript }
   }
 
   private finishAttention(): void {
@@ -715,21 +858,38 @@ export class Conversation {
     this.followupTimer = null
   }
 
-  cancel(): void {
-    const hadTurn = this.busy || this.turnActive
-    this.speechEpoch += 1
-    this.abort?.abort()
-    this.busy = false
-    this.turnActive = false
+  cancel(owner: { sessionId?: string; turnId?: string } = {}): boolean {
+    const turn = this.active
+    if (!turn || turn.controller.signal.aborted || (owner.sessionId !== undefined && owner.sessionId !== turn.sessionId)
+      || (owner.turnId !== undefined && owner.turnId !== turn.turnId)) return false
+    this.speechEpoch++
+    turn.controller.abort()
     this.turnAudioUrls = []
     this.clearFollowup()
     this.deps.attention.reset('cancel')
-    // Cancel can arrive through both the WebSocket and /api/cancel; only the
-    // first one should close the visible answer. It is also a no-op when idle.
-    if (hadTurn) this.deps.bus.emit('assistant.cancelled', {})
+    if (turn.generation === this.generation) this.deps.bus.emit('assistant.cancelled', this.identity(turn))
+    return true
   }
 
+  async quiesce(): Promise<void> {
+    this.admissionsBlocked = true
+    const turn = this.active
+    this.cancel()
+    if (turn) await turn.done
+    await this.speechQueue
+    await this.extraction
+    await Promise.allSettled([...this.auxiliary])
+  }
+
+  resumeAdmissions(): void { this.admissionsBlocked = false }
+
   async handleReminder(reminder: Reminder): Promise<void> {
+    if (this.admissionsBlocked) return
+    await this.trackAuxiliary(this.runReminder(reminder))
+  }
+
+  private async runReminder(reminder: Reminder): Promise<void> {
+    const generation = this.generation
     const state = this.deps.attention.getState()
     const userBusy = state === 'listening' || state === 'capturing' || state === 'understanding' || state === 'responding' || state === 'need_context'
     let decision = this.deps.policy.decide({
@@ -753,11 +913,13 @@ export class Conversation {
         this.deps.attention.send({ type: 'proactive_speak', reason: 'reminder' })
       }
       audioUrl = await this.speak(`提醒你：${reminder.text}`)
+      if (generation !== this.generation || this.admissionsBlocked) return
       if (audioUrl) this.deps.policy.noteSpoken()
       this.deps.attention.reset('proactive_done')
     } else if (this.deps.attention.getState() === 'considering') {
       this.deps.attention.send({ type: 'proactive_silent', reason: decision.reason })
     }
+    if (generation !== this.generation || this.admissionsBlocked) return
     this.deps.bus.emit('proactive.message', { reminder, decision, audioUrl })
   }
 
@@ -791,13 +953,12 @@ export class Conversation {
 
   /** Forget in-memory state (history, queue) so an erase leaves no echo. */
   reset(): void {
+    this.generation++
+    this.speechEpoch++
     this.history.length = 0
     this.turnAudioUrls = []
-    this.speechQueue = Promise.resolve()
-    this.abort?.abort()
-    this.abort = null
-    this.busy = false
-    this.turnActive = false
+    this.active?.controller.abort()
+    this.clearFollowup()
   }
 
   memoryItems(): MemoryItem[] {

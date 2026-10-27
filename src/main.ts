@@ -3,6 +3,7 @@ import { AttentionManager } from './attention.ts'
 import { loadConfig, ensureRuntimeDirs } from './config.ts'
 import { ActionManager } from './actions.ts'
 import { Conversation } from './conversation.ts'
+import { SessionStore } from './sessions.ts'
 import { EventBus } from './events.ts'
 import { createLogger, defaultLogFile } from './logger.ts'
 import { BriefScheduler } from './brief.ts'
@@ -71,6 +72,7 @@ async function main(): Promise<void> {
     tuning,
     logger: logger.child('memory'),
   })
+  const sessions = new SessionStore({ file: join(config.dataDir, 'sessions.db') })
   const reminders = new ReminderStore(join(config.dataDir, 'jarvis.db'), bus)
   const transcriber =
     config.voice.asrEngine === 'whisper.cpp'
@@ -130,6 +132,7 @@ async function main(): Promise<void> {
     bus,
     attention,
     memory,
+    sessions,
     model,
     transcriber: voice,
     synthesizer: voice,
@@ -183,6 +186,7 @@ async function main(): Promise<void> {
     telemetry,
     actions,
     memory,
+    sessions,
     reminders,
     policy,
     secure,
@@ -233,12 +237,13 @@ async function main(): Promise<void> {
     clearInterval(consolidate)
     scheduler.stop()
     briefScheduler.stop()
-    conversation.cancel()
+    await conversation.quiesce()
     await server.close().catch(() => undefined)
     await voice.close().catch(() => undefined)
     await ocr.close().catch(() => undefined)
     reminders.close()
     memory.close()
+    sessions.close()
     telemetry.close()
     process.exit(0)
   }

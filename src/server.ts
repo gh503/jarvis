@@ -17,6 +17,7 @@ import { isLoopbackHost, validateProfile, type ModelProfile, type ModelSettings,
 import type { AttentionManager } from './attention.ts'
 import type { JarvisConfig } from './config.ts'
 import type { Conversation } from './conversation.ts'
+import { SessionStoreError, type SessionStore } from './sessions.ts'
 import type { EventBus, JarvisEvent } from './events.ts'
 import type { Logger } from './logger.ts'
 import type { MemoryStore } from './memory/store.ts'
@@ -41,6 +42,7 @@ export interface ServerDeps {
   telemetry: TelemetryCollector
   actions: ActionManager
   memory: MemoryStore
+  sessions?: SessionStore
   reminders: ReminderStore
   policy: ProactivePolicy
   secure: SecureFiles
@@ -50,6 +52,17 @@ export interface ServerDeps {
 const MAX_CHAT_CHARS = 8000
 const MAX_MEMORY_CHARS = 8000
 const MAX_REMINDER_CHARS = 500
+
+function conversationIdentity(input: { sessionId?: unknown; turnId?: unknown }): { sessionId?: string; turnId?: string } {
+  const result: { sessionId?: string; turnId?: string } = {}
+  for (const key of ['sessionId', 'turnId'] as const) {
+    const value = input[key]
+    if (value === undefined || value === null) continue
+    if (typeof value !== 'string' || !/^[a-zA-Z0-9_-]{1,128}$/.test(value)) throw new HttpError(400, `${key} 不合法`)
+    result[key] = value
+  }
+  return result
+}
 
 const MIME: Record<string, string> = {
   '.html': 'text/html; charset=utf-8',
@@ -101,6 +114,7 @@ class HttpError extends Error {
 /** Keep deliberate 4xx errors distinct from unexpected 5xx failures. */
 function errorStatus(error: unknown, fallback = 500): number {
   if (error instanceof HttpError) return error.status
+  if (error instanceof SessionStoreError) return error.statusCode
   if (error instanceof URIError) return 400
   return fallback
 }
@@ -208,6 +222,7 @@ export class JarvisServer {
   private claimFailures: number[] = []
   private readonly claimFailuresByClient = new Map<string, number[]>()
   private listeningPort = 0
+  private erasing = false
   private readonly caps: Capabilities = capabilities(resolve(import.meta.dirname, '..'))
 
   constructor(private readonly deps: ServerDeps) {
@@ -342,6 +357,7 @@ export class JarvisServer {
       status: this.deps.conversation.status(),
       attention: this.deps.attention.snapshot(),
       recent: this.deps.bus.history(30),
+      activeTurn: this.deps.conversation.status().activeTurn ?? null,
     }))
     ws.on('message', data => {
       void this.onMessage(ws, data.toString()).catch(error => {
@@ -353,7 +369,7 @@ export class JarvisServer {
   }
 
   private async onMessage(ws: WebSocket, raw: string): Promise<void> {
-    let message: { kind?: string; text?: string; scenario?: string }
+    let message: { kind?: string; text?: string; scenario?: string; sessionId?: string; turnId?: string }
     try {
       message = JSON.parse(raw) as { kind?: string; text?: string; scenario?: string }
     } catch {
@@ -365,7 +381,8 @@ export class JarvisServer {
       return
     }
     if (message.kind === 'cancel') {
-      this.deps.conversation.cancel()
+      const identity = conversationIdentity(message)
+      this.deps.conversation.cancel(identity)
       return
     }
     if (!this.socketAuthorized(ws as JarvisSocket)) {
@@ -381,7 +398,15 @@ export class JarvisServer {
         return
       }
       const scenario = typeof message.scenario === 'string' && /^[a-z0-9-]{1,32}$/.test(message.scenario) ? message.scenario : undefined
-      await this.deps.conversation.handleText(text, { source: 'text', scenario })
+      try {
+        const identity = conversationIdentity(message)
+        if (identity.sessionId && this.deps.sessions && !this.deps.sessions.get(identity.sessionId)) throw new HttpError(404, '会话不存在或已删除')
+        const result = await this.deps.conversation.handleText(text, { source: 'text', scenario, ...identity })
+        if (result.busy) this.send(ws, { kind: 'error', ...identity, error: result.reply, busy: true, activeTurn: this.deps.conversation.status().activeTurn ?? null })
+        else this.send(ws, { kind: 'chat.result', ...identity, ...result })
+      } catch (error) {
+        this.send(ws, { kind: 'error', sessionId: message.sessionId, turnId: message.turnId, error: error instanceof Error ? error.message : String(error) })
+      }
       return
     }
     this.send(ws, { kind: 'error', error: `unknown message kind: ${message.kind ?? 'undefined'}` })
@@ -492,6 +517,10 @@ export class JarvisServer {
       }
     }
 
+    if (this.erasing && path.startsWith('/api/') && !['GET', 'HEAD'].includes(request.method ?? 'GET')) {
+      throw new HttpError(503, '正在清空数据，请稍后再试')
+    }
+
     if (request.method === 'GET' && path === '/api/health') {
       sendJson(response, 200, {
         ok: true,
@@ -555,11 +584,15 @@ export class JarvisServer {
 
 
     if (request.method === 'GET' && path === '/api/bootstrap') {
+      const defaultSessionId = this.deps.sessions?.getOrCreateDefault().id
       sendJson(response, 200, {
         version: this.deps.config.version,
         status: this.deps.conversation.status(),
         attention: this.deps.attention.snapshot(),
         memory: this.deps.conversation.memoryItems(),
+        sessions: this.deps.sessions?.list({ limit: 50 }),
+        defaultSessionId,
+        activeTurn: this.deps.conversation.status().activeTurn ?? null,
         reminders: this.deps.reminders.list(),
         models: {
           llm: this.deps.models.model,
@@ -878,8 +911,79 @@ export class JarvisServer {
       return
     }
 
+    if (path === '/api/sessions' || path.startsWith('/api/sessions/')) {
+      const store = this.deps.sessions
+      if (!store) throw new HttpError(503, '会话存储未启用')
+      const match = /^\/api\/sessions\/([a-zA-Z0-9_-]{1,128})(\/export)?$/.exec(path)
+      const id = match?.[1]
+      const activeTurn = this.deps.conversation.status().activeTurn as { sessionId: string; turnId: string } | null
+      try {
+        if (path === '/api/sessions' && request.method === 'GET') {
+          const archived = url.searchParams.get('archived')
+          if (archived !== null && archived !== 'true' && archived !== 'false') throw new HttpError(400, 'archived 应为 true 或 false')
+          sendJson(response, 200, store.list({ query: url.searchParams.get('query') ?? '', limit: Number(url.searchParams.get('limit') ?? 50), offset: Number(url.searchParams.get('offset') ?? 0), ...(archived === null ? {} : { archived: archived === 'true' }) }))
+          return
+        }
+        if (path === '/api/sessions' && request.method === 'POST') {
+          const body = await readJson<{ title?: string }>(request)
+          const session = store.create(body.title)
+          this.deps.bus.emit('session.changed', { sessionId: session.id, action: 'created' })
+          sendJson(response, 201, { session })
+          return
+        }
+        if (path === '/api/sessions' && request.method === 'DELETE') {
+          const body = await readJson<{ confirm?: string }>(request)
+          if (body.confirm !== 'DELETE ALL SESSIONS') throw new HttpError(400, '需要确认清空会话')
+          if (this.deps.conversation.status().busy) throw new HttpError(409, '请先停止正在进行的回复，再清空会话')
+          store.clearAll()
+          this.deps.bus.clear()
+          const session = store.getOrCreateDefault()
+          this.deps.bus.emit('session.changed', { action: 'cleared', sessionId: session.id })
+          sendJson(response, 200, { ok: true, session })
+          return
+        }
+        if (!id) throw new HttpError(404, '会话接口不存在')
+        const session = store.get(id)
+        if (!session) throw new HttpError(404, '会话不存在或已删除')
+        if (match?.[2] === '/export' && request.method === 'GET') {
+          sendJson(response, 200, store.exportSession(id), { 'content-disposition': `attachment; filename="jarvis-session-${id}.json"` })
+          return
+        }
+        if (match?.[2]) throw new HttpError(405, '不支持此方法')
+        if (request.method === 'GET') {
+          const before = url.searchParams.get('before')
+          sendJson(response, 200, { session, messages: store.messages(id, { limit: Number(url.searchParams.get('limit') ?? 100), ...(before === null ? {} : { before: Number(before) }) }), activeTurn: activeTurn ?? null })
+          return
+        }
+        if (request.method === 'PATCH') {
+          const body = await readJson<{ title?: string; archived?: boolean }>(request)
+          if (body.title === undefined && body.archived === undefined) throw new HttpError(400, '需要标题或归档状态')
+          if (body.title !== undefined && (typeof body.title !== 'string' || !body.title.trim() || body.title.length > 120)) throw new HttpError(400, '标题须为 1–120 个字符')
+          if (body.archived !== undefined && typeof body.archived !== 'boolean') throw new HttpError(400, '归档状态须为布尔值')
+          if (activeTurn?.sessionId === id && body.archived === true) throw new HttpError(409, '请先停止回复，再归档会话')
+          if (body.title !== undefined) store.rename(id, body.title)
+          if (body.archived !== undefined) store.setArchived(id, body.archived)
+          this.deps.bus.emit('session.changed', { sessionId: id, action: 'updated' })
+          sendJson(response, 200, { session: store.get(id) })
+          return
+        }
+        if (request.method === 'DELETE') {
+          if (activeTurn?.sessionId === id) throw new HttpError(409, '请先停止正在进行的回复，再删除会话')
+          store.delete(id)
+          this.deps.bus.clear()
+          this.deps.bus.emit('session.changed', { sessionId: id, action: 'deleted' })
+          sendJson(response, 200, { ok: true })
+          return
+        }
+        throw new HttpError(405, '不支持此方法')
+      } catch (error) {
+        if (error instanceof TypeError || error instanceof RangeError) throw new HttpError(400, error.message)
+        throw error
+      }
+    }
+
     if (request.method === 'POST' && path === '/api/chat') {
-      const body = await readJson<{ text?: string; scenario?: string }>(request)
+      const body = await readJson<{ text?: string; scenario?: string; sessionId?: string; turnId?: string }>(request)
       if (typeof body.text !== 'string' || !body.text.trim()) {
         sendJson(response, 400, { error: 'text is required' })
         return
@@ -889,8 +993,10 @@ export class JarvisServer {
         return
       }
       const scenario = typeof body.scenario === 'string' && /^[a-z0-9-]{1,32}$/.test(body.scenario) ? body.scenario : undefined
-      const result = await this.deps.conversation.handleText(body.text, { source: 'text', scenario })
-      sendJson(response, 200, result)
+      const identity = conversationIdentity(body)
+      if (identity.sessionId && this.deps.sessions && !this.deps.sessions.get(identity.sessionId)) throw new HttpError(404, '会话不存在或已删除')
+      const result = await this.deps.conversation.handleText(body.text, { source: 'text', scenario, ...identity })
+      sendJson(response, result.busy ? 409 : 200, { ...result, ...(result.busy ? { error: result.reply, activeTurn: this.deps.conversation.status().activeTurn ?? null } : {}) })
       return
     }
 
@@ -934,17 +1040,22 @@ export class JarvisServer {
         sendJson(response, 400, { error: 'empty audio' })
         return
       }
-      const result = await this.deps.conversation.handleAudio(body, mime)
-      sendJson(response, 200, result)
+      const identity = conversationIdentity({ sessionId: url.searchParams.get('sessionId') ?? undefined, turnId: url.searchParams.get('turnId') ?? undefined })
+      if (identity.sessionId && this.deps.sessions && !this.deps.sessions.get(identity.sessionId)) throw new HttpError(404, '会话不存在或已删除')
+      const scenario = url.searchParams.get('scenario') ?? undefined
+      const result = await this.deps.conversation.handleAudio(body, mime, { ...identity, scenario })
+      sendJson(response, result.busy ? 409 : 200, { ...result, ...(result.busy ? { error: result.reply, activeTurn: this.deps.conversation.status().activeTurn ?? null } : {}) })
       return
     }
 
     if (request.method === 'POST' && path === '/api/look') {
-      const body = await readJson<{ target?: string; vision?: boolean }>(request)
+      const body = await readJson<{ target?: string; vision?: boolean; sessionId?: string; turnId?: string }>(request)
       const target = body.target === 'camera' ? 'camera' : 'screen'
       const text = target === 'camera' ? '看下摄像头' : body.vision ? '用视觉看屏幕' : '看下屏幕'
-      const result = await this.deps.conversation.handleText(text, { source: 'text' })
-      sendJson(response, 200, result)
+      const identity = conversationIdentity(body)
+      if (identity.sessionId && this.deps.sessions && !this.deps.sessions.get(identity.sessionId)) throw new HttpError(404, '会话不存在或已删除')
+      const result = await this.deps.conversation.handleText(text, { source: 'text', ...identity })
+      sendJson(response, result.busy ? 409 : 200, { ...result, ...(result.busy ? { error: result.reply } : {}) })
       return
     }
 
@@ -953,6 +1064,7 @@ export class JarvisServer {
       const settings = await this.deps.modelSettings.load()
       const payload = {
         ...exported,
+        conversations: this.deps.sessions?.exportAll(),
         reminders: this.deps.reminders.list(),
         devices: this.devices.list(),
         config: {
@@ -972,6 +1084,10 @@ export class JarvisServer {
         sendJson(response, 400, { error: 'confirmation phrase is required' })
         return
       }
+      this.erasing = true
+      try {
+      await this.deps.conversation.quiesce()
+      this.deps.sessions?.clearAll()
       const counts = this.deps.memory.eraseAll()
       this.pairing.clear()
       this.devices.clear()
@@ -1017,7 +1133,12 @@ export class JarvisServer {
         providersReset: true,
         voiceReset,
         socketsClosed: true,
+        conversationsErased: true,
       })
+      } finally {
+        this.deps.conversation.resumeAdmissions()
+        this.erasing = false
+      }
       return
     }
 
@@ -1178,8 +1299,9 @@ export class JarvisServer {
     }
 
     if (request.method === 'POST' && path === '/api/cancel') {
-      this.deps.conversation.cancel()
-      sendJson(response, 200, { ok: true })
+      const body = await readJson<{ sessionId?: string; turnId?: string }>(request)
+      const cancelled = this.deps.conversation.cancel(conversationIdentity(body))
+      sendJson(response, 200, { ok: true, cancelled, activeTurn: this.deps.conversation.status().activeTurn ?? null })
       return
     }
 

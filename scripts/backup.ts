@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import { DatabaseSync } from 'node:sqlite'
-import { chmod, copyFile, mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises'
+import { chmod, copyFile, mkdtemp, rm, writeFile } from 'node:fs/promises'
 import { existsSync } from 'node:fs'
 import { join } from 'node:path'
 import { homedir, tmpdir } from 'node:os'
@@ -17,17 +17,21 @@ const work = await mkdtemp(join(tmpdir(), 'jarvis-backup-'))
 try {
   const dbFile = join(dataDir, 'jarvis.db')
   if (!existsSync(dbFile)) throw new Error(`no database at ${dbFile}`)
-  const snapshot = join(work, 'jarvis.db')
-  const db = new DatabaseSync(dbFile)
-  try {
-    db.exec('PRAGMA busy_timeout = 5000')
-    db.exec(`VACUUM INTO '${snapshot.replace(/'/g, "''")}'`)
-  } finally {
-    db.close()
+  const files: string[] = []
+  for (const name of ['jarvis.db', 'sessions.db']) {
+    const source = join(dataDir, name)
+    if (!existsSync(source)) continue
+    const snapshot = join(work, name)
+    const db = new DatabaseSync(source, { readOnly: true })
+    try {
+      db.exec('PRAGMA busy_timeout = 5000')
+      db.exec(`VACUUM INTO '${snapshot.replace(/'/g, "''")}'`)
+    } finally {
+      db.close()
+    }
+    await chmod(snapshot, 0o600)
+    files.push(name)
   }
-
-  await chmod(snapshot, 0o600)
-  const files = ['jarvis.db']
   for (const name of ['tuning.json', ...(includeSecrets ? ['model-config.json', 'voice-config.json'] : [])]) {
     const source = join(dataDir, name)
     if (existsSync(source)) {

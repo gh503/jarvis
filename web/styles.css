@@ -1271,3 +1271,47 @@ kbd { font-family: var(--mono); font-size: 9px; border: 1px solid var(--line); b
 .capability.off span:last-child { color: var(--faint); text-align: right; }
 
 .quick[disabled] { opacity: 0.45; cursor: not-allowed; }
+
+/* Session history stays in a native dialog, preserving the three-panel layout. */
+.session-header { display: flex; align-items: center; gap: 10px; padding: 14px 20px; border-bottom: 1px solid var(--line); flex: 0 0 auto; min-width: 0; }
+.session-header h2 { flex: 1; min-width: 0; margin: 0; font-size: 15px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.session-header button { flex: 0 0 auto; min-height: 36px; }
+.session-notice { padding: 0 20px; font-size: 12px; color: var(--muted); overflow-wrap: anywhere; flex: 0 0 auto; }
+.session-notice:has(#session-notice:not(:empty)) { padding-block: 8px; }
+.messages-more { align-self: center; margin: 6px; }
+.history-dialog { color: var(--text); background: var(--bg-solid); border: 1px solid var(--line-strong); border-radius: 18px; width: min(720px, calc(100vw - 24px)); max-height: calc(100dvh - 32px); padding: 22px; box-shadow: 0 24px 100px #0006; }
+.history-dialog::backdrop { background: #0008; backdrop-filter: blur(5px); }
+.history-head { display: flex; justify-content: space-between; align-items: center; gap: 12px; }
+.history-head h2, .history-confirm h2 { margin: 0 0 12px; font-size: 20px; }
+.history-filters { display: flex; gap: 10px; margin-top: 10px; }
+.history-dialog input, .history-dialog select { background: var(--panel); color: var(--text); border: 1px solid var(--line-strong); border-radius: 8px; padding: 10px; min-width: 0; font: inherit; }
+.history-filters input { flex: 1; width: 100%; }
+.history-dialog select option { background: var(--bg-solid); }
+.history-dialog button { min-height: 36px; }
+.history-dialog button:disabled { opacity: .45; cursor: not-allowed; }
+#history-status, #history-page, .history-confirm p { color: var(--muted); font-size: 12px; }
+.history-list { display: grid; gap: 10px; }
+.history-row { border: 1px solid var(--line); border-radius: 12px; overflow: hidden; }
+.history-row.selected { border-color: var(--cyan); }
+.history-session { display: grid; width: 100%; gap: 6px; padding: 14px; text-align: left; background: transparent; border: 0; }
+.history-session:hover { background: var(--panel); }
+.history-session strong, .history-session span, .history-session small { overflow-wrap: anywhere; }
+.history-session span { color: var(--muted); overflow: hidden; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; }
+.history-session small { color: var(--faint); font-size: 11px; }
+.history-row-actions { display: flex; flex-wrap: wrap; gap: 8px; padding: 0 14px 8px; }
+.history-footer { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; margin-top: 18px; }
+#history-clear { margin-left: auto; color: var(--danger); }
+.history-empty { margin: auto; padding: 32px 16px; text-align: center; color: var(--muted); }
+.history-confirm { width: min(440px, calc(100vw - 24px)); }
+.history-confirm input { width: 100%; margin-top: 8px; }
+.history-confirm label { font-size: 12px; }
+#history-confirm-error { color: var(--danger); }
+@media (max-width: 480px) {
+  .session-header { padding: 8px 10px; gap: 6px; }
+  .session-header h2 { font-size: 13px; }
+  .session-notice { padding-inline: 10px; }
+  .history-dialog { padding: 14px; }
+  .history-filters { flex-wrap: wrap; }
+  .history-filters input { flex-basis: 100%; }
+  .history-footer { gap: 8px; }
+}

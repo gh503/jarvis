@@ -6,6 +6,11 @@ const $$ = (selector, root = document) => [...root.querySelectorAll(selector)]
 
 const state = {
   bootRetry: 0,
+  selectedSessionId: localStorage.getItem('jarvis_selected_session') || '',
+  session: null, sessions: [], drafts: new Map(), activeTurn: null,
+  snapshotToken: 0, snapshotLoading: false, snapshotDirty: false, snapshotFailed: false,
+  messages: [], hasMore: false, historyOffset: 0, historyToken: 0, historyTotal: 0,
+  playbackTurn: null, optimisticTurns: new Set(), turnDrafts: new Map(),
   capabilities: null,
   catalog: null,
   pendingProvider: null,
@@ -113,7 +118,7 @@ async function api(path, options = {}) {
   const text = await response.text()
   let data = null
   try { data = text ? JSON.parse(text) : null } catch { data = { raw: text } }
-  if (!response.ok) throw new Error(data?.error || `HTTP ${response.status}`)
+  if (!response.ok) { const error = new Error(data?.error || `HTTP ${response.status}`); error.status = response.status; throw error }
   return data
 }
 
@@ -137,32 +142,15 @@ function connect() {
     if (payload.kind === 'hello') {
       applyStatus(payload.status)
       if (payload.attention) updateAttention(payload.attention)
-      clearTurnWatchdog()
-      // A reconnect can land after the server finished, while the last
-      // assistant.done event was lost with the old socket. Never leave the
-      // composer stuck in a permanent busy state.
-      if (state.busy && state.turnViaWs && !payload.status?.busy) {
-        finishStreaming('连接中断，未收到完整回答；请重试。', true)
-        setBusy(false)
-        state.turnViaWs = false
-      } else if (state.busy && state.turnViaWs && payload.status?.busy) {
-        state.turnWatchdog = setTimeout(() => {
-          if (!state.busy || !state.turnViaWs) return
-          finishStreaming('连接中断，未收到完整回答；请重试。', true)
-          setBusy(false)
-          state.turnViaWs = false
-        }, 130000)
-      }
+      setActiveTurn(payload.activeTurn ?? null)
+      void refreshSelected()
+    } else if (payload.kind === 'chat.result') {
+      handleHttpResult(payload.result || payload, payload)
     } else if (payload.kind === 'event') {
       handleEvent(payload.event)
     } else if (payload.kind === 'error') {
-      if (state.busy && state.turnViaWs) {
-        finishStreaming(payload.error || '连接出错，请重试。', true)
-        setBusy(false)
-        state.turnViaWs = false
-      } else {
-        appendMessage('system', payload.error)
-      }
+      if (sameTurn(payload, state.activeTurn)) void rejectTurn(payload, payload.error || '请求被拒绝')
+      else notify(payload.error || '连接出错')
     }
   })
   ws.addEventListener('close', () => {
@@ -172,15 +160,6 @@ function connect() {
     state.reconnect += 1
     const delay = Math.min(12000, 1200 * state.reconnect)
     setTimeout(connect, delay)
-    if (state.busy && state.turnViaWs) {
-      clearTurnWatchdog()
-      state.turnWatchdog = setTimeout(() => {
-        if (!state.busy || !state.turnViaWs) return
-        finishStreaming('连接中断，未收到完整回答；请重试。', true)
-        setBusy(false)
-        state.turnViaWs = false
-      }, 130000)
-    }
   })
   ws.addEventListener('error', () => {
     state.wsReady = false
@@ -201,15 +180,50 @@ window.addEventListener('jarvis:memory-changed', () => {
 
 function handleEvent(event) {
   window.dispatchEvent(new CustomEvent('jarvis:ws-event', { detail: event }))
-  const data = event.data || {}
+  const data = { ...event.data, sessionId: event.data?.sessionId || event.sessionId, turnId: event.data?.turnId || event.turnId }
+  const turnEvent = /^(assistant\.|user\.message|voice\.transcribed|sense\.capture)/.test(event.type)
+  if (turnEvent) {
+    if (!data.sessionId || !data.turnId) return
+    const terminal = event.type === 'assistant.done' || event.type === 'assistant.cancelled'
+    if (!state.activeTurn && !terminal) { void refreshSelected(); return }
+    if (!sameTurn(data, state.activeTurn)) return
+    if (terminal) {
+      if (state.snapshotLoading) state.snapshotDirty = true
+      if (event.type === 'assistant.cancelled' && selectedTurn(data)) stopAudio()
+      if (selectedTurn(data) && !state.snapshotLoading && data.audioUrl) playAudio(data.audioUrl, data)
+      setActiveTurn(null)
+      updateLatency()
+      void refreshSelected()
+      if ($('#history-dialog').open) void loadHistory()
+      return
+    }
+    if (state.snapshotLoading) { state.snapshotDirty = true; return }
+    if (!selectedTurn(data)) return
+  }
   switch (event.type) {
+    case 'turn.start':
+      if (data.sessionId && data.turnId && !sameTurn(data, state.activeTurn)) {
+        setActiveTurn(data)
+        void refreshSelected()
+      }
+      break
+    case 'turn.end':
+      if (sameTurn(data, state.activeTurn)) setActiveTurn(null)
+      void refreshSelected()
+      if ($('#history-dialog').open) void loadHistory()
+      break
+    case 'session.changed':
+      if ($('#history-dialog').open) void loadHistory()
+      if (!data.sessionId || data.sessionId === state.selectedSessionId) void refreshSelected()
+      break
     case 'attention.state':
       updateAttention(data)
       break
     case 'user.message':
-      if (state.pendingUserEcho && data.text === state.pendingUserEcho) {
+      if (state.optimisticTurns.has(data.turnId)) {
         state.pendingUserEcho = ''
-      } else if (data.source !== 'remote' && data.source !== 'voice') {
+      } else {
+        state.optimisticTurns.add(data.turnId)
         appendMessage('user', data.text)
       }
       break
@@ -221,25 +235,7 @@ function handleEvent(event) {
       scrollToBottom()
       break
     case 'assistant.audio':
-      if (data.url) playAudio(data.url)
-      break
-    case 'assistant.done':
-      state.sawAssistantEvent = true
-      clearCancelTimer()
-      clearTurnWatchdog()
-      state.turnViaWs = false
-      finishStreaming(data.text, Boolean(data.error))
-      if (data.audioUrl) playAudio(data.audioUrl)
-      setBusy(false)
-      updateLatency()
-      break
-    case 'assistant.cancelled':
-      clearCancelTimer()
-      clearTurnWatchdog()
-      state.turnViaWs = false
-      stopAudio()
-      finishStreaming('（已停止）')
-      setBusy(false)
+      if (data.url) playAudio(data.url, data)
       break
     case 'voice.transcribed':
       if (data.text) {
@@ -273,11 +269,10 @@ function handleEvent(event) {
       closeModal()
       break
     case 'brief.ready':
-      appendMessage('assistant', `今日简报\n${data.brief?.headline || ''}\n${(data.brief?.items || []).map(item => `· ${item.text}`).join('\n')}`)
+      notify(`今日简报\n${data.brief?.headline || ''}\n${(data.brief?.items || []).map(item => `· ${item.text}`).join('\n')}`)
       break
     case 'proactive.message':
-      appendMessage('assistant', `⏰ ${data.reminder?.text || '提醒你一件事'}`)
-      if (data.audioUrl) playAudio(data.audioUrl)
+      notify(`⏰ ${data.reminder?.text || '提醒你一件事'}`)
       refreshReminders()
       break
     case 'sense.capture':
@@ -411,12 +406,12 @@ function applyStatus(status = {}) {
   const mic = $('#mic-btn')
   const orb = $('#orb')
   if (mic) {
-    mic.disabled = asrStarting
+    mic.disabled = asrStarting || state.busy || state.snapshotLoading || state.snapshotFailed || !state.session || state.session.archived
     mic.title = asrStarting ? '语音识别加载中…' : state.voice.asrState === 'error' ? '语音识别异常；仍可重试或直接打字' : '按住说话'
     mic.setAttribute('aria-label', asrStarting ? '语音识别加载中' : state.voice.asrState === 'error' ? '语音识别异常' : '按下说话')
   }
   if (orb) {
-    orb.disabled = asrStarting
+    orb.disabled = asrStarting || state.busy || state.snapshotLoading || state.snapshotFailed || !state.session || state.session.archived
     orb.title = asrStarting ? '语音识别加载中…' : '按下说话'
   }
   const hint = $('#state-hint')
@@ -436,6 +431,7 @@ function applyStatus(status = {}) {
 }
 
 function appendMessage(role, text, options = {}) {
+  if (role === 'system' && !options.historical) { notify(text); return null }
   const empty = $('#empty-state')
   if (empty) empty.remove()
   const article = document.createElement('article')
@@ -515,7 +511,8 @@ function clearCancelTimer() {
 
 function setBusy(busy) {
   state.busy = Boolean(busy)
-  $('#send-btn').disabled = state.busy
+  $('#send-btn').disabled = state.busy || state.snapshotLoading || state.snapshotFailed || !state.session || state.session.archived
+  for (const el of [$('#mic-btn'), $('#orb')]) el.disabled = state.busy || state.snapshotLoading || state.snapshotFailed || !state.session || state.session.archived || state.voice.asrState === 'starting'
   $('#stop-btn').hidden = !state.busy
   if (state.busy) state.requestStartedAt = Date.now()
   $('#orb').classList.toggle('thinking', state.busy)
@@ -533,6 +530,7 @@ function looksLikeSenseRequest(text) {
 }
 
 function showSenseConsent(pendingText = '') {
+  const consentSessionId = state.selectedSessionId
   openModal(`
     <p class="eyebrow">SENSES / CONSENT</p>
     <h3>只在需要时看，不连续录制</h3>
@@ -550,61 +548,300 @@ function showSenseConsent(pendingText = '') {
     </div>
   `, '感官权限')
   $('#sense-cancel').addEventListener('click', () => closeModal())
-  $('#sense-allow').addEventListener('click', () => { closeModal(); if (pendingText) sendText(pendingText, { skipConsent: true }) })
+  $('#sense-allow').addEventListener('click', () => { closeModal(); if (pendingText && consentSessionId === state.selectedSessionId) sendText(pendingText, { skipConsent: true }) })
   $('#sense-always').addEventListener('click', () => {
     state.senseConsent = true
     localStorage.setItem('jarvis_sense_consent', '1')
     closeModal()
-    if (pendingText) sendText(pendingText, { skipConsent: true })
+    if (pendingText && consentSessionId === state.selectedSessionId) sendText(pendingText, { skipConsent: true })
+  })
+}
+
+function notify(text) {
+  $('#session-notice').textContent = text || ''
+}
+function sameTurn(a, b) { return Boolean(a && b && a.sessionId === b.sessionId && a.turnId === b.turnId) }
+function selectedTurn(identity) { return identity?.sessionId === state.selectedSessionId && sameTurn(identity, state.playbackTurn) }
+function setActiveTurn(identity) {
+  state.activeTurn = identity ? { sessionId: identity.sessionId, turnId: identity.turnId } : null
+  clearCancelTimer()
+  clearTurnWatchdog()
+  setBusy(Boolean(identity))
+  if (identity && identity.sessionId !== state.selectedSessionId) notify('另一段对话正在处理中；可以浏览历史，完成后即可发送。')
+}
+function canSend() {
+  if (state.busy || state.snapshotLoading || state.snapshotFailed || !state.session || state.session.archived || state.recording) {
+    notify(state.session?.archived ? '此对话已归档，请在历史中取消归档后继续。' : '请等待当前处理完成，或重试加载对话。')
+    return false
+  }
+  return true
+}
+function beginTurn() {
+  stopAudio()
+  const identity = { sessionId: state.selectedSessionId, turnId: crypto.randomUUID() }
+  state.playbackTurn = identity
+  state.sawAssistantEvent = false
+  state.pendingUserEcho = ''
+  state.streamEl = null
+  state.streamText = ''
+  setActiveTurn(identity)
+  return identity
+}
+async function rejectTurn(identity, message) {
+  if (!sameTurn(identity, state.activeTurn)) return
+  notify(message)
+  // A rejection may mean a different tab owns the global engine. Only a
+  // snapshot can safely unlock the composer after an uncertain request.
+  await refreshSelected()
+  if (identity.sessionId === state.selectedSessionId) {
+    notify(message)
+    const draft = state.turnDrafts.get(identity.turnId)
+    if (draft && !state.messages.some(m => m.turnId === identity.turnId) && !$('#input').value) {
+      $('#input').value = draft; state.drafts.set(identity.sessionId, draft); autoGrow($('#input'))
+    }
+  }
+  state.turnDrafts.delete(identity.turnId)
+}
+async function selectSession(id) {
+  if (state.selectedSessionId) state.drafts.set(state.selectedSessionId, $('#input').value)
+  state.recordToken++
+  if (state.recording) { state.recording.onstop = null; stopRecording() }
+  stopAudio()
+  state.selectedSessionId = id
+  localStorage.setItem('jarvis_selected_session', id)
+  state.session = null
+  state.messages = []
+  state.hasMore = false
+  $('#messages-more').hidden = true
+  state.playbackTurn = null
+  state.streamEl = null
+  state.streamText = ''
+  state.pendingUserEcho = ''
+  state.sawAssistantEvent = false
+  $('#input').value = state.drafts.get(id) || ''
+  autoGrow($('#input'))
+  $('#capture-strip').hidden = true
+  $('#session-title').textContent = '加载对话…'
+  $('#transcript').replaceChildren()
+  await refreshSelected()
+}
+async function refreshSelected(older = false) {
+  const id = state.selectedSessionId
+  if (!id) return
+  const token = ++state.snapshotToken
+  state.snapshotLoading = true
+  state.snapshotDirty = false
+  state.snapshotFailed = false
+  setBusy(state.busy)
+  $('#session-retry').hidden = true
+  $('#messages-more').disabled = true
+  const before = older && state.messages.length ? Math.min(...state.messages.map(m => m.id)) : null
+  try {
+    const data = await api(`/api/sessions/${encodeURIComponent(id)}?limit=100${before ? `&before=${before}` : ''}`)
+    if (token !== state.snapshotToken || id !== state.selectedSessionId) return
+    state.session = data.session
+    state.messages = older ? [...data.messages.items, ...state.messages] : data.messages.items
+    state.messages = [...new Map(state.messages.map(m => [m.id, m])).values()].sort((a, b) => a.id - b.id)
+    state.hasMore = data.messages.hasMore
+    setActiveTurn(data.activeTurn)
+    if (data.activeTurn?.sessionId === id) state.playbackTurn = { ...data.activeTurn }
+    renderMessages(older)
+    $('#session-title').textContent = data.session.title || '新对话'
+    $('#session-title').title = data.session.title || '新对话'
+    if (!state.busy) notify(data.session.archived ? '已归档 · 在历史中取消归档后可继续对话' : '')
+  } catch (error) {
+    if (token !== state.snapshotToken) return
+    if (error.status === 404) {
+      state.selectedSessionId = ''
+      localStorage.removeItem('jarvis_selected_session')
+      state.session = null
+      try {
+        const data = await api('/api/sessions?limit=50&offset=0&archived=false')
+        if (data.items.length) await selectSession(data.items[0].id)
+        else await createSession()
+        notify('原对话已删除，已打开可用对话。')
+      } catch (fallback) { notify(fallback.message); $('#session-retry').hidden = false; state.snapshotFailed = true }
+      return
+    }
+    state.snapshotFailed = true
+    notify(`对话加载失败：${error.message}`)
+    $('#session-retry').hidden = false
+  } finally {
+    if (token === state.snapshotToken) {
+      state.snapshotLoading = false
+      setBusy(state.busy)
+      $('#messages-more').disabled = false
+      if (state.snapshotDirty) { state.snapshotDirty = false; void refreshSelected() }
+    }
+  }
+}
+function renderMessages(older = false) {
+  const transcript = $('#transcript')
+  const previousHeight = transcript.scrollHeight
+  const previousTop = transcript.scrollTop
+  transcript.replaceChildren()
+  state.streamEl = null
+  state.streamText = ''
+  state.optimisticTurns.clear()
+  const statuses = { streaming: '生成中', cancelled: '已停止', error: '出错', interrupted: '连接中断' }
+  for (const message of state.messages) {
+    if (message.role === 'user') state.optimisticTurns.add(message.turnId)
+    const article = appendMessage(message.role === 'user' ? 'user' : message.role === 'system' ? 'system' : 'assistant', message.content, {
+      historical: true, error: message.status === 'error',
+      meta: `${new Date(message.createdAt).toLocaleString('zh-CN')} ${statuses[message.status] || ''}`,
+    })
+    article.dataset.messageId = String(message.id)
+    article.dataset.turnId = message.turnId || ''
+    if (message.role === 'assistant' && message.status === 'streaming' && sameTurn(message, state.activeTurn)) {
+      state.streamEl = article
+      state.streamText = message.content || ''
+      article.querySelector('.bubble').classList.add('streaming')
+    }
+  }
+  if (!state.messages.length) {
+    const empty = document.createElement('p'); empty.className = 'history-empty'; empty.textContent = '新的对话，从一句话开始。'; transcript.append(empty)
+  }
+  $('#messages-more').hidden = !state.hasMore
+  transcript.scrollTop = older ? previousTop + transcript.scrollHeight - previousHeight : transcript.scrollHeight
+}
+async function createSession() {
+  $('#session-new').disabled = true
+  try {
+    const data = await api('/api/sessions', { method: 'POST', body: '{}' })
+    await selectSession(data.session.id)
+    $('#input').focus()
+    if ($('#history-dialog').open) void loadHistory()
+  } catch (error) { notify(`新建失败：${error.message}`) }
+  finally { $('#session-new').disabled = false }
+}
+async function loadHistory() {
+  const token = ++state.historyToken
+  $('#history-status').textContent = '正在加载…'
+  $('#history-retry').hidden = true
+  const params = new URLSearchParams({ query: $('#history-search').value.trim(), limit: '50', offset: String(state.historyOffset), archived: $('#history-filter').value })
+  try {
+    const data = await api(`/api/sessions?${params}`)
+    if (token !== state.historyToken) return
+    if (!data.items.length && state.historyOffset) { state.historyOffset = Math.max(0, state.historyOffset - 50); return loadHistory() }
+    state.historyTotal = data.total
+    $('#history-status').textContent = data.total ? `共 ${data.total} 段对话` : '没有符合条件的对话'
+    $('#history-page').textContent = `${Math.floor(state.historyOffset / 50) + 1} / ${Math.max(1, Math.ceil(data.total / 50))}`
+    $('#history-prev').disabled = state.historyOffset === 0
+    $('#history-next').disabled = state.historyOffset + 50 >= data.total
+    const list = $('#history-list'); list.replaceChildren()
+    for (const session of data.items) {
+      const row = document.createElement('article'); row.className = 'history-row'
+      if (session.id === state.selectedSessionId) row.classList.add('selected')
+      const open = document.createElement('button'); open.type = 'button'; open.className = 'history-session'
+      const title = document.createElement('strong'); title.textContent = session.title || '新对话'
+      const preview = document.createElement('span'); preview.textContent = session.preview || '暂无消息'
+      const meta = document.createElement('small'); meta.textContent = `${new Date(session.updatedAt).toLocaleString('zh-CN')} · ${session.messageCount} 条消息${session.id === state.selectedSessionId ? ' · 当前对话' : ''}`
+      open.append(title, preview, meta); open.addEventListener('click', () => { $('#history-dialog').close(); void selectSession(session.id) })
+      const actions = document.createElement('div'); actions.className = 'history-row-actions'
+      for (const [label, action] of [['重命名', 'rename'], [session.archived ? '取消归档' : '归档', 'archive'], ['导出', 'export'], ['删除', 'delete']]) {
+        const button = document.createElement('button'); button.type = 'button'; button.className = 'text-btn'; button.textContent = label; button.setAttribute('aria-label', `${label}：${session.title}`)
+        button.addEventListener('click', () => void sessionAction(session, action, button)); actions.append(button)
+      }
+      row.append(open, actions); list.append(row)
+    }
+  } catch (error) { if (token === state.historyToken) { $('#history-status').textContent = `加载失败：${error.message}`; $('#history-retry').hidden = false } }
+}
+function confirmHistory(title, copy, value = null, required = '') {
+  const dialog = $('#history-confirm'); const input = $('#history-confirm-input')
+  $('#history-confirm-title').textContent = title
+  $('#history-confirm-copy').textContent = copy
+  $('#history-confirm-error').textContent = ''
+  $('#history-confirm-label').textContent = value !== null ? '对话标题' : required ? `请输入 ${required}` : ''
+  input.hidden = value === null && !required
+  input.value = value || ''; input.maxLength = value !== null ? 120 : 100
+  dialog.showModal()
+  if (!input.hidden) input.focus(); else $('#history-confirm-cancel').focus()
+  return new Promise(resolve => {
+    let result = null
+    dialog.onclose = () => { $('#history-confirm-form').onsubmit = null; resolve(result) }
+    $('#history-confirm-cancel').onclick = () => dialog.close()
+    $('#history-confirm-form').onsubmit = event => {
+      event.preventDefault()
+      if ((value !== null && !input.value.trim()) || (required && input.value !== required)) { $('#history-confirm-error').textContent = '请准确填写后再确认。'; return }
+      result = value !== null ? input.value.trim() : true; dialog.close()
+    }
+  })
+}
+async function sessionAction(session, action, button) {
+  button.disabled = true
+  const path = `/api/sessions/${encodeURIComponent(session.id)}`
+  try {
+    if (action === 'rename') {
+      const title = await confirmHistory('重命名对话', '修改标题不会改变消息内容。', session.title)
+      if (title === null) return
+      await api(path, { method: 'PATCH', body: JSON.stringify({ title }) })
+    } else if (action === 'archive') {
+      await api(path, { method: 'PATCH', body: JSON.stringify({ archived: !session.archived }) })
+    } else if (action === 'delete') {
+      if (!await confirmHistory('删除对话？', `“${session.title}”及其全部消息将被永久删除，无法撤销。`)) return
+      await api(path, { method: 'DELETE' })
+      state.drafts.delete(session.id)
+    } else if (action === 'export') {
+      const response = await fetch(`${path}/export`, { headers: authHeaders() })
+      if (!response.ok) throw new Error(`导出失败：HTTP ${response.status}`)
+      const url = URL.createObjectURL(await response.blob()); const link = document.createElement('a')
+      link.href = url; link.download = `jarvis-session-${session.id}.json`; link.click(); setTimeout(() => URL.revokeObjectURL(url), 1000)
+      return
+    }
+    if (session.id === state.selectedSessionId) await refreshSelected()
+    await loadHistory()
+  } catch (error) { $('#history-status').textContent = error.message }
+  finally { button.disabled = false }
+}
+function bindHistory() {
+  $('#session-new').addEventListener('click', () => void createSession())
+  $('#session-retry').addEventListener('click', () => { if (state.selectedSessionId) void refreshSelected(); else void bootstrap() })
+  $('#messages-more').addEventListener('click', () => void refreshSelected(true))
+  $('#history-open').addEventListener('click', () => { $('#history-dialog').showModal(); void loadHistory() })
+  $('#history-close').addEventListener('click', () => $('#history-dialog').close())
+  $('#history-retry').addEventListener('click', () => void loadHistory())
+  let timer
+  $('#history-search').addEventListener('input', () => { clearTimeout(timer); state.historyOffset = 0; timer = setTimeout(loadHistory, 250) })
+  $('#history-filter').addEventListener('change', () => { state.historyOffset = 0; void loadHistory() })
+  $('#history-prev').addEventListener('click', () => { state.historyOffset = Math.max(0, state.historyOffset - 50); void loadHistory() })
+  $('#history-next').addEventListener('click', () => { state.historyOffset += 50; void loadHistory() })
+  $('#history-clear').addEventListener('click', async () => {
+    if (!await confirmHistory('清空全部对话？', '这会永久删除所有对话，包括已归档的对话。此操作无法撤销。', null, 'DELETE ALL SESSIONS')) return
+    try {
+      const data = await api('/api/sessions', { method: 'DELETE', body: JSON.stringify({ confirm: 'DELETE ALL SESSIONS' }) })
+      state.drafts.clear(); await selectSession(data.session.id); await loadHistory()
+    } catch (error) { $('#history-status').textContent = error.message }
   })
 }
 
 function sendText(text, options = {}) {
   const clean = text.trim()
-  if (!clean) return
-  if (state.busy && !options.force) {
-    appendMessage('system', '我还在处理上一件事。先点停止，或者等我一下。')
-    return
-  }
-  if (!options.skipConsent && !state.senseConsent && looksLikeSenseRequest(clean)) {
-    showSenseConsent(clean)
-    return
-  }
-  const input = $('#input')
-  input.value = ''
-  autoGrow(input)
-  stopAudio()
-  clearCancelTimer()
-  clearTurnWatchdog()
-  state.sawAssistantEvent = false
-  state.pendingUserEcho = clean
+  if (!clean || !canSend()) return
+  if (!options.skipConsent && !state.senseConsent && looksLikeSenseRequest(clean)) { showSenseConsent(clean); return }
+  const identity = beginTurn()
+  $('#input').value = ''
+  state.drafts.delete(identity.sessionId)
+  autoGrow($('#input'))
+  state.optimisticTurns.add(identity.turnId)
+  state.turnDrafts.set(identity.turnId, clean)
   appendMessage('user', clean)
-  setBusy(true)
-  const scenario = currentScenarioPin()
-  const sent = sendWs({ kind: 'chat', text: clean, scenario })
-  state.turnViaWs = sent
-  if (!sent) {
-    state.pendingUserEcho = ''
-    api('/api/chat', { method: 'POST', body: JSON.stringify({ text: clean, scenario }) })
-      .then(result => handleHttpResult(result))
-      .catch(error => {
-        finishStreaming(error.message, true)
-        setBusy(false)
-      })
-  }
+  const payload = { text: clean, ...identity, scenario: currentScenarioPin() }
+  state.turnViaWs = sendWs({ kind: 'chat', ...payload })
+  if (!state.turnViaWs) api('/api/chat', { method: 'POST', body: JSON.stringify(payload), timeoutMs: 180000 })
+    .then(result => handleHttpResult(result, identity)).catch(error => rejectTurn(identity, error.message))
 }
 
-function handleHttpResult(result) {
-  if (result.transcript && result.transcript !== state.lastTranscript) appendMessage('system', `听到：${result.transcript}`)
-  if (!state.sawAssistantEvent) {
-    finishStreaming(result.reply || result.error || '', Boolean(result.error))
+function handleHttpResult(result, identity) {
+  if (!sameTurn(identity, state.activeTurn)) {
+    if (!state.activeTurn && identity?.sessionId === state.selectedSessionId) void refreshSelected()
+    return
   }
-  if (result.audioUrl && !result.audioSpoken) playAudio(result.audioUrl)
-  clearCancelTimer()
-  clearTurnWatchdog()
-  state.turnViaWs = false
-  setBusy(false)
+  if (selectedTurn(identity) && result.audioUrl && !result.audioSpoken && !state.sawAssistantEvent) playAudio(result.audioUrl, identity)
+  state.turnDrafts.delete(identity.turnId)
+  if (result.error) notify(result.error)
+  setActiveTurn(null)
   updateLatency()
+  void refreshSelected()
 }
 
 function sendWs(payload) {
@@ -616,6 +853,11 @@ function sendWs(payload) {
 async function bootstrap() {
   try {
     const data = await api('/api/bootstrap')
+    state.sessions = data.sessions?.items || []
+    setActiveTurn(data.activeTurn ?? null)
+    const selected = state.selectedSessionId || data.defaultSessionId || state.sessions[0]?.id
+    if (selected) await selectSession(selected)
+    else await createSession()
     state.memory = data.memory || []
     state.reminders = data.reminders || []
     state.actions = data.actions || []
@@ -631,7 +873,7 @@ async function bootstrap() {
     // A transient failure used to leave an empty page with no way back.
     appendMessage('system', `初始化失败：${error.message}。3 秒后自动重试。`)
     clearTimeout(state.bootRetry)
-    state.bootRetry = setTimeout(() => { void boot() }, 3000)
+    state.bootRetry = setTimeout(() => { void bootstrap() }, 3000)
   }
 }
 
@@ -877,24 +1119,26 @@ async function deleteCapture(url) {
   }
 }
 
-function playAudio(url) {
-  if (state.muted || !url) return
-  state.audioQueue.push(url)
+function playAudio(url, identity = state.playbackTurn) {
+  if (state.muted || !url || !selectedTurn(identity)) return
+  state.audioQueue.push({ url, identity: { ...identity } })
   if (!state.audioPlaying) playNextAudio()
 }
 
 function playNextAudio() {
   const player = $('#player')
-  const url = state.audioQueue.shift()
-  if (!url) {
+  const item = state.audioQueue.shift()
+  if (!item) {
     state.audioPlaying = false
     return
   }
+  if (!selectedTurn(item.identity)) { playNextAudio(); return }
   state.audioPlaying = true
   player.onended = playNextAudio
   player.onerror = playNextAudio
-  player.src = url
+  player.src = item.url
   player.play().catch(() => {
+    if (!selectedTurn(item.identity)) return
     state.audioPlaying = false
     $('#hint').textContent = '点击页面后可播放语音'
   })
@@ -917,13 +1161,8 @@ function autoGrow(textarea) {
 
 async function startRecording() {
   if (state.recording) return
-  // Pressing the mic while Jarvis is thinking or speaking is a barge-in: stop
-  // the current turn on the server first, then record the next utterance.
-  if (state.busy || state.audioPlaying || state.audioQueue.length > 0) {
-    sendWs({ kind: 'cancel' })
-    setBusy(false)
-    state.sawAssistantEvent = false
-  }
+  if (!canSend()) return
+  const sessionId = state.selectedSessionId
   stopAudio()
   if (!navigator.mediaDevices?.getUserMedia || !window.MediaRecorder) {
     appendMessage('system', '这个浏览器不支持录音。请用 Chrome，或直接打字。')
@@ -934,7 +1173,7 @@ async function startRecording() {
     const stream = await navigator.mediaDevices.getUserMedia({
       audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true },
     })
-    if (!state.micHeld || token !== state.recordToken) {
+    if (!state.micHeld || token !== state.recordToken || sessionId !== state.selectedSessionId || state.busy) {
       stream.getTracks().forEach(track => track.stop())
       return
     }
@@ -943,7 +1182,7 @@ async function startRecording() {
     const recorder = new MediaRecorder(stream, mime ? { mimeType: mime } : undefined)
     const chunks = []
     recorder.addEventListener('dataavailable', event => { if (event.data.size > 0) chunks.push(event.data) })
-    recorder.addEventListener('stop', () => void finishRecording(chunks, recorder.mimeType))
+    recorder.addEventListener('stop', () => void finishRecording(chunks, recorder.mimeType, sessionId, token))
     recorder.start(200)
     state.recording = recorder
     $('#mic-btn').classList.add('recording')
@@ -972,17 +1211,17 @@ function stopStream() {
   state.mediaStream = null
 }
 
-async function finishRecording(chunks, mimeType) {
+async function finishRecording(chunks, mimeType, sessionId, token) {
+  if (token !== state.recordToken || sessionId !== state.selectedSessionId || !canSend()) return
   const blob = new Blob(chunks, { type: mimeType || 'audio/webm' })
   if (blob.size < 600) {
     $('#hint').textContent = '太短了，再说一次'
     return
   }
-  state.sawAssistantEvent = false
-  setBusy(true)
+  const identity = beginTurn()
   $('#hint').textContent = state.voice.asrState === 'starting' ? '语音模型加载中，正在排队识别…' : '正在识别…'
   try {
-    const response = await fetch('/api/voice', {
+    const response = await fetch(`/api/voice?${new URLSearchParams({ ...identity, scenario: currentScenarioPin() || 'auto' })}`, {
       method: 'POST',
       headers: authHeaders({ 'content-type': blob.type || 'audio/webm' }),
       body: blob,
@@ -995,12 +1234,10 @@ async function finishRecording(chunks, mimeType) {
     }
     const result = await response.json()
     if (!response.ok) throw new Error(result.error || `HTTP ${response.status}`)
-    $('#hint').textContent = '本地推理 · 默认不录屏'
-    handleHttpResult(result)
+    if (sameTurn(identity, state.activeTurn) && selectedTurn(identity)) $('#hint').textContent = '本地推理 · 默认不录屏'
+    handleHttpResult(result, identity)
   } catch (error) {
-    finishStreaming(`语音没走通：${error.message}`, true)
-    setBusy(false)
-    $('#hint').textContent = '本地推理 · 默认不录屏'
+    void rejectTurn(identity, `语音没走通：${error.message}`)
   }
 }
 
@@ -3195,6 +3432,7 @@ function updateSendShortcutHint() {
 }
 
 function bind() {
+  bindHistory()
   updateSendShortcutHint()
   $('#send-btn').addEventListener('click', () => sendText($('#input').value))
   $('#input').addEventListener('keydown', event => {
@@ -3206,25 +3444,15 @@ function bind() {
       sendText($('#input').value)
     }
   })
-  $('#input').addEventListener('input', event => autoGrow(event.target))
+  $('#input').addEventListener('input', event => { autoGrow(event.target); state.drafts.set(state.selectedSessionId, event.target.value) })
   $('#stop-btn').addEventListener('click', () => {
-    if (state.cancelling) return
+    if (state.cancelling || !state.activeTurn) return
+    const identity = { ...state.activeTurn }
     state.cancelling = true
-    // Send exactly one cancel command. Sending both the WebSocket event and
-    // the HTTP endpoint used to produce two assistant.cancelled events.
-    if (!sendWs({ kind: 'cancel' })) {
-      api('/api/cancel', { method: 'POST', body: '{}' }).catch(() => undefined)
-    }
-    clearCancelTimer()
-    state.cancelling = true
-    state.cancelTimer = setTimeout(() => {
-      if (!state.busy || !state.cancelling) return
-      finishStreaming('（已停止）')
-      setBusy(false)
-      state.turnViaWs = false
-      state.cancelling = false
-      state.cancelTimer = 0
-    }, 5000)
+    stopAudio()
+    api('/api/cancel', { method: 'POST', body: JSON.stringify(identity) })
+      .then(() => { if (sameTurn(identity, state.activeTurn)) void refreshSelected() })
+      .catch(error => { if (sameTurn(identity, state.activeTurn)) { state.cancelling = false; notify(error.message); void refreshSelected() } })
   })
   $('#mute-btn').addEventListener('click', () => {
     state.muted = !state.muted
@@ -3257,6 +3485,7 @@ function bind() {
     else if (event.target.closest('[data-settings-panel="voice"]')) markSettingsDirty('voice')
   })
   document.addEventListener('keydown', event => {
+    if ($('#history-confirm').open || $('#history-dialog').open) return
     if (!$('#action-modal').hidden) {
       if (event.key === 'Tab') trapModalFocus(event, $('#action-modal .modal'))
       if (event.key === 'Escape') {
@@ -3419,6 +3648,9 @@ async function main() {
   await loadVisualTuning()
   tickClock()
   setInterval(tickClock, 15000)
+  // Recover if the connection loses a terminal event or an HTTP timeout leaves
+  // the engine's outcome unknown. Never unlock solely on a client timer.
+  setInterval(() => { if (state.busy && !state.snapshotLoading) void refreshSelected() }, 5000)
   await bootstrap()
   void loadScenarioOptions()
   maybeOnboarding()

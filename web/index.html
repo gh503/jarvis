@@ -99,6 +99,13 @@
       </aside>
 
       <section class="conversation-panel" aria-label="对话">
+        <header class="session-header">
+          <h2 id="session-title" title="当前对话">加载对话…</h2>
+          <button class="text-btn" id="session-new" type="button">新对话</button>
+          <button class="text-btn" id="history-open" type="button" aria-haspopup="dialog">历史</button>
+        </header>
+        <div class="session-notice" role="status" aria-live="polite"><span id="session-notice"></span><button id="session-retry" class="text-btn" type="button" hidden>重试</button></div>
+        <button id="messages-more" class="text-btn messages-more" type="button" hidden>加载更早的消息</button>
         <div class="transcript" id="transcript" role="log" aria-live="polite" aria-relevant="additions text" aria-label="对话记录">
           <div class="empty-state" id="empty-state">
             <p class="eyebrow">PERSONAL CONTEXT ENGINE</p>
@@ -280,6 +287,17 @@
     <img id="lightbox-image" alt="捕获画面大图">
   </div>
 
+  <dialog id="history-dialog" class="history-dialog" aria-labelledby="history-title">
+    <header class="history-head"><h2 id="history-title">对话历史</h2><button id="history-close" class="text-btn" type="button" aria-label="关闭对话历史">关闭</button></header>
+    <div class="history-filters"><label for="history-search" class="sr-only">搜索标题和消息内容</label><input id="history-search" type="search" placeholder="搜索标题和消息内容…"><select id="history-filter" aria-label="归档筛选"><option value="false">未归档</option><option value="true">已归档</option></select></div>
+    <p id="history-status" role="status" aria-live="polite"></p>
+    <button id="history-retry" class="text-btn" type="button" hidden>重新加载</button>
+    <div id="history-list" class="history-list"></div>
+    <footer class="history-footer"><button id="history-prev" class="text-btn" type="button">上一页</button><span id="history-page"></span><button id="history-next" class="text-btn" type="button">下一页</button><button id="history-clear" class="text-btn danger" type="button">清空全部</button></footer>
+  </dialog>
+  <dialog id="history-confirm" class="history-dialog history-confirm" aria-labelledby="history-confirm-title">
+    <form id="history-confirm-form"><h2 id="history-confirm-title"></h2><p id="history-confirm-copy"></p><label id="history-confirm-label" for="history-confirm-input"></label><input id="history-confirm-input" autocomplete="off"><p id="history-confirm-error" role="alert"></p><div class="history-footer"><button id="history-confirm-cancel" class="text-btn" type="button">取消</button><button id="history-confirm-submit" class="text-btn" type="submit">确认</button></div></form>
+  </dialog>
   <audio id="player" preload="none"></audio>
   <script type="module" src="/theme.js"></script>
   <script type="module" src="/app.js"></script>
