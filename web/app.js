@@ -692,6 +692,14 @@ function renderMessages(older = false) {
     })
     article.dataset.messageId = String(message.id)
     article.dataset.turnId = message.turnId || ''
+    const profileUsed = message.metadata?.profileUsed
+    if (message.role === 'assistant' && Array.isArray(profileUsed) && profileUsed.length) {
+      const used = document.createElement('button')
+      used.type = 'button'; used.className = 'text-btn'
+      used.textContent = `本次参考了 ${profileUsed.length} 项个人资料`
+      used.addEventListener('click', () => window.dispatchEvent(new CustomEvent('jarvis:profile-open', { detail: { ids: profileUsed } })))
+      article.querySelector('.bubble').append(used)
+    }
     if (message.role === 'assistant' && message.status === 'streaming' && sameTurn(message, state.activeTurn)) {
       state.streamEl = article
       state.streamText = message.content || ''
@@ -3485,7 +3493,7 @@ function bind() {
     else if (event.target.closest('[data-settings-panel="voice"]')) markSettingsDirty('voice')
   })
   document.addEventListener('keydown', event => {
-    if ($('#history-confirm').open || $('#history-dialog').open) return
+    if ($('#profile-dialog')?.open || $('#history-confirm').open || $('#history-dialog').open) return
     if (!$('#action-modal').hidden) {
       if (event.key === 'Tab') trapModalFocus(event, $('#action-modal .modal'))
       if (event.key === 'Escape') {

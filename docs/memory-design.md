@@ -53,7 +53,8 @@
 
 - **源（source of truth）**：SQLite 中的 `memory_items` / `memory_episodes` / `memory_links`。
 - **投影（derived）**：FTS5 索引、向量索引、摘要缓存。投影必须可重建。
-- **原始会话**：属于会话存储，不属于记忆库；只保留短期 TTL，除非用户明确归档。
+- **原始会话（当前实现）**：完整文本持久化在独立 `sessions.db`，用户删除前保留；归档是整理状态而非保存开关。会话删除不自动删除长期记忆，隐私全量擦除清空两者。
+- **个人资料与理解（当前实现）**：`memory_items.profile_value` 保存结构化值，`profile_entries` 引用同一记忆行并记录人物、字段、范围、使用策略、锁定与版本。`profile_people`、`profile_settings`、`profile_changes`、`memory_forget_barriers` 同在记忆数据库；资料不另建独立事实副本。资料通过专门的筛选进入模型上下文，普通记忆召回排除资料行以避免绕过策略。变更记录不重复保存原文；忘记屏障只保存规范化内容、来源和受支持字段的 SHA256 指纹。界面与行为见 [ui.md](ui.md)。
 
 ### 4.2 `memory_items`
 

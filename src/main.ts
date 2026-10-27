@@ -4,6 +4,7 @@ import { loadConfig, ensureRuntimeDirs } from './config.ts'
 import { ActionManager } from './actions.ts'
 import { Conversation } from './conversation.ts'
 import { SessionStore } from './sessions.ts'
+import { ProfileStore } from './profile.ts'
 import { EventBus } from './events.ts'
 import { createLogger, defaultLogFile } from './logger.ts'
 import { BriefScheduler } from './brief.ts'
@@ -72,6 +73,7 @@ async function main(): Promise<void> {
     tuning,
     logger: logger.child('memory'),
   })
+  const profile = new ProfileStore(memory)
   const sessions = new SessionStore({ file: join(config.dataDir, 'sessions.db') })
   const reminders = new ReminderStore(join(config.dataDir, 'jarvis.db'), bus)
   const transcriber =
@@ -133,6 +135,7 @@ async function main(): Promise<void> {
     attention,
     memory,
     sessions,
+    profile,
     model,
     transcriber: voice,
     synthesizer: voice,
@@ -187,6 +190,7 @@ async function main(): Promise<void> {
     actions,
     memory,
     sessions,
+    profile,
     reminders,
     policy,
     secure,

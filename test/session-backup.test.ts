@@ -7,6 +7,8 @@ import { fileURLToPath } from 'node:url'
 import { spawnSync } from 'node:child_process'
 import { DatabaseSync } from 'node:sqlite'
 import { SessionStore } from '../src/sessions.ts'
+import { MemoryStore } from '../src/memory/store.ts'
+import { ProfileStore } from '../src/profile.ts'
 
 const root = fileURLToPath(new URL('../', import.meta.url))
 function command(binary: string, args: string[], dataDir?: string) {
@@ -56,6 +58,11 @@ test('backup snapshots WAL sessions, includes manifest, restores transcripts and
   store.finishTurn('turn-one', { status: 'complete', text: 'Answer', metadata: { test: true } })
   const expected = store.exportAll()
   assert.ok(existsSync(join(source, 'sessions.db-wal')))
+  const memory = new MemoryStore({ file: join(source, 'jarvis.db') })
+  const profile = new ProfileStore(memory)
+  const entry = profile.saveEntry({ category: 'basic', field: 'city', value: '测试城市', usage: 'local' })
+  profile.updateSettings({ learningEnabled: false })
+  memory.close()
   const backup = success(script('backup.ts', source, [archive]))
   assert.ok(backup.files.includes('sessions.db'))
   const manifest = command('tar', ['-xOzf', archive, './manifest.json'])
@@ -74,6 +81,14 @@ test('backup snapshots WAL sessions, includes manifest, restores transcripts and
   }
   const reopened = new SessionStore({ file: join(target, 'sessions.db'), now: () => 1234 })
   try { assert.deepEqual(reopened.exportAll(), expected) } finally { reopened.close() }
+  const restoredMemory = new MemoryStore({ file: join(target, 'jarvis.db') })
+  try {
+    const restoredProfile = new ProfileStore(restoredMemory).snapshot()
+    assert.equal(restoredProfile.entries[0].id, entry.id)
+    assert.equal(restoredProfile.entries[0].value, '测试城市')
+    assert.equal(restoredProfile.settings.learningEnabled, false)
+    assert.match(restoredMemory.get(entry.memoryId)?.content ?? '', /测试城市/)
+  } finally { restoredMemory.close() }
 })
 
 test('legacy archive preserves existing sessions and sidecars byte for byte with explanatory result', t => {

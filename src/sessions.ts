@@ -348,5 +348,9 @@ export class SessionStore {
     }
     return pairs.reverse().flat();
   }
+  /** Retain visible evidence while preventing a corrected source from replaying into prompts. */
+  excludeTurnFromContext(turnId: string): void {
+    this.db.prepare("UPDATE messages SET metadata=json_set(coalesce(metadata,'{}'),'$.contextExcluded',json('true')) WHERE turn_id=? AND role='assistant'").run(turnId);
+  }
   close(): void { if (!this.closed) { this.db.close(); this.closed = true; } }
 }

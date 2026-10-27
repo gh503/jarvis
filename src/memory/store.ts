@@ -1,5 +1,5 @@
 import { DatabaseSync } from 'node:sqlite'
-import { randomUUID } from 'node:crypto'
+import { createHash, randomUUID } from 'node:crypto'
 import { chmodSync, readFileSync } from 'node:fs'
 import type { Logger } from '../logger.ts'
 import type { EventBus } from '../events.ts'
@@ -225,6 +225,65 @@ export class MemoryStore {
         tokenize='trigram'
       );
     `)
+    const columns = this.db.prepare('PRAGMA table_info(memory_items)').all()
+    if (!columns.some(column => column.name === 'profile_value')) this.db.exec('ALTER TABLE memory_items ADD COLUMN profile_value TEXT')
+    this.db.exec(`
+      CREATE TABLE IF NOT EXISTS profile_people (id TEXT PRIMARY KEY, name TEXT NOT NULL, relationship TEXT NOT NULL, revision INTEGER NOT NULL);
+      CREATE TABLE IF NOT EXISTS profile_entries (
+        id TEXT PRIMARY KEY, memory_id TEXT NOT NULL UNIQUE REFERENCES memory_items(id) ON DELETE CASCADE,
+        subject_id TEXT NOT NULL, category TEXT NOT NULL, field TEXT NOT NULL,
+        usage TEXT NOT NULL, scope TEXT NOT NULL, revision INTEGER NOT NULL DEFAULT 1,
+        user_locked INTEGER NOT NULL DEFAULT 1
+      );
+      CREATE TABLE IF NOT EXISTS profile_settings (id INTEGER PRIMARY KEY CHECK(id=1), learning_enabled INTEGER NOT NULL, use_enabled INTEGER NOT NULL);
+      CREATE TABLE IF NOT EXISTS profile_changes (id INTEGER PRIMARY KEY AUTOINCREMENT, entry_id TEXT NOT NULL, action TEXT NOT NULL, at TEXT NOT NULL);
+      CREATE TABLE IF NOT EXISTS memory_forget_barriers (hash TEXT PRIMARY KEY);
+      CREATE TRIGGER IF NOT EXISTS profile_memory_update AFTER UPDATE OF content,status,profile_value ON memory_items
+      BEGIN
+        UPDATE profile_entries SET revision=revision+1 WHERE memory_id=NEW.id;
+        INSERT INTO profile_changes(entry_id,action,at) SELECT id,'updated',NEW.updated_at FROM profile_entries WHERE memory_id=NEW.id;
+      END;
+      CREATE TRIGGER IF NOT EXISTS profile_memory_delete BEFORE DELETE ON memory_items
+      BEGIN
+        INSERT INTO profile_changes(entry_id,action,at) SELECT id,'deleted',strftime('%Y-%m-%dT%H:%M:%fZ','now') FROM profile_entries WHERE memory_id=OLD.id;
+      END;
+    `)
+  }
+
+  /** Internal capability for ProfileStore only: same database and transaction boundary. */
+  databaseForProfile(): DatabaseSync { return this.db }
+
+  /** Invalidate asynchronous writers before a user correction or privacy change. */
+  invalidatePendingWrites(): void { this.eraseGeneration++ }
+  mutationEpoch(): number { return this.eraseGeneration }
+
+  private barrierHash(value: string): string {
+    return createHash('sha256').update(normalizeContent(value).normalize('NFKC').toLowerCase()).digest('hex')
+  }
+
+  /** Retain only irreversible fingerprints, never forgotten text. */
+  protectFromInference(content: string, sourceRef: string): void {
+    for (const row of this.db.prepare('SELECT p.subject_id,p.field FROM profile_entries p JOIN memory_items m ON m.id=p.memory_id WHERE m.content=?').all(content)) {
+      this.db.prepare('INSERT OR IGNORE INTO memory_forget_barriers(hash) VALUES (?)').run(this.barrierHash(`field:${row.subject_id}:${row.field}`))
+    }
+    for (const value of [content, sourceRef && `source:${sourceRef}`].filter(Boolean)) {
+      this.db.prepare('INSERT OR IGNORE INTO memory_forget_barriers(hash) VALUES (?)').run(this.barrierHash(value))
+    }
+  }
+
+  private checkInference(input: MemoryInput): void {
+    if (!['inferred', 'external', 'system-observed'].includes(input.sourceKind)) return
+    const settings = this.db.prepare('SELECT learning_enabled FROM profile_settings WHERE id=1').get()
+    if (settings?.learning_enabled === 0) throw new Error('Profile learning is paused')
+    const fieldPatterns: Record<string, RegExp> = {hobby:/^我(?:喜欢|爱好)/u,city:/^我(?:目前|现在)?住在/u,role:/^我的岗位是/u,industry:/^我从事.+行业/u,communication:/^(?:我希望你|回答请)/u}
+    const locked = this.db.prepare("SELECT field FROM profile_entries WHERE subject_id='self' AND user_locked=1").all()
+    if (locked.some(row => fieldPatterns[String(row.field)]?.test(normalizeContent(input.content)))) throw new Error('Memory candidate suppressed by user-locked profile field')
+    for (const [field,pattern] of Object.entries(fieldPatterns)) {
+      if (pattern.test(normalizeContent(input.content)) && this.db.prepare('SELECT 1 FROM memory_forget_barriers WHERE hash=?').get(this.barrierHash(`field:self:${field}`))) throw new Error('Memory candidate suppressed by forgotten profile field')
+    }
+    for (const value of [input.content, input.sourceRef && `source:${input.sourceRef}`].filter(Boolean)) {
+      if (this.db.prepare('SELECT 1 FROM memory_forget_barriers WHERE hash=?').get(this.barrierHash(value))) throw new Error('Memory candidate suppressed by user correction or forgetting')
+    }
   }
 
   private at(): string {
@@ -248,6 +307,7 @@ export class MemoryStore {
   }
 
   async add(input: MemoryInput): Promise<MemoryItem> {
+    this.checkInference(input)
     const generation = this.eraseGeneration
     const content = normalizeContent(input.content)
     if (!content) throw new Error('memory content cannot be empty')
@@ -293,11 +353,12 @@ export class MemoryStore {
       }
     }
     if (generation !== this.eraseGeneration) throw new Error('Memory write cancelled by privacy erase')
+    this.checkInference(input)
     this.insertItem(item, embedding)
     this.event(item.id, 'created', item.sourceKind)
     if (input.resolveConflicts && item.status === 'confirmed') {
       const conflicts = conflictCandidates(item.content, this.list({ includeSensitive: true, includeInactive: false, limit: 200 }))
-        .filter(old => old.id !== item.id)
+        .filter(old => old.id !== item.id && !this.db.prepare('SELECT 1 FROM profile_entries WHERE memory_id=?').get(old.id))
       if (conflicts.length > 0) {
         const at = this.at()
         for (const old of conflicts) {
@@ -507,6 +568,13 @@ export class MemoryStore {
       }
     }
 
+    // Re-read after the embedding await: a user may have edited, rejected or
+    // deleted an FTS candidate while the provider was working.
+    for (const [id, candidate] of candidates) {
+      const current = this.get(id)
+      if (!current || this.db.prepare('SELECT 1 FROM profile_entries WHERE memory_id=?').get(id)) candidates.delete(id)
+      else candidate.item = current
+    }
     const pool = filterActive([...candidates.values()].map(value => value.item), effectiveOptions, now)
     if (pool.length === 0) {
       return {
@@ -549,7 +617,10 @@ export class MemoryStore {
   confirm(id: string): MemoryItem | null {
     const item = this.get(id)
     if (!item) return null
-    this.db.prepare("UPDATE memory_items SET status = 'confirmed', trust = 'authoritative', updated_at = ? WHERE id = ?").run(this.at(), id)
+    this.invalidatePendingWrites()
+    this.db.prepare('UPDATE profile_entries SET user_locked=1 WHERE memory_id=?').run(id)
+    this.protectFromInference(item.content, item.sourceRef)
+    this.db.prepare("UPDATE memory_items SET status = 'confirmed', trust = 'authoritative', confidence=1, source_kind='user-confirmed', updated_at = ? WHERE id = ?").run(this.at(), id)
     this.event(id, 'confirmed')
     return this.get(id)
   }
@@ -557,6 +628,8 @@ export class MemoryStore {
   reject(id: string): MemoryItem | null {
     const item = this.get(id)
     if (!item) return null
+    this.invalidatePendingWrites()
+    this.protectFromInference(item.content, item.sourceRef)
     this.db.prepare("UPDATE memory_items SET status = 'rejected', updated_at = ? WHERE id = ?").run(this.at(), id)
     this.event(id, 'rejected')
     return this.get(id)
@@ -565,31 +638,49 @@ export class MemoryStore {
   async edit(id: string, content: string, gist?: string): Promise<MemoryItem | null> {
     const old = this.get(id)
     if (!old) return null
+    const clean = normalizeContent(content)
+    if (!clean || clean.length > 8000) throw new Error('Invalid memory content')
+    this.invalidatePendingWrites()
+    const generation = this.eraseGeneration
+    const profile = this.db.prepare('SELECT id,field,subject_id,usage FROM profile_entries WHERE memory_id=?').get(id)
+    if (profile) {
+      this.db.exec('BEGIN IMMEDIATE')
+      try {
+        this.protectFromInference(old.content, old.sourceRef)
+        const usage = profile.usage === 'relevant' && (profile.subject_id !== 'self' || ['birthday','age','city','gender','experience','notes'].includes(String(profile.field))) ? 'local' : profile.usage
+        this.db.prepare("UPDATE profile_entries SET category='understanding',field='understanding',user_locked=1,usage=? WHERE memory_id=?").run(usage, id)
+        this.db.prepare("UPDATE memory_items SET content=?,gist=?,profile_value=?,status='confirmed',trust='authoritative',source_kind='user-confirmed',embedding=NULL,updated_at=? WHERE id=?").run(clean, gistOf(clean,gist), JSON.stringify(clean), this.at(), id)
+        this.ftsUpsert(this.get(id)!)
+        this.event(id, 'edited')
+        this.db.exec('COMMIT')
+      } catch (error) { this.db.exec('ROLLBACK'); throw error }
+      return this.get(id)
+    }
+    // Do all asynchronous work before retiring the original row.
+    let embedding: Float32Array | null = null
+    if (old.sensitivity === 'standard' || (this.embedder as {isLocal?:boolean}).isLocal) {
+      try { embedding = await this.embedder.embed(`${gistOf(clean,gist)}\n${clean}`) } catch { /* repair later */ }
+    }
+    if (generation !== this.eraseGeneration || !this.get(id)) throw new Error('Memory edit cancelled by concurrent change')
     const at = this.at()
-    this.db.prepare("UPDATE memory_items SET status = 'superseded', valid_to = ?, updated_at = ? WHERE id = ?").run(at, at, id)
-    this.event(id, 'superseded')
-    return this.add({
-      kind: old.kind,
-      content,
-      gist,
-      sourceKind: 'user-confirmed',
-      sourceRef: old.sourceRef,
-      sourceSpan: old.sourceSpan,
-      trust: 'authoritative',
-      confidence: 1,
-      importance: { ...old.importance, explicit: 1 },
-      sensitivity: old.sensitivity,
-      status: 'confirmed',
-      supersedesId: old.id,
-      pinned: old.pinned,
-      retention: old.retention,
-      expiresAt: old.expiresAt,
-    })
+    const item: MemoryItem = {...old, id:randomUUID(), content:clean, gist:gistOf(clean,gist), sourceKind:'user-confirmed', trust:'authoritative', confidence:1, status:'confirmed', supersedesId:id, createdAt:at, updatedAt:at, validFrom:at, validTo:null, lastUsedAt:null, useCount:0}
+    this.db.exec('BEGIN IMMEDIATE')
+    try {
+      this.protectFromInference(old.content,old.sourceRef)
+      this.insertItem(item,embedding)
+      this.db.prepare("UPDATE memory_items SET status='superseded',valid_to=?,updated_at=? WHERE id=?").run(at,at,id)
+      this.event(id,'superseded')
+      this.event(item.id,'created','user-confirmed')
+      this.db.exec('COMMIT')
+    } catch(error) { this.db.exec('ROLLBACK'); throw error }
+    return item
   }
 
   delete(id: string): boolean {
     const item = this.get(id)
     if (!item) return false
+    this.invalidatePendingWrites()
+    this.protectFromInference(item.content, item.sourceRef)
     this.db.prepare('DELETE FROM memory_items WHERE id = ?').run(id)
     this.db.prepare('DELETE FROM memory_fts WHERE id = ?').run(id)
     this.db.prepare('DELETE FROM memory_links WHERE from_id = ? OR to_id = ?').run(id, id)
@@ -684,14 +775,14 @@ export class MemoryStore {
     for (const row of linked) {
       const oldId = text(row.supersedes_id)
       const old = this.get(oldId)
-      if (!old || (old.status !== 'confirmed' && old.status !== 'proposed')) continue
+      if (!old || (old.status !== 'confirmed' && old.status !== 'proposed') || this.db.prepare('SELECT 1 FROM profile_entries WHERE memory_id=?').get(oldId)) continue
       this.db.prepare("UPDATE memory_items SET status = 'superseded', valid_to = COALESCE(valid_to, ?), updated_at = ? WHERE id = ?").run(at, at, oldId)
       this.event(oldId, 'superseded', text(row.id))
       superseded += 1
     }
 
     const rows = this.db.prepare(
-      "SELECT id, content, created_at FROM memory_items WHERE status = 'confirmed' ORDER BY created_at DESC, rowid DESC",
+      "SELECT id, content, created_at FROM memory_items WHERE status = 'confirmed' AND id NOT IN (SELECT memory_id FROM profile_entries) ORDER BY created_at DESC, rowid DESC",
     ).all() as Row[]
     const seen = new Map<string, string>()
     for (const row of rows) {
@@ -717,7 +808,7 @@ export class MemoryStore {
     // bounded so consolidation never turns into an unbounded model job.
     const embedderIsLocal = (this.embedder as { isLocal?: boolean }).isLocal === true
     const missingVectors = this.db.prepare(
-      "SELECT * FROM memory_items WHERE status IN ('confirmed','proposed') AND embedding IS NULL LIMIT 100",
+      "SELECT * FROM memory_items WHERE status IN ('confirmed','proposed') AND embedding IS NULL AND id NOT IN (SELECT memory_id FROM profile_entries) LIMIT 100",
     ).all() as Row[]
     for (const row of missingVectors) {
       const item = this.rowToItem(row)
@@ -900,6 +991,12 @@ export class MemoryStore {
       events: count('memory_events'),
     }
     this.db.exec(`
+      BEGIN IMMEDIATE;
+      DELETE FROM profile_entries;
+      DELETE FROM profile_people;
+      DELETE FROM profile_settings;
+      DELETE FROM profile_changes;
+      DELETE FROM memory_forget_barriers;
       DELETE FROM memory_links;
       DELETE FROM memory_events;
       DELETE FROM memory_entities;
@@ -907,6 +1004,7 @@ export class MemoryStore {
       DELETE FROM memory_items;
       DELETE FROM memory_episodes;
       DELETE FROM reminders;
+      COMMIT;
     `)
     this.db.exec('VACUUM')
     // VACUUM rewrites the database, but the write-ahead log can still hold the
@@ -916,11 +1014,11 @@ export class MemoryStore {
     return result
   }
 
-  exportAll(): { version: 2; exportedAt: string; items: MemoryItem[]; episodes: Episode[] } {
+  exportAll(): { version: 2; exportedAt: string; items: MemoryItem[]; episodes: Episode[]; profile: Record<string, unknown[]> } {
     // Export is a user-requested full copy: never route it through the
     // paginated UI queries, which silently stop at 200 rows.
     const items = (this.db.prepare('SELECT * FROM memory_items ORDER BY updated_at DESC').all() as Row[])
-      .map(row => this.rowToItem(row))
+      .map(row => ({...this.rowToItem(row), profileValue: row.profile_value ? JSON.parse(String(row.profile_value)) : undefined}))
     const episodes = (this.db.prepare('SELECT * FROM memory_episodes ORDER BY started_at DESC').all() as Row[])
       .map(row => ({
         id: text(row.id),
@@ -934,7 +1032,7 @@ export class MemoryStore {
         sensitivity: text(row.sensitivity, 'standard') as MemorySensitivity,
         createdAt: text(row.created_at),
       }))
-    return { version: 2, exportedAt: this.at(), items, episodes }
+    return { version: 2, exportedAt: this.at(), items, episodes, profile: Object.fromEntries(['profile_entries','profile_people','profile_settings','profile_changes','memory_forget_barriers'].map(table => [table,this.db.prepare(`SELECT * FROM ${table}`).all()])).valueOf() as Record<string, unknown[]> }
   }
 
   migrateV1(file: string): { imported: number; skipped: number } {

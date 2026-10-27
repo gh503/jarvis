@@ -1,3 +1,4 @@
+import type { ProfileStore } from '../profile.ts'
 import type { Logger } from '../logger.ts'
 import type { ModelClient } from '../model/ollama.ts'
 import type { MemoryStore } from './store.ts'
@@ -63,9 +64,11 @@ export class MemoryExtractor {
     private readonly model: ModelClient,
     private readonly store: MemoryStore,
     private readonly logger?: Logger,
+    private readonly profile?: ProfileStore,
   ) {}
 
   async maybeExtract(userText: string, assistantText: string, sourceRef: string): Promise<number> {
+    if (this.profile && !this.profile.snapshot().settings.learningEnabled) return 0
     if (!shouldExtract(userText, assistantText)) return 0
     const prompt = [
       '你是一个记忆抽取器。只从“用户说的话”里抽取值得长期记住的事实、偏好、决定、承诺或截止日期。',
@@ -78,10 +81,16 @@ export class MemoryExtractor {
     ].join('\n')
 
     try {
-      const output = await this.model.chatOnce(
+      const mutationEpoch = this.store.mutationEpoch?.()
+      const extractionClient = this.profile ? (this.model.localClient?.() ?? this.model) : this.model
+      if (this.profile && extractionClient.isLocal !== true) return 0
+      const output = await extractionClient.chatOnce(
         [{ role: 'user', content: prompt }],
         { temperature: 0.1, timeoutMs: 45_000 },
       )
+      // Off/on toggles and corrections invalidate the entire in-flight inference.
+      if (mutationEpoch !== this.store.mutationEpoch?.()) return 0
+      if (this.profile && !this.profile.snapshot().settings.learningEnabled) return 0
       const candidates = parseExtraction(output)
       const known = new Set(
         this.store
@@ -100,7 +109,7 @@ export class MemoryExtractor {
         const sensitivity = SENSITIVITIES.has(candidate.sensitivity as MemorySensitivity)
           ? (candidate.sensitivity as MemorySensitivity)
           : 'standard'
-        await this.store.add({
+        const item = await this.store.add({
           kind,
           content,
           gist: candidate.gist,
@@ -109,9 +118,19 @@ export class MemoryExtractor {
           trust: 'low',
           confidence: 0.55,
           importance: candidate.importance,
-          sensitivity,
+          // Protect raw self assertions before add() can request embeddings.
+          sensitivity: this.profile ? 'sensitive' : sensitivity,
           status: 'proposed',
         })
+        // Require literal first-person evidence, not a model's attribution of
+        // quoted, third-party, screen or hypothetical text to the user.
+        const evidence = userText.trim().replace(/\s+/g, '').replace(/[。！？.!?]/g, '').toLowerCase()
+        if (/^我(?:喜欢|爱好|住在|搬到|的|从事|是|希望|习惯)/u.test(userText.trim())
+          && !/[“”"「」]|(?:假如|假设|如果|例如|比如|屏幕|截图|OCR)/iu.test(userText)
+          && evidence.includes(normalized)) {
+          // Reference this exact proposal; never create a second memory.
+          this.profile?.observeMemory(item)
+        }
         added += 1
       }
       if (added > 0) this.logger?.info('background memory extraction added proposals', { added })

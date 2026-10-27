@@ -1,10 +1,10 @@
 /* A deliberately small shell cache. API responses and media are never cached.
    The shell is network-first so a local update is visible on the next load;
    the cache is only an offline fallback. */
-const CACHE = 'jarvis-shell-v26'
+const CACHE = 'jarvis-shell-v27'
 const SHELL = [
   '/', '/pair', '/pair.js', '/theme-boot.js', '/styles.css', '/studio.css', '/pair.css',
-  '/app.js', '/theme.js', '/studio.js', '/visual.js', '/manifest.webmanifest',
+  '/app.js', '/theme.js', '/studio.js', '/visual.js', '/profile.js', '/profile.css', '/manifest.webmanifest',
   '/providers', '/providers.js', '/providers.css',
   '/install', '/install.js',
   '/icons/icon-192.png', '/icons/icon-512.png', '/icons/apple-touch-icon.png', '/icons/jarvis.svg',

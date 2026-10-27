@@ -18,6 +18,7 @@ import type { AttentionManager } from './attention.ts'
 import type { JarvisConfig } from './config.ts'
 import type { Conversation } from './conversation.ts'
 import { SessionStoreError, type SessionStore } from './sessions.ts'
+import { ProfileError, type ProfileStore, type ProfileEntryInput, type ProfilePersonInput } from './profile.ts'
 import type { EventBus, JarvisEvent } from './events.ts'
 import type { Logger } from './logger.ts'
 import type { MemoryStore } from './memory/store.ts'
@@ -43,6 +44,7 @@ export interface ServerDeps {
   actions: ActionManager
   memory: MemoryStore
   sessions?: SessionStore
+  profile?: ProfileStore
   reminders: ReminderStore
   policy: ProactivePolicy
   secure: SecureFiles
@@ -114,7 +116,7 @@ class HttpError extends Error {
 /** Keep deliberate 4xx errors distinct from unexpected 5xx failures. */
 function errorStatus(error: unknown, fallback = 500): number {
   if (error instanceof HttpError) return error.status
-  if (error instanceof SessionStoreError) return error.statusCode
+  if (error instanceof SessionStoreError || error instanceof ProfileError) return error.statusCode
   if (error instanceof URIError) return 400
   return fallback
 }
@@ -911,6 +913,73 @@ export class JarvisServer {
       return
     }
 
+    if (path === '/api/profile' || path.startsWith('/api/profile/')) {
+      const profile = this.deps.profile
+      if (!profile) throw new HttpError(503, '个人资料尚未启用')
+      const changed = () => {
+        this.deps.conversation.invalidateProfileUsage?.()
+        this.deps.bus.emit('profile.changed', { at: Date.now() })
+      }
+      if (path === '/api/profile' && request.method === 'GET') {
+        sendJson(response, 200, profile.snapshot())
+        return
+      }
+      if (path === '/api/profile/entries' && request.method === 'POST') {
+        const body = await readJson<ProfileEntryInput>(request)
+        const previous = body.id ? profile.snapshot().entries.find(entry => entry.id === body.id) : undefined
+        // A browser may edit facts, never forge provenance or bypass user locks.
+        const entry = profile.saveEntry({ id: body.id, expectedRevision: body.expectedRevision,
+          subjectId: body.subjectId, category: body.category, field: body.field, value: body.value,
+          content: body.content, status: body.status, usage: body.usage, scope: body.scope,
+          sourceKind: 'user-confirmed', sourceRef: 'profile:manual', userLocked: true })
+        if (previous?.sourceRef.startsWith('turn:')) this.deps.sessions?.excludeTurnFromContext(previous.sourceRef.slice(5))
+        changed()
+        sendJson(response, body.id ? 200 : 201, { entry })
+        return
+      }
+      if (path === '/api/profile/people' && request.method === 'POST') {
+        const body = await readJson<ProfilePersonInput>(request)
+        const person = profile.savePerson({ id: body.id, expectedRevision: body.expectedRevision, name: body.name, relationship: body.relationship })
+        changed()
+        sendJson(response, body.id ? 200 : 201, { person })
+        return
+      }
+      if (path === '/api/profile/settings' && request.method === 'PATCH') {
+        const body = await readJson<{ learningEnabled?: boolean; useEnabled?: boolean }>(request)
+        const settings = profile.updateSettings({ ...(body.learningEnabled === undefined ? {} : { learningEnabled: body.learningEnabled }), ...(body.useEnabled === undefined ? {} : { useEnabled: body.useEnabled }) })
+        for (const entry of profile.snapshot().entries) if (entry.sourceRef.startsWith('turn:')) this.deps.sessions?.excludeTurnFromContext(entry.sourceRef.slice(5))
+        changed()
+        sendJson(response, 200, { settings })
+        return
+      }
+      const match = /^\/api\/profile\/(entries|people)\/([a-zA-Z0-9_-]{1,128})(\/source)?$/.exec(path)
+      if (match) {
+        const [, kind, id, action] = match
+        if (kind === 'entries' && action === '/source' && request.method === 'GET') {
+          const entry = profile.snapshot().entries.find(item => item.id === id)
+          if (!entry) throw new HttpError(404, '这条理解已不存在')
+          const memory = this.deps.memory.get(entry.memoryId)
+          const turnId = memory?.sourceRef.startsWith('turn:') ? memory.sourceRef.slice(5) : undefined
+          const turn = turnId ? this.deps.sessions?.getTurn(turnId) : undefined
+          sendJson(response, 200, turn ? { available: true, text: turn.user.content, sessionId: turn.user.sessionId, turnId } : {
+            available: false, reason: memory?.sourceRef === 'profile:manual' ? '由你在资料页直接填写或订正' : '原始对话不可用，可能已删除或来自旧版本记忆',
+          })
+          return
+        }
+        if (!action && request.method === 'DELETE') {
+          const body = await readJson<{ expectedRevision: number }>(request)
+          const sources = profile.snapshot().entries.filter(entry => kind === 'entries' ? entry.id === id : entry.subjectId === id).map(entry => entry.sourceRef)
+          if (kind === 'entries') profile.deleteEntry(id, body.expectedRevision)
+          else profile.deletePerson(id, body.expectedRevision)
+          for (const source of sources) if (source.startsWith('turn:')) this.deps.sessions?.excludeTurnFromContext(source.slice(5))
+          changed()
+          sendJson(response, 200, { ok: true })
+          return
+        }
+      }
+      throw new HttpError(404, '个人资料接口不存在')
+    }
+
     if (path === '/api/sessions' || path.startsWith('/api/sessions/')) {
       const store = this.deps.sessions
       if (!store) throw new HttpError(503, '会话存储未启用')
@@ -1196,6 +1265,11 @@ export class JarvisServer {
     const memoryMatch = path.match(/^\/api\/memory\/([^/]+)(?:\/(confirm|reject))?$/)
     if (memoryMatch) {
       const id = memoryMatch[1]
+      const profileEntry = this.deps.profile?.snapshot().entries.find(entry => entry.memoryId === id)
+      if (profileEntry && ['POST', 'DELETE'].includes(request.method ?? '')) {
+        this.deps.conversation.invalidateProfileUsage?.()
+        if (profileEntry.sourceRef.startsWith('turn:')) this.deps.sessions?.excludeTurnFromContext(profileEntry.sourceRef.slice(5))
+      }
       if (request.method === 'DELETE' && !memoryMatch[2]) {
         if (!this.deps.memory.delete(id)) {
           sendJson(response, 404, { ok: false, error: 'memory not found' })

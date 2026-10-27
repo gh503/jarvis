@@ -38,6 +38,8 @@ export interface MemoryItem {
   pinned: boolean
   retention: MemoryRetention
   expiresAt: string | null
+  /** Canonical structured profile value, present on full privacy exports only. */
+  profileValue?: unknown
 }
 
 export interface MemoryInput {
