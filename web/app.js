@@ -28,6 +28,7 @@ const state = {
   reminders: [],
   focus: false,
   muted: localStorage.getItem('jarvis_muted') === '1',
+  sendShortcut: localStorage.getItem('jarvis_send_shortcut') === 'ctrl-enter' ? 'ctrl-enter' : 'enter',
   busy: false,
   cancelling: false,
   cancelTimer: 0,
@@ -1826,6 +1827,15 @@ function appearanceCardHtml() {
         ${[['dark', '深色'], ['light', '浅色'], ['auto', '跟随系统']].map(([mode, label]) => `<button type="button" class="segment${themeMode === mode ? ' active' : ''}" data-theme-mode="${mode}" role="radio" aria-checked="${themeMode === mode}">${label}</button>`).join('')}
       </div>
     </div>
+    <div class="settings-form-grid">
+      <label class="settings-field wide"><span>发送快捷键</span>
+        <select id="send-shortcut">
+          <option value="enter" ${state.sendShortcut === 'enter' ? 'selected' : ''}>Enter 发送 · Shift+Enter 换行</option>
+          <option value="ctrl-enter" ${state.sendShortcut === 'ctrl-enter' ? 'selected' : ''}>Ctrl+Enter 发送 · Enter 换行</option>
+        </select>
+      </label>
+    </div>
+    <p class="settings-hint" id="send-shortcut-status" role="status">立即生效，自动保存在当前浏览器。</p>
     <div class="settings-card-head"><div><h4>预设</h4><p>一键切换整套视觉参数。</p></div></div>
     <div class="appearance-presets">
       ${presets.map(preset => `<button type="button" class="model-action appearance-preset" data-preset="${escapeHtml(preset.id)}" title="${escapeHtml(preset.description || '')}">${escapeHtml(preset.label)}</button>`).join('')}
@@ -2243,6 +2253,16 @@ function bindAppearance() {
   if (!card || card.dataset.bound) return
   card.dataset.bound = '1'
   const result = $('#appearance-result')
+  $('#send-shortcut')?.addEventListener('change', event => {
+    state.sendShortcut = event.target.value === 'ctrl-enter' ? 'ctrl-enter' : 'enter'
+    updateSendShortcutHint()
+    try {
+      localStorage.setItem('jarvis_send_shortcut', state.sendShortcut)
+      $('#send-shortcut-status').textContent = '已保存，立即生效。'
+    } catch {
+      $('#send-shortcut-status').textContent = '已生效，但浏览器阻止了保存；刷新后需要重新选择。'
+    }
+  })
   card.querySelectorAll('#appearance-theme .segment').forEach(button => {
     button.addEventListener('click', () => {
       window.JarvisTheme?.set(button.dataset.themeMode)
@@ -3163,10 +3183,25 @@ function setTab(name) {
   if (name === 'runtime') renderRuntime()
 }
 
+function updateSendShortcutHint() {
+  const ctrl = state.sendShortcut === 'ctrl-enter'
+  const hint = ctrl ? 'Ctrl+Enter 发送，Enter 换行' : 'Enter 发送，Shift+Enter 换行'
+  $('#input').placeholder = `说点什么…  ${hint}`
+  $('#input').setAttribute('aria-description', hint)
+  $('#send-btn').title = ctrl ? '发送（Ctrl+Enter）' : '发送（Enter）'
+  $('#send-btn').setAttribute('aria-keyshortcuts', ctrl ? 'Control+Enter' : 'Enter')
+  const help = $('#send-shortcut-help')
+  if (help) help.textContent = `${hint} · 按住麦克风说话`
+}
+
 function bind() {
+  updateSendShortcutHint()
   $('#send-btn').addEventListener('click', () => sendText($('#input').value))
   $('#input').addEventListener('keydown', event => {
-    if (event.key === 'Enter' && !event.shiftKey) {
+    if (event.isComposing || event.keyCode === 229 || event.repeat) return
+    const send = event.key === 'Enter' && !event.shiftKey && !event.altKey && !event.metaKey
+      && (state.sendShortcut === 'ctrl-enter' ? event.ctrlKey : !event.ctrlKey)
+    if (send) {
       event.preventDefault()
       sendText($('#input').value)
     }
