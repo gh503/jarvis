@@ -194,6 +194,7 @@ Shell 依赖 Linux `/usr/bin/bwrap` 和可用的隔离能力；探测失败时�
   **只影响当前浏览器**；首屏由 `theme-boot.js` 预先设好，避免闪白。
 - 主题色、动效、密度、字号属于服务端调参（`PUT /api/tuning`），对所有设备生效，
   写入 `data/tuning.json`。
+- 阅读字号按层级统一：正文与表单输入约 16px，导航与标签 14px，说明 13–14px，常规辅助标记至少 12px；标题保留独立层级，密集图表刻度单独处理。现有字号缩放继续生效，窄屏不通过缩小正文来塞入内容。
 - 颜色通过两个变量分发：`--accent-h`（色相）与 `--accent-rgb`（通道）。
   改色必须同时更新两者，否则会出现“只有一半界面变色”。
 - 遵循 `prefers-reduced-motion`；系统设置优先于界面里的动效强度。
@@ -201,7 +202,7 @@ Shell 依赖 Linux `/usr/bin/bwrap` 和可用的隔离能力；探测失败时�
 ## 4. PWA 与离线
 
 `web/sw.js` 是 network-first 的 shell 缓存，版本号在 `CACHE` 常量（当前
-`jarvis-shell-v31`）：
+`jarvis-shell-v34`）：
 
 - 只缓存 GET 同源请求；`/api/*`、`/ws`、带 `token` 参数的 URL 一律不缓存。
 - 导航请求离线时回退到 `/`；脚本/样式等非导航请求离线返回 503，不会把 HTML 当 JS。

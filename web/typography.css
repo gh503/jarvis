@@ -1,0 +1,342 @@
+/* Main index only; load after component styles. User text scale is already
+   applied by visual.js as body zoom: never multiply these sizes by it again. */
+:root {
+  --type-body: 16px;
+  --type-reading: 15px;
+  --type-label: 14px;
+  --type-helper: 13px;
+  --type-meta: 12px;
+  --type-section: 18px;
+  --type-page: clamp(28px, 2.8vw, 36px);
+  --leading-reading: 1.7;
+  --leading-ui: 1.5;
+}
+body { font-size: var(--type-body); }
+
+/* Conversation and its supporting panels. */
+.empty-state h1, .studio-header h1, .profile-header h2,
+#modal.settings-open .modal-head h2 {
+  font-size: var(--type-page);
+  line-height: 1.25;
+}
+.bubble, .profile-value, .profile-source-text {
+  font-size: var(--type-body);
+  line-height: var(--leading-reading);
+}
+.empty-copy, .memory-text, .reminder-text, .brief-list li,
+.modal-body p, .history-session span {
+  font-size: var(--type-reading);
+  line-height: var(--leading-reading);
+}
+.state-hint, .privacy-note, .side-head p, .runtime-block p,
+.empty-list, .memory-why, .capture-meta small, .hint,
+.session-notice, .history-confirm p {
+  font-size: var(--type-helper);
+  line-height: var(--leading-reading);
+}
+.brand-copy strong, .quick span, .capture-meta strong,
+.runtime-block h3, .runtime-grid dt, .setting-row,
+.history-confirm label { font-size: var(--type-label); line-height: var(--leading-ui); }
+.brand-copy span, .connection-pill, .model-pill, .mini-stats span,
+.eyebrow, .bubble .meta, .capture-meta span, .kind-badge, .status-badge,
+.memory-source, .reminder-time, .runtime-grid dd,
+.setting-row span:last-child, .brief-list li small, .action-target,
+.history-session small, #history-status, #history-page {
+  font-size: var(--type-meta);
+  line-height: var(--leading-ui);
+}
+.message.system .bubble { font-size: var(--type-helper); line-height: var(--leading-reading); }
+.side-head h2, .session-header h2, .modal-body h3 { font-size: var(--type-body); line-height: var(--leading-ui); }
+.modal-head h2 { font-size: 20px; line-height: 1.4; }
+.modal-body code { font-size: var(--type-helper); }
+.app-shell kbd, .modal kbd, .studio kbd { font-size: var(--type-meta); }
+.presence-panel { overflow-y: auto; }
+.memory-card, .memory-text { min-width: 0; overflow-wrap: anywhere; }
+#modal.settings-open .muted.small,
+#modal.settings-open .settings-field > small { font-size: var(--type-helper); line-height: var(--leading-reading); }
+.provider-rank { font-size: var(--type-meta); line-height: var(--leading-ui); }
+
+/* Named text buttons only: ornament, glyphs and SVG dimensions stay intact. */
+.prompt-chips button, .quick, .mic-btn, .side-tab, .text-btn,
+.memory-actions button, .reminder-row button, .modal-actions button,
+.model-action, .provider-foot .model-action, .provider-tools .model-action,
+.provider-guide-actions .model-action, .voice-preset, .voice-add,
+.segmented .segment, .s-btn, .inspector-actions .s-btn, .s-link,
+.filter-chip, .studio-close-link, .profile-button,
+.profile-rail-foot .profile-close-link, .profile-header .profile-close,
+.tools-button, .lt-button, .mcp-services-button, .history-dialog button {
+  font-size: var(--type-label);
+  line-height: var(--leading-ui);
+  min-height: 40px;
+  max-width: 100%;
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+.icon-btn, .icon-btn.small, .send-btn, .studio-icon-btn, .s-icon-btn,
+.voice-icon, #modal.settings-open #modal-close {
+  min-width: 40px;
+  min-height: 40px;
+  flex-shrink: 0;
+}
+
+/* Editable text is 16px on every viewport, including focused mobile fields.
+   Explicit control selectors avoid changing checkbox, range or switch geometry. */
+.composer textarea, .search-row input, .model-form input,
+.device-pair-row input, .settings-field input:not([type="range"]):not([type="checkbox"]),
+.settings-field select, .settings-field textarea, .inline-control select,
+.source-switch select, .scenario-pin select, .scenario-default select,
+.scenario-extra, .graph-controls input, .graph-controls select,
+.tuning-tools input, .event-toolbar input, .recall-form input,
+.range-row .num-input, .control select, .text-input,
+.profile-field input, .profile-field select, .profile-field textarea,
+.tools-field input, .tools-field select, .tools-field textarea,
+.lt-field input, .lt-field textarea, .mcp-services-dialog input,
+.mcp-services-dialog select, .history-dialog input, .history-dialog select {
+  font-size: var(--type-body);
+  line-height: var(--leading-ui);
+  min-height: 40px;
+  min-width: 0;
+  max-width: 100%;
+}
+.composer textarea, .settings-field textarea, .scenario-extra,
+.profile-field textarea, .tools-field textarea, .lt-field textarea {
+  line-height: var(--leading-reading);
+}
+.composer textarea { min-width: 0; }
+
+/* Shared settings content: model, voice, scenarios, privacy, system and appearance. */
+.settings-section-head h3 { font-size: 20px; line-height: 1.4; }
+.settings-card-head h4, .voice-card-head strong, .provider-guide-title {
+  font-size: var(--type-section);
+  line-height: 1.4;
+}
+.settings-section-head p, .settings-card-head p, .erase-confirm p,
+.onboard-grid span, .scenario-chain-help {
+  font-size: var(--type-reading);
+  line-height: var(--leading-reading);
+}
+.settings-field, .model-form label, .erase-confirm label,
+.settings-advanced summary, .source-switch, .voice-local-summary,
+.voice-chain-title strong, .voice-form-head strong,
+.scenario-auto, .scenario-default, .scenario-enable-copy strong,
+.scenario-chain-field legend, .scenario-chain-item,
+.provider-title, .provider-pick b, .model-card-top strong,
+.device-row b, .onboard-grid b, .capability {
+  font-size: var(--type-label);
+  line-height: var(--leading-ui);
+}
+.settings-overview-item strong, .settings-stat strong,
+.provider-model, .model-card-name, .scenario-title {
+  font-size: var(--type-reading);
+  line-height: var(--leading-ui);
+}
+.settings-field em, .settings-feedback, .settings-notice, .settings-loading,
+.model-form-head, .model-list-status, .provider-meta, .provider-foot,
+.provider-pick span, .model-card-meta, .model-section-note,
+.device-row small, .pair-result span, .voice-presets-label,
+.voice-presets-more, .voice-chain-count, .voice-chain-meta,
+.voice-local-summary small, .scenario-meta, .scenario-enable-copy small {
+  font-size: var(--type-helper);
+  line-height: var(--leading-reading);
+}
+/* These three existing components declare important sizes in styles.css. */
+.settings-hint, .model-form-note, .model-result {
+  font-size: var(--type-helper) !important;
+  line-height: var(--leading-reading) !important;
+}
+.settings-overview-item small, .settings-stat small,
+.settings-dirty, .settings-inline-dirty, .settings-chip,
+.provider-badge, .model-card-badge, .voice-kicker, .voice-chain-order,
+.voice-chain-badge, .voice-chain-preferred, .voice-chain-live,
+.voice-chain-cooling, .scenario-custom-tag {
+  font-size: var(--type-meta);
+  line-height: var(--leading-ui);
+}
+.settings-field > span { flex-wrap: wrap; }
+.settings-field, .provider-main, .model-card-main { overflow-wrap: anywhere; }
+.settings-actions, .model-form-actions, .modal-actions,
+.provider-tools, .memory-actions { flex-wrap: wrap; }
+.provider-top, .provider-foot, .model-card-top, .voice-card-head,
+.voice-form-head, .voice-chain-head, .settings-card-head,
+.scenario-row-head, .device-row { flex-wrap: wrap; }
+.provider-title, .provider-model, .provider-meta,
+.voice-chain-meta, .voice-local-summary b, .voice-local-summary span {
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+.voice-chain-row { flex-wrap: wrap; }
+.voice-chain-main { flex-basis: 150px; }
+.voice-chain-actions { flex-wrap: wrap; }
+.inline-control .model-action { height: auto; min-height: 40px; }
+
+/* Observatory shell and readable primary information; SVG chart scales remain
+   in their original coordinate system, rather than inheriting UI text sizes. */
+.studio-brand strong, .profile-brand strong,
+#modal.settings-open .settings-brand strong { font-size: var(--type-label); line-height: var(--leading-ui); }
+.studio-brand span, .profile-brand div > span,
+#modal.settings-open .settings-brand div > span,
+.studio-eyebrow, .s-eyebrow, .profile-eyebrow,
+#modal.settings-open .settings-eyebrow {
+  font-size: var(--type-meta);
+  line-height: var(--leading-ui);
+  letter-spacing: .12em;
+}
+.studio-nav-item strong, .profile-nav-item,
+#modal.settings-open .settings-nav-copy strong {
+  font-size: var(--type-label);
+  line-height: var(--leading-ui);
+}
+.studio-nav-item small, #modal.settings-open .settings-nav-copy small,
+#modal.settings-open .tab-badge {
+  font-size: var(--type-meta);
+  line-height: var(--leading-ui);
+  letter-spacing: .03em;
+}
+.studio-nav-item, .profile-nav-item, #modal.settings-open .settings-tab {
+  min-height: 40px;
+  flex-shrink: 0;
+}
+.studio-rail { overflow-y: auto; }
+.studio-rail-foot, #modal.settings-open .settings-rail-foot { flex-shrink: 0; }
+.studio-healthline, .studio-rail-foot > span, .profile-rail-foot,
+#modal.settings-open .settings-rail-foot,
+#modal.settings-open .settings-rail-loading { font-size: var(--type-helper); line-height: var(--leading-reading); }
+.studio-subtitle, .profile-subtitle, #modal.settings-open .settings-subtitle,
+.memory-hero p, .tuning-hero p, .config-hero p,
+.waterfall-text, .graph-empty p, .inspector-content, .s-error p {
+  font-size: var(--type-reading);
+  line-height: var(--leading-reading);
+}
+.memory-hero h2, .tuning-hero h2, .config-hero h2 {
+  font-size: clamp(24px, 2.4vw, 30px);
+  line-height: 1.3;
+}
+.s-panel-head h2 { font-size: var(--type-section); line-height: 1.4; }
+.signal-title, .graph-empty strong, .inspector-empty strong,
+.waterfall-head b, .recall-head strong, .preset-btn strong,
+.control-head label { font-size: var(--type-label); line-height: var(--leading-ui); }
+.s-panel-head p, .s-kpi > small, .signal-model, .signal-meta,
+.trace-foot, .s-empty-chart small, .inspector-empty p,
+.recall-idle, .recall-summary, .preset-btn span,
+.control p, .switch-row em, .group-foot span,
+.tuning-context > span, .tuning-impact p, .tuning-file small,
+.security-item small, .studio-toast, .dev-actions span, .studio .muted.small {
+  font-size: var(--type-helper);
+  line-height: var(--leading-reading);
+}
+.s-kpi > span, .s-empty-chart span, .pipe b,
+.health-grid span, .system-rows span, .system-rows b,
+.legend-row, .s-table, .config-row span, .config-row code,
+.security-item span, .security-item b, .tuning-context strong {
+  font-size: var(--type-label);
+  line-height: var(--leading-ui);
+}
+.studio-live, .s-pill, .filter-chip b, .signal-orb > span,
+.pipe span, .stage-row > span, .stage-row b, .chart-legend,
+.waterfall-head span, .waterfall-legend, .event-row time,
+.event-type, .health-grid small, .memory-hero-side,
+.zoom-label, .graph-legend, .graph-hint, .inspector-id,
+.inspector-meta span, .inspector-meta b, .inspector-subhead,
+.inspector-source span, .inspector-source code, .recall-head b,
+.recall-why .s-pill, .s-table th, .tuning-bar small,
+.control-tags output, .apply-tag, .range-row .unit,
+.preview-values, .preview-orb > span, .tuning-file span,
+.tuning-file code, .event-detail summary time, .event-detail summary i {
+  font-size: var(--type-meta);
+  line-height: var(--leading-ui);
+}
+.event-row p, .event-detail summary p, .trace-row,
+.tuning-bar span, .raw-json, .event-detail pre {
+  font-size: var(--type-helper);
+  line-height: var(--leading-reading);
+}
+.s-kpi > small, .event-row p, .event-detail summary p,
+.config-row span { white-space: normal; overflow-wrap: anywhere; }
+.s-panel-head, .control-head, .group-foot, .trace-foot,
+.config-actions, .tuning-bar-actions, .pipeline { flex-wrap: wrap; }
+.stage-row { grid-template-columns: 80px minmax(0, 1fr) 75px; }
+.event-row { grid-template-columns: 65px 90px minmax(0, 1fr); }
+.event-detail summary { grid-template-columns: 65px 100px minmax(0, 1fr) 70px; }
+.range-row .num-input { width: 85px; }
+.range-row .num-input.wide { width: 110px; }
+
+/* Profile data and integrated tool settings. */
+.profile-section-head h3, .profile-section-head h4 { font-size: var(--type-section); line-height: 1.4; }
+.profile-card-head strong, .profile-field, .profile-switch,
+.tools-field, .tools-check, .lt-field, .lt-check,
+.mcp-services-field { font-size: var(--type-label); line-height: var(--leading-ui); }
+.profile-help, .profile-empty, .profile-muted, .profile-derived,
+.profile-log, .tools-card p, .lt-body p, .lt-plan,
+.mcp-services-dialog p, .mcp-services-confirm p {
+  font-size: var(--type-reading);
+  line-height: var(--leading-reading);
+}
+.profile-meta, .profile-status, .tools-help, .tools-meta,
+.tools-notice, .tools-warning, .tools-details, .lt-help,
+.lt-notice, .lt-warning, .lt-check small,
+.mcp-services-muted, .mcp-services-field small,
+.mcp-services-help, .mcp-services-notice {
+  font-size: var(--type-helper);
+  line-height: var(--leading-reading);
+}
+.profile-badge, .mcp-services-category { font-size: var(--type-meta); line-height: var(--leading-ui); }
+.tools-code, .lt-dialog pre { font-size: var(--type-helper); line-height: var(--leading-reading); }
+.tools-card h4, .lt-card h4 { font-size: var(--type-body); line-height: var(--leading-ui); }
+.mcp-services-dialog h3 { font-size: var(--type-section); line-height: 1.4; }
+
+/* Keep nine settings destinations reachable at short desktop heights. */
+@media (min-width: 761px) {
+  #modal.settings-open .settings-brand { padding-bottom: 20px; }
+  #modal.settings-open .settings-tab { padding-block: 8px; }
+  #modal.settings-open .settings-tabs-wrap { flex-shrink: 0; }
+}
+@media (max-width: 1080px) {
+  .studio-shell { grid-template-rows: auto minmax(0, 1fr); }
+  .studio-rail { overflow-x: auto; }
+  .studio-nav { flex-shrink: 0; }
+  .studio-nav-item { white-space: nowrap; }
+}
+@media (max-width: 760px) {
+  .composer-meta { flex-wrap: wrap; }
+  .settings-form-grid, .model-form-row { grid-template-columns: minmax(0, 1fr); }
+  .inline-control, .model-select-row, .source-switch { flex-wrap: wrap; }
+  .inline-control select, .model-select-row select { flex-basis: 140px; }
+  .settings-field > span, .capability { overflow-wrap: anywhere; }
+  .profile-brand div, #modal.settings-open .settings-brand div { flex-wrap: wrap; }
+  .studio-header-actions { flex-wrap: wrap; }
+  .event-detail summary { grid-template-columns: 65px minmax(0, 1fr); }
+  .event-detail summary p { grid-column: 1 / -1; }
+  .trace-row { grid-template-columns: repeat(4, minmax(0, 1fr)); overflow-wrap: anywhere; }
+  .config-row { flex-wrap: wrap; }
+  .config-row code { text-align: left; }
+}
+@media (max-width: 560px) {
+  /* Five topbar actions need their own row at 320px; retain every control. */
+  .topbar { height: auto; flex-basis: auto; flex-wrap: wrap; padding-block: 10px; gap: 8px 12px; }
+  .topbar-actions { flex-basis: 100%; justify-content: flex-end; }
+  .brand-copy strong { font-size: var(--type-label); }
+  .composer { flex-wrap: wrap; }
+  .composer textarea { flex-basis: 100%; }
+  .composer-actions { margin-left: auto; }
+  .capture-preview { flex-wrap: wrap; }
+  .capture-meta { flex-basis: 120px; }
+  .prompt-chips button, .mic-btn, .side-tab, .text-btn,
+  .memory-actions button, .reminder-row button { min-height: 42px; }
+  .provider-quick { grid-template-columns: minmax(0, 1fr); }
+  .segmented { flex-wrap: wrap; max-width: 100%; }
+  .settings-stat strong { white-space: normal; overflow-wrap: anywhere; }
+  .source-switch select { width: 100%; }
+  .voice-chain-actions { flex-basis: 100%; justify-content: flex-end; }
+  .s-kpis { gap: 8px; }
+  .s-kpi { padding: 12px; }
+  .s-panel-head { gap: 8px; }
+  .event-row { grid-template-columns: 65px minmax(0, 1fr); }
+  .event-row p { grid-column: 1 / -1; }
+  .security-item { grid-template-columns: minmax(0, 1fr); }
+  .security-item b { overflow-wrap: anywhere; }
+  .donut-layout { flex-wrap: wrap; }
+  .graph-controls, .tuning-tools, .recall-form { flex-wrap: wrap; }
+  .graph-controls input, .graph-controls select, .event-toolbar input { max-width: 100%; }
+  .profile-header { flex-wrap: wrap; }
+  .mcp-services-row, .tools-row, .lt-header { overflow-wrap: anywhere; }
+}
