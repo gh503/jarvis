@@ -63,6 +63,14 @@ export async function runToolLoop(input:ToolLoopInput):Promise<ToolLoopResult> {
       calls.push(call.id)
       localOnly ||= result.localOnly
       uncertain ||= result.status==='unknown'
+      // Mutations invalidate the context used for this request. Finish with a deterministic
+      // acknowledgement instead of sending stale facts to another model step.
+      if(result.status==='succeeded'&&['memory_propose','memory_correct','memory_forget'].includes(call.name)) {
+        input.options.signal?.throwIfAborted()
+        const finalText=call.name==='memory_forget'?'已遗忘指定记忆，并排除相关旧对话与摘要。':call.name==='memory_correct'?'已订正指定记忆，并使相关旧对话与摘要失效。':'已保存记忆候选，等待你确认后才作为长期事实使用。'
+        input.delta(finalText)
+        return {text:finalText,calls,localOnly:true,uncertain}
+      }
       input.check()
       messages.push({role:'tool',toolCallId:call.id,name:call.name,content:result.content})
       // Once local data enters, it cannot be sent to remote tools later in the same turn.

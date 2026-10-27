@@ -1,0 +1,47 @@
+/* Native local-tools surfaces use the existing semantic theme colors. */
+.lt-dialog { box-sizing: border-box; width: min(760px, calc(100vw - 32px)); max-width: none; max-height: calc(100dvh - 32px); padding: 0; color: var(--text, #e9eef4); background: var(--bg-solid, #10161d); border: 1px solid var(--line-strong, #39414b); border-radius: 18px; font-family: var(--font, system-ui, sans-serif); box-shadow: 0 24px 100px rgb(0 0 0 / .4); }
+.lt-dialog[open] { display: flex; flex-direction: column; }
+.lt-dialog *, .lt-dialog *::before, .lt-dialog *::after { box-sizing: border-box; }
+.lt-dialog::backdrop { background: rgb(0 0 0 / .65); backdrop-filter: blur(5px); }
+.lt-header { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex: none; padding: 18px 22px; border-bottom: 1px solid var(--line, #29313b); }
+.lt-header h2 { margin: 0; font-size: 22px; overflow-wrap: anywhere; }
+.lt-body { overflow: auto; min-height: 0; padding: 0 22px 24px; overscroll-behavior: contain; }
+.lt-body section { margin-top: 26px; padding-top: 12px; border-top: 1px solid var(--line, #29313b); }
+.lt-body h3 { font-size: 17px; margin: 16px 0 10px; }
+.lt-body p, .lt-body li, .lt-body legend, .lt-body h4 { overflow-wrap: anywhere; line-height: 1.6; }
+.lt-notice, .lt-help { color: var(--muted, #a5afbd); font-size: 13px; line-height: 1.7; }
+.lt-notice { min-height: 1.7em; }
+.lt-warning { color: var(--amber, #f3b36a); font-size: 13px; }
+.lt-controls { min-width: 0; border: 0; padding: 0; margin: 0; }
+.lt-controls > legend { font-weight: 600; margin-bottom: 8px; }
+.lt-field { display: flex; flex-direction: column; gap: 7px; min-width: 0; margin: 15px 0; font-size: 13px; }
+.lt-field input, .lt-field textarea { width: 100%; min-width: 0; min-height: 44px; padding: 10px; border: 1px solid var(--line-strong, #39414b); border-radius: 8px; color: var(--text, #e9eef4); background: var(--bg, #080b0f); font: inherit; }
+.lt-field textarea { resize: vertical; line-height: 1.6; }
+.lt-field input[readonly] { color: var(--muted, #a5afbd); }
+.lt-check { display: flex; align-items: flex-start; gap: 10px; padding: 10px 0; font-size: 14px; line-height: 1.6; overflow-wrap: anywhere; }
+.lt-check input { flex: none; width: 18px; height: 18px; margin: 2px 0 0; accent-color: var(--cyan, #7ee7d5); }
+.lt-check span { min-width: 0; }
+.lt-check small { display: block; }
+.lt-actions { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 18px; }
+.lt-button { min-height: 44px; padding: 9px 13px; border: 1px solid var(--line-strong, #39414b); border-radius: 9px; background: transparent; color: var(--text, #e9eef4); font: inherit; font-size: 13px; cursor: pointer; white-space: normal; overflow-wrap: anywhere; }
+.lt-button:hover { border-color: var(--cyan, #7ee7d5); background: var(--cyan-dim, rgb(126 231 213 / .14)); }
+.lt-button:disabled, .lt-controls:disabled { opacity: .6; cursor: not-allowed; }
+.lt-button[type=submit] { color: var(--cyan, #7ee7d5); border-color: var(--cyan, #7ee7d5); }
+.lt-dialog details { margin: 14px 0; }
+.lt-dialog summary { cursor: pointer; padding: 8px 0; overflow-wrap: anywhere; }
+.lt-card, .lt-question { min-width: 0; padding: 14px; margin: 14px 0; border: 1px solid var(--line, #29313b); border-radius: 10px; }
+.lt-card h4 { margin: 0 0 10px; font-size: 14px; }
+.lt-question legend { max-width: 100%; padding: 0 5px; }
+.lt-dialog pre { max-height: 260px; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; font: 12px/1.6 var(--mono, monospace); }
+.lt-plan { padding-left: 22px; font-size: 14px; }
+.lt-plan li { padding: 6px 0; }
+.lt-download { display: block; padding: 12px 0; color: var(--cyan, #7ee7d5); overflow-wrap: anywhere; }
+.lt-dialog :is(button, input, textarea, summary, a):focus-visible { outline: 2px solid var(--cyan, #7ee7d5); outline-offset: 3px; }
+#local-tools-question { width: min(580px, calc(100vw - 24px)); }
+@media (max-width: 600px) {
+  #local-tools-dialog { width: 100%; height: 100dvh; max-height: 100dvh; margin: 0; border: 0; border-radius: 0; }
+  .lt-header { padding: calc(14px + env(safe-area-inset-top, 0px)) 12px 14px; }
+  .lt-header h2 { font-size: 20px; }
+  .lt-body { padding: 0 12px calc(20px + env(safe-area-inset-bottom, 0px)); }
+  .lt-question, .lt-card { padding: 10px; }
+}

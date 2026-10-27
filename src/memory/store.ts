@@ -666,6 +666,14 @@ export class MemoryStore {
     const item: MemoryItem = {...old, id:randomUUID(), content:clean, gist:gistOf(clean,gist), sourceKind:'user-confirmed', trust:'authoritative', confidence:1, status:'confirmed', supersedesId:id, createdAt:at, updatedAt:at, validFrom:at, validTo:null, lastUsedAt:null, useCount:0}
     this.db.exec('BEGIN IMMEDIATE')
     try {
+      // Conflict resolution and profile observation can change this row without
+      // advancing eraseGeneration. Recheck the captured row under the write lock.
+      const current = this.get(id)
+      if (generation !== this.eraseGeneration || !current || current.updatedAt !== old.updatedAt
+        || current.status !== old.status || current.content !== old.content
+        || this.db.prepare('SELECT 1 FROM profile_entries WHERE memory_id=?').get(id)) {
+        throw new Error('Memory edit cancelled by concurrent change')
+      }
       this.protectFromInference(old.content,old.sourceRef)
       this.insertItem(item,embedding)
       this.db.prepare("UPDATE memory_items SET status='superseded',valid_to=?,updated_at=? WHERE id=?").run(at,at,id)

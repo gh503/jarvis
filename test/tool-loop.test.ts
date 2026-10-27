@@ -60,6 +60,20 @@ function fixture(t: test.TestContext, scripts: Script[]) {
     definition: definitions[0], setDefinitions, setCatalogue: (next: ToolDefinition[]) => { definitions = next }, run: () => runToolLoop(input) }
 }
 
+test('successful memory mutations end with acknowledgement without replaying invalidated context or later calls', async t => {
+  const f=fixture(t,[response(call('change','memory_correct'),call('later'))])
+  let changed=false
+  f.setDefinitions([{...f.definition,name:'memory_correct',effect:'write',usage:'local',execute:async()=>{changed=true;return {content:'{"id":"memory","status":"confirmed"}'}}},f.definition])
+  f.input.check=()=>{if(changed)throw new Error('old context invalid')}
+  const result=await f.run()
+  assert.equal(f.requests.length,1)
+  assert.deepEqual(f.executed,[])
+  assert.equal(result.localOnly,true)
+  assert.match(result.text,/已订正/)
+  f.journal.closeTurn(f.input.sessionId,f.input.turnId)
+  assert.equal(f.journal.getCall(f.input.sessionId,f.input.turnId,'later')?.status,'cancelled')
+})
+
 function discoveryFixture(t: test.TestContext, overrides: Partial<ToolDefinition> = {}, scripts: Script[] = [response(call('search', 'tool_search')), response(call('use', 'mcp_read')), final]) {
   const f = fixture(t, scripts)
   const discovered: ToolDefinition = { ...f.definition, name: 'mcp_read', ...overrides }

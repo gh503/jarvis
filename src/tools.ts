@@ -5,6 +5,7 @@ import type { ToolJournal } from './tool-journal.ts'
 import type { EventBus } from './events.ts'
 
 export interface ToolDefinition extends ToolSchema {
+  timeoutMs?:number
   definitionHash:string;usage:'local'|'shared';permission:'allow'|'ask'|'deny';effect:'read'|'write';destination:'local'|'remote'
   execute(args:Record<string,unknown>,context:{signal:AbortSignal;sessionId:string;turnId:string;callId:string}):Promise<{content:string;isError?:boolean}>
 }
@@ -92,7 +93,7 @@ export class ToolRuntime {
     const controller=new AbortController();this.controllers.add(controller)
     const abort=()=>controller.abort(input.signal.reason??new Error('已取消'))
     input.signal.addEventListener('abort',abort,{once:true})
-    const timeout=setTimeout(()=>controller.abort(new Error('工具执行超时')),60000)
+    const timeout=setTimeout(()=>controller.abort(new Error('工具执行超时')),Math.max(1000,Math.min(300000,definition.timeoutMs??60000)))
     this.deps.bus.emit('tool.started',{...identity,name:definition.name})
     let abortListener:()=>void=()=>{}
     try{

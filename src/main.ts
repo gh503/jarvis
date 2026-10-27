@@ -10,6 +10,15 @@ import { ToolRuntime } from './tools.ts'
 import { builtinTools } from './builtin-tools.ts'
 import { discoveryTool } from './tool-discovery.ts'
 import { McpManager } from './mcp/manager.ts'
+import { reminderTools } from './reminder-tools.ts'
+import { LocalToolSettings } from './local-tools/settings.ts'
+import { FileTools } from './local-tools/files.ts'
+import { TaskTools } from './local-tools/tasks.ts'
+import { personalTools } from './local-tools/personal.ts'
+import { calculationTools } from './local-tools/calculate.ts'
+import { skillTools } from './local-tools/skills.ts'
+import { WebTools } from './local-tools/web.ts'
+import { describeCapture } from './senses/vision.ts'
 import { EventBus } from './events.ts'
 import { createLogger, defaultLogFile } from './logger.ts'
 import { BriefScheduler } from './brief.ts'
@@ -73,7 +82,8 @@ async function main(): Promise<void> {
   )
   const memory = new MemoryStore({
     file: join(config.dataDir, 'jarvis.db'),
-    embedder: model,
+    // Memory and profile content never leaves the machine for embeddings.
+    embedder: {model:localModel.embedModel,embed:async(text:string)=>localModel.isLocal===true?localModel.embed(text):null},
     bus,
     tuning,
     logger: logger.child('memory'),
@@ -136,8 +146,33 @@ async function main(): Promise<void> {
   const toolJournal = new ToolJournal(sessions)
   const mcp = new McpManager({file:join(config.dataDir,'mcp-config.json'),onChanged:()=>bus.emit('mcp.changed',{at:Date.now()})})
   await mcp.initialize()
-  const builtins = builtinTools({memory,reminders,actions})
-  const tools = new ToolRuntime({definitions:()=>[discoveryTool(()=>[...builtins,...mcp.definitions()]),...builtins,...mcp.definitions()],journal:toolJournal,bus})
+  const localSettings = new LocalToolSettings(join(config.dataDir,'local-tools.json'),join(config.dataDir,'artifacts'))
+  await localSettings.load()
+  const localVision = async (bytes:Buffer,prompt:string,signal:AbortSignal) => {
+    const client=model.localClient()
+    if(client.isLocal!==true)throw new Error('图像分析需要经过验证的本地模型。')
+    signal.throwIfAborted()
+    return client.vision(bytes,prompt,{signal})
+  }
+  const fileTools = new FileTools({settings:localSettings,bus,storageFile:join(config.dataDir,'local-files.json'),localVision})
+  const taskTools = new TaskTools({file:join(config.dataDir,'local-tasks.db'),bus,settings:localSettings})
+  await taskTools.initialize()
+  const webTools = new WebTools({settings:localSettings})
+  const inspect = async (target:'screen'|'camera',prompt:string,signal:AbortSignal):Promise<string> => {
+    const client=model.localClient()
+    if(client.isLocal!==true)throw new Error('屏幕和摄像头只能使用本地模型。')
+    signal.throwIfAborted()
+    const capture=await (target==='screen'?screen:camera).capture(join(config.dataDir,'captures'))
+    try {signal.throwIfAborted();return await describeCapture(client,capture,prompt,signal,ocr,target==='camera')}
+    finally {await secure.encryptFile(capture.path)}
+  }
+  const builtins = [
+    ...builtinTools({memory,reminders,actions}).filter(d=>!d.name.startsWith('reminder')&&d.name!=='open_target'),
+    ...reminderTools(reminders),...calculationTools(),
+    ...personalTools({memory,sessions,profile,inspectScreen:(prompt,signal)=>inspect('screen',prompt,signal),inspectCamera:(prompt,signal)=>inspect('camera',prompt,signal)}),
+  ]
+  const definitions=()=>[...builtins,...fileTools.definitions(),...taskTools.definitions(),...webTools.definitions(),...skillTools({settings:localSettings}),...mcp.definitions()]
+  const tools = new ToolRuntime({definitions:()=>[discoveryTool(definitions),...definitions()],journal:toolJournal,bus})
   const policy = new ProactivePolicy(config)
   const conversation = new Conversation({
     tools, toolJournal,
@@ -188,6 +223,7 @@ async function main(): Promise<void> {
   })
 
   const server = new JarvisServer({
+    localSettings, fileTools, taskTools,
     tools, toolJournal, mcp,
     config,
     bus,
@@ -254,6 +290,7 @@ async function main(): Promise<void> {
     scheduler.stop()
     briefScheduler.stop()
     await conversation.quiesce()
+    await taskTools.close()
     await mcp.close()
     await server.close().catch(() => undefined)
     await voice.close().catch(() => undefined)

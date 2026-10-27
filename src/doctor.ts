@@ -1,4 +1,5 @@
-import { access } from 'node:fs/promises'
+import { access, realpath } from 'node:fs/promises'
+import { constants, existsSync } from 'node:fs'
 import { join } from 'node:path'
 import { loadConfig, ensureRuntimeDirs } from './config.ts'
 import { OllamaClient } from './model/ollama.ts'
@@ -47,6 +48,19 @@ async function main(): Promise<void> {
   }
 
   add('MCP settings lock', await fileExists('/usr/bin/flock'), '/usr/bin/flock (util-linux)', false)
+  try {
+    await access('/usr/bin/bwrap', constants.X_OK)
+    const args = ['--unshare-all', '--unshare-net', '--die-with-parent', '--new-session', '--clearenv', '--proc', '/proc', '--dev', '/dev', '--tmpfs', '/tmp']
+    for (const path of ['/usr', '/bin', '/lib', '/lib64']) {
+      if (!existsSync(path)) continue
+      const canonical = await realpath(path)
+      args.push(...(canonical === path ? ['--ro-bind', path, path] : ['--symlink', canonical, path]))
+    }
+    await runProcess('/usr/bin/bwrap', [...args, '/usr/bin/true'], { timeoutMs: 4000 })
+    add('local shell sandbox', true, 'Bubblewrap filesystem/network isolation probe passed (no network request)', false)
+  } catch (error) {
+    add('local shell sandbox', false, `Optional: ${error instanceof Error ? error.message : String(error)}`, false)
+  }
   add('ffmpeg', await commandExists('ffmpeg'), config.voice.ffmpeg)
   add('arecord', await commandExists(config.voice.arecord), config.voice.arecord, false)
   try {

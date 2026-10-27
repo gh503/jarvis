@@ -18,6 +18,9 @@ import type { AttentionManager } from './attention.ts'
 import type { JarvisConfig } from './config.ts'
 import type { Conversation } from './conversation.ts'
 import type { ToolRuntime } from './tools.ts'
+import type { LocalToolSettings } from './local-tools/settings.ts'
+import type { FileTools } from './local-tools/files.ts'
+import type { TaskTools } from './local-tools/tasks.ts'
 import type { ToolJournal } from './tool-journal.ts'
 import type { McpManager } from './mcp/manager.ts'
 import { RevisionConflict, type ServerInput } from './mcp/settings.ts'
@@ -48,6 +51,9 @@ export interface ServerDeps {
   actions: ActionManager
   memory: MemoryStore
   sessions?: SessionStore
+  localSettings?: LocalToolSettings
+  fileTools?: FileTools
+  taskTools?: TaskTools
   tools?: ToolRuntime
   toolJournal?: ToolJournal
   mcp?: McpManager
@@ -234,6 +240,8 @@ export class JarvisServer {
   private erasing = false
   private changingMcp = false
   private changingModel = false
+  private changingLocalSettings = false
+  private readonly deletingSessions = new Set<string>()
   private readonly caps: Capabilities = capabilities(resolve(import.meta.dirname, '..'))
 
   constructor(private readonly deps: ServerDeps) {
@@ -411,7 +419,7 @@ export class JarvisServer {
       const scenario = typeof message.scenario === 'string' && /^[a-z0-9-]{1,32}$/.test(message.scenario) ? message.scenario : undefined
       try {
         const identity = conversationIdentity(message)
-        if (identity.sessionId && this.deps.sessions && !this.deps.sessions.get(identity.sessionId)) throw new HttpError(404, '会话不存在或已删除')
+        if (identity.sessionId && this.deps.sessions && (this.deletingSessions.has(identity.sessionId) || !this.deps.sessions.get(identity.sessionId))) throw new HttpError(404, '会话不存在或已删除')
         const result = await this.deps.conversation.handleText(text, { source: 'text', scenario, ...identity })
         if (result.busy) this.send(ws, { kind: 'error', ...identity, error: result.reply, busy: true, activeTurn: this.deps.conversation.status().activeTurn ?? null })
         else this.send(ws, { kind: 'chat.result', ...identity, ...result })
@@ -541,6 +549,7 @@ export class JarvisServer {
     if (modelMutation) {
       await this.deps.conversation.quiesce?.()
       await this.deps.tools?.quiesce()
+      await this.deps.taskTools?.quiesce()
     }
 
     if (request.method === 'GET' && path === '/api/health') {
@@ -632,6 +641,89 @@ export class JarvisServer {
       return
     }
 
+    if (path === '/api/local-tools' || path.startsWith('/api/local-tools/')) {
+      const { localSettings, taskTools, fileTools, sessions } = this.deps
+      if (!localSettings || !taskTools || !fileTools || !sessions) throw new HttpError(503, '本地工具未启用')
+      const snapshot = () => ({ settings: localSettings.snapshot(), capabilities: taskTools.status(), questions: taskTools.pendingQuestions() })
+      const requireSession = (id: string | undefined): string => {
+        if (!id) throw new HttpError(400, 'sessionId 必填')
+        if (!sessions.get(id)) throw new HttpError(404, '会话不存在或已删除')
+        return id
+      }
+      if (path === '/api/local-tools' && request.method === 'GET') {
+        sendJson(response, 200, snapshot())
+        return
+      }
+      if (path === '/api/local-tools/settings' && request.method === 'PATCH') {
+        const body = await readJson(request, 64_000)
+        if (!Number.isSafeInteger(body.expectedRevision) || (body.expectedRevision as number) < 0) throw new HttpError(400, 'expectedRevision 必填且须为非负整数')
+        if ('outputDir' in body) throw new HttpError(400, 'outputDir 为只读配置')
+        if (Object.keys(body).some(key => !['expectedRevision', 'readRoots', 'writeRoots', 'webEnabled', 'shellEnabled', 'skillsDir'].includes(key))) throw new HttpError(400, '配置包含未知字段')
+        this.assertModelMutable()
+        this.changingLocalSettings = true
+        try {
+          await this.deps.conversation.quiesce()
+          await this.deps.tools?.quiesce()
+          await taskTools.quiesce()
+          if (body.expectedRevision !== localSettings.snapshot().revision) throw new HttpError(409, '本地工具配置已变化，请刷新后重试')
+          await localSettings.update(body as Parameters<LocalToolSettings['update']>[0])
+          sendJson(response, 200, snapshot())
+        } catch (error) {
+          if (error instanceof HttpError) throw error
+          if (error instanceof Error && (error.message === 'Settings revision conflict' || ('code' in error && error.code === 'REVISION_CONFLICT'))) throw new HttpError(409, '本地工具配置已变化，请刷新后重试')
+          throw new HttpError(400, '本地工具配置更新失败，请检查配置')
+        } finally {
+          this.deps.conversation.resumeAdmissions()
+          this.changingLocalSettings = false
+        }
+        return
+      }
+      const question = /^\/api\/local-tools\/questions\/([a-zA-Z0-9_-]{1,128})$/.exec(path)
+      if (question && request.method === 'POST') {
+        const body = await readJson(request, 64_000)
+        if (Object.keys(body).some(key => !['sessionId', 'turnId', 'answers'].includes(key))) throw new HttpError(400, '回答包含未知字段')
+        const identity = conversationIdentity(body)
+        const sessionId = requireSession(identity.sessionId)
+        if (!identity.turnId || !Array.isArray(body.answers) || body.answers.length === 0 || body.answers.length > 20 || body.answers.some(answer =>
+          !answer || typeof answer !== 'object' || Array.isArray(answer) || Object.keys(answer).some(key => !['id', 'selected', 'custom'].includes(key)) ||
+          typeof answer.id !== 'string' || !answer.id || answer.id.length > 128 || !Array.isArray(answer.selected) || answer.selected.length > 100 ||
+          answer.selected.some((value: unknown) => typeof value !== 'string' || value.length > 2000) ||
+          (answer.custom !== undefined && (typeof answer.custom !== 'string' || answer.custom.length > 8000)))) throw new HttpError(400, '需要完整回合标识和合法 answers 数组')
+        if (!taskTools.answer(question[1], { sessionId, turnId: identity.turnId }, { answers: body.answers } as Parameters<TaskTools['answer']>[2])) throw new HttpError(409, '问题已失效或不属于此回合')
+        sendJson(response, 200, { ok: true })
+        return
+      }
+      const session = /^\/api\/local-tools\/session\/([a-zA-Z0-9_-]{1,128})$/.exec(path)
+      if (session && request.method === 'GET') {
+        const id = requireSession(session[1])
+        sendJson(response, 200, { plan: taskTools.plan(id), jobs: taskTools.jobs(id), artifacts: fileTools.artifacts(id) })
+        return
+      }
+      const job = /^\/api\/local-tools\/jobs\/([a-zA-Z0-9_-]{1,128})\/cancel$/.exec(path)
+      if (job && request.method === 'POST') {
+        const body = await readJson(request, 4096)
+        if (Object.keys(body).some(key => key !== 'sessionId')) throw new HttpError(400, '取消请求包含未知字段')
+        const sessionId = requireSession(conversationIdentity(body).sessionId)
+        if (!await taskTools.cancelJob(job[1], sessionId)) throw new HttpError(409, '任务已失效或不属于此会话')
+        sendJson(response, 200, { ok: true })
+        return
+      }
+      const artifact = /^\/api\/local-tools\/artifacts\/([a-zA-Z0-9_-]{1,128})$/.exec(path)
+      if (artifact && request.method === 'GET') {
+        const sessionId = requireSession(conversationIdentity({ sessionId: url.searchParams.get('sessionId') }).sessionId)
+        let file: Awaited<ReturnType<FileTools['readArtifact']>>
+        try { file = await fileTools.readArtifact(artifact[1], sessionId) } catch { throw new HttpError(404, '产物不存在或不可读取') }
+        const filename = encodeURIComponent(file.name.replace(/[\r\n\x00-\x1f\x7f]/g, '_')).replace(/['()*]/g, char => `%${char.charCodeAt(0).toString(16).toUpperCase()}`)
+        response.setHeader('content-type', 'application/octet-stream')
+        response.setHeader('content-disposition', `attachment; filename="artifact"; filename*=UTF-8''${filename}`)
+        response.setHeader('cache-control', 'no-store')
+        response.setHeader('content-security-policy', "sandbox; default-src 'none'")
+        response.end(file.bytes)
+        return
+      }
+      throw new HttpError(404, '本地工具接口不存在')
+    }
+
     if (path === '/api/tools' && request.method === 'GET') {
       if (!this.deps.tools) throw new HttpError(503, '工具运行时未启用')
       sendJson(response, 200, { definitions: this.deps.tools.catalogue().map(({ execute, ...definition }) => definition), approvals: this.deps.tools.pending() })
@@ -674,12 +766,13 @@ export class JarvisServer {
       if (request.method === 'DELETE' && body.expectedRevision === undefined) throw new HttpError(400, 'expectedRevision 必填')
       if (path === '/api/mcp/servers' && (typeof body.id !== 'string' || !/^[a-zA-Z0-9_-]{1,48}$/.test(body.id))) throw new HttpError(400, 'MCP server id 不合法')
       // Recheck after reading the body: another request may have started erasing.
-      if (this.erasing || this.changingMcp || this.changingModel || this.deps.conversation.status().busy) throw new HttpError(409, '请先停止回复或等待配置更新完成')
+      if (this.erasing || this.changingMcp || this.changingModel || this.changingLocalSettings || this.deps.conversation.status().busy) throw new HttpError(409, '请先停止回复或等待配置更新完成')
       this.changingMcp = true
       try {
         // quiesce blocks new text, audio and proactive admissions synchronously.
         await this.deps.conversation.quiesce()
         await this.deps.tools?.quiesce()
+        await this.deps.taskTools?.quiesce()
         if (!mcpMatch) await mcp.save(body)
         else if (mcpMatch[2]) await mcp.reconnect(mcpMatch[1])
         else await mcp.remove(mcpMatch[1], body.expectedRevision!)
@@ -1086,7 +1179,7 @@ export class JarvisServer {
           const body = await readJson<{ confirm?: string }>(request)
           if (body.confirm !== 'DELETE ALL SESSIONS') throw new HttpError(400, '需要确认清空会话')
           if (this.deps.conversation.status().busy) throw new HttpError(409, '请先停止正在进行的回复，再清空会话')
-          store.clearAll()
+          await this.clearLocalSessionData(undefined, () => store.clearAll())
           this.deps.bus.clear()
           const session = store.getOrCreateDefault()
           this.deps.bus.emit('session.changed', { action: 'cleared', sessionId: session.id })
@@ -1097,7 +1190,7 @@ export class JarvisServer {
         const session = store.get(id)
         if (!session) throw new HttpError(404, '会话不存在或已删除')
         if (match?.[2] === '/export' && request.method === 'GET') {
-          sendJson(response, 200, { ...store.exportSession(id), ...(this.deps.toolJournal ? { toolCalls: this.deps.toolJournal.listCalls(id) } : {}) }, { 'content-disposition': `attachment; filename="jarvis-session-${id}.json"` })
+          sendJson(response, 200, { ...store.exportSession(id), ...(this.deps.toolJournal ? { toolCalls: this.deps.toolJournal.listCalls(id) } : {}), ...(this.deps.taskTools ? { localTools: this.deps.taskTools.exportSession(id) } : {}), ...(this.deps.fileTools ? { artifacts: this.deps.fileTools.artifacts(id) } : {}) }, { 'content-disposition': `attachment; filename="jarvis-session-${id}.json"` })
           return
         }
         if (match?.[2]) throw new HttpError(405, '不支持此方法')
@@ -1120,7 +1213,7 @@ export class JarvisServer {
         }
         if (request.method === 'DELETE') {
           if (activeTurn?.sessionId === id) throw new HttpError(409, '请先停止正在进行的回复，再删除会话')
-          store.delete(id)
+          await this.clearLocalSessionData(id, () => store.delete(id))
           this.deps.bus.clear()
           this.deps.bus.emit('session.changed', { sessionId: id, action: 'deleted' })
           sendJson(response, 200, { ok: true })
@@ -1145,7 +1238,7 @@ export class JarvisServer {
       }
       const scenario = typeof body.scenario === 'string' && /^[a-z0-9-]{1,32}$/.test(body.scenario) ? body.scenario : undefined
       const identity = conversationIdentity(body)
-      if (identity.sessionId && this.deps.sessions && !this.deps.sessions.get(identity.sessionId)) throw new HttpError(404, '会话不存在或已删除')
+      if (identity.sessionId && this.deps.sessions && (this.deletingSessions.has(identity.sessionId) || !this.deps.sessions.get(identity.sessionId))) throw new HttpError(404, '会话不存在或已删除')
       const result = await this.deps.conversation.handleText(body.text, { source: 'text', scenario, ...identity })
       sendJson(response, result.busy ? 409 : 200, { ...result, ...(result.busy ? { error: result.reply, activeTurn: this.deps.conversation.status().activeTurn ?? null } : {}) })
       return
@@ -1192,7 +1285,7 @@ export class JarvisServer {
         return
       }
       const identity = conversationIdentity({ sessionId: url.searchParams.get('sessionId') ?? undefined, turnId: url.searchParams.get('turnId') ?? undefined })
-      if (identity.sessionId && this.deps.sessions && !this.deps.sessions.get(identity.sessionId)) throw new HttpError(404, '会话不存在或已删除')
+      if (identity.sessionId && this.deps.sessions && (this.deletingSessions.has(identity.sessionId) || !this.deps.sessions.get(identity.sessionId))) throw new HttpError(404, '会话不存在或已删除')
       const scenario = url.searchParams.get('scenario') ?? undefined
       const result = await this.deps.conversation.handleAudio(body, mime, { ...identity, scenario })
       sendJson(response, result.busy ? 409 : 200, { ...result, ...(result.busy ? { error: result.reply, activeTurn: this.deps.conversation.status().activeTurn ?? null } : {}) })
@@ -1204,7 +1297,7 @@ export class JarvisServer {
       const target = body.target === 'camera' ? 'camera' : 'screen'
       const text = target === 'camera' ? '看下摄像头' : body.vision ? '用视觉看屏幕' : '看下屏幕'
       const identity = conversationIdentity(body)
-      if (identity.sessionId && this.deps.sessions && !this.deps.sessions.get(identity.sessionId)) throw new HttpError(404, '会话不存在或已删除')
+      if (identity.sessionId && this.deps.sessions && (this.deletingSessions.has(identity.sessionId) || !this.deps.sessions.get(identity.sessionId))) throw new HttpError(404, '会话不存在或已删除')
       const result = await this.deps.conversation.handleText(text, { source: 'text', ...identity })
       sendJson(response, result.busy ? 409 : 200, { ...result, ...(result.busy ? { error: result.reply } : {}) })
       return
@@ -1218,7 +1311,10 @@ export class JarvisServer {
         ...exported,
         conversations: conversations && { ...conversations, sessions: conversations.sessions.map(session => ({
           ...session, ...(this.deps.toolJournal ? { toolCalls: this.deps.toolJournal.listCalls(session.id) } : {}),
+          ...(this.deps.taskTools ? { localTools: this.deps.taskTools.exportSession(session.id) } : {}),
+          ...(this.deps.fileTools ? { artifacts: this.deps.fileTools.artifacts(session.id) } : {}),
         })) },
+        localToolSettings: this.deps.localSettings?.snapshot(),
         reminders: this.deps.reminders.list(),
         devices: this.devices.list(),
         config: {
@@ -1238,11 +1334,15 @@ export class JarvisServer {
         sendJson(response, 400, { error: 'confirmation phrase is required' })
         return
       }
-      if (this.erasing || this.changingMcp || this.changingModel) throw new HttpError(409, '正在更新配置或清空数据，请稍后再试')
+      if (this.erasing || this.changingMcp || this.changingModel || this.changingLocalSettings) throw new HttpError(409, '正在更新配置或清空数据，请稍后再试')
       this.erasing = true
       try {
       await this.deps.conversation.quiesce()
       await this.deps.tools?.quiesce()
+      await this.deps.taskTools?.quiesce()
+      await this.deps.taskTools?.clearAll()
+      await this.deps.fileTools?.clearAll()
+      await this.deps.localSettings?.reset()
       this.deps.sessions?.clearAll()
       const counts = this.deps.memory.eraseAll()
       this.pairing.clear()
@@ -1570,8 +1670,36 @@ export class JarvisServer {
     }
   }
 
+  private async clearLocalSessionData(id: string | undefined, remove: () => unknown): Promise<void> {
+    if (this.erasing || this.changingMcp || this.changingModel || this.changingLocalSettings) throw new HttpError(409, '正在更新配置或清空数据，请稍后再试')
+    const activeTurn = this.deps.conversation.status().activeTurn as { sessionId: string } | null
+    if (!id || activeTurn?.sessionId === id) this.assertModelMutable()
+    this.changingLocalSettings = true
+    try {
+      if (id) {
+        this.deletingSessions.add(id)
+        this.deps.conversation.blockSessionAdmissions?.(id)
+        await this.deps.taskTools?.clearSession(id)
+        await this.deps.fileTools?.clearSession(id)
+      } else {
+        await this.deps.conversation.quiesce?.()
+        await this.deps.tools?.quiesce()
+        await this.deps.taskTools?.clearAll()
+        await this.deps.fileTools?.clearAll()
+      }
+      remove()
+    } finally {
+      if (!id) this.deps.conversation.resumeAdmissions?.()
+      if (id) {
+        this.deletingSessions.delete(id)
+        this.deps.conversation.resumeSessionAdmissions?.(id)
+      }
+      this.changingLocalSettings = false
+    }
+  }
+
   private assertModelMutable(): void {
-    if (this.erasing || this.changingMcp || this.changingModel || this.deps.conversation.status().busy) throw new HttpError(409, '请先停止回复或等待配置更新完成')
+    if (this.erasing || this.changingMcp || this.changingModel || this.changingLocalSettings || this.deps.conversation.status().busy) throw new HttpError(409, '请先停止回复或等待配置更新完成')
   }
 
   private assertActivatable(profile: ModelProfile): void {

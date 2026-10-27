@@ -21,6 +21,47 @@ to the next provider with a persisted cooldown) and work scenarios
 and system prompts. ASR/TTS can
 switch between local and remote independently.
 
+## Native tools and local work
+
+Enable native tool calling explicitly for a supported model in 设置 → 模型.
+Each tool turn stays on the selected concrete model; local results never fail
+over to a remote provider. Settings → 系统 exposes the tool/MCP catalogue and
+local tool settings. The application provides more than forty built-in tools, with definitions loaded according to configuration, permissions
+and model context capacity; MCP adds separately configured tools.
+
+Built-ins cover structured questions, time/unit arithmetic, daily/weekly
+reminders, ordinary memory proposals/corrections, eligible conversation history,
+local perception, scoped file reading/editing/restoration, artifact delivery,
+plans, background jobs, anonymous DuckDuckGo search/public-page fetching and
+local Markdown skills. Memory proposals remain candidates pending human
+confirmation. Questions collect information and do not grant tool permissions.
+See [本地工具与权限说明](docs/ui.md#本地工具任务与目录授权) for the exact names,
+API routes, privacy boundaries and recurrence behavior.
+
+External file grants are empty by default; web and Shell are disabled, and no
+skill directory or external account is configured. File replacement requires
+the version returned by a prior read and creates private recovery history.
+Shell requires a working Linux Bubblewrap sandbox and per-call approval: it
+has read-only system binaries, a writable dedicated Jarvis output directory,
+no network, and no inherited host credentials. File-tool directory grants do
+not grant Shell access. Background jobs expose explicit pending/running/terminal
+states and bounded output; stopping does not undo writes, and a restart marks
+unfinished jobs interrupted rather than replaying commands. Skills are bounded,
+local, untrusted instructions; loading them executes nothing. Image inspection
+requires a working local vision model. Long-term autonomous goals, subagents
+and browser automation are not provided.
+
+**Full privacy erase deletes everything in the dedicated Jarvis output
+workspace**, including changed artifacts and unregistered Shell output, plus
+private recovery history and task state. External originals are preserved;
+previous approved edits to them are not rolled back. Artifact cards reference
+live files with version checks, not immutable copies. Ordinary backups include
+private local tool state, file history, output artifacts and task output;
+provider/MCP credentials still require `--include-secrets`. Restored external
+file grants, web, Shell and skills are disabled until reauthorized. Stop Jarvis
+before a cross-file-consistent backup and before restoring; separate database
+snapshots do not guarantee one shared instant with output files.
+
 ## Quick start
 
 ```bash
