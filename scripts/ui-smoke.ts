@@ -15,6 +15,51 @@ const CDP = (process.env.JARVIS_CDP_URL || 'http://127.0.0.1:9223').replace(/\/+
 /** Interaction checks that write to the server are opt-in so a developer can
  * run the smoke against the live instance without changing real settings. */
 const WRITE = process.env.JARVIS_SMOKE_WRITE === '1'
+
+const CONTRAST_AUDIT = `(() => {
+  const parse = value => {
+    const m = String(value).match(/rgba?\\(([^)]+)\\)/)
+    if (!m) return null
+    const parts = m[1].split(/[, /]+/).filter(Boolean).map(Number)
+    return { r: parts[0], g: parts[1], b: parts[2], a: parts[3] === undefined ? 1 : parts[3] }
+  }
+  const lum = c => {
+    const f = v => { v /= 255; return v <= 0.03928 ? v / 12.92 : Math.pow((v + 0.055) / 1.055, 2.4) }
+    return 0.2126 * f(c.r) + 0.7152 * f(c.g) + 0.0722 * f(c.b)
+  }
+  const blend = (top, bottom) => ({ r: top.r * top.a + bottom.r * (1 - top.a), g: top.g * top.a + bottom.g * (1 - top.a), b: top.b * top.a + bottom.b * (1 - top.a), a: 1 })
+  const bgOf = el => {
+    const stack = []
+    let node = el
+    while (node && node !== document.documentElement) { stack.push(node); node = node.parentElement }
+    let result = { r: 8, g: 11, b: 15, a: 1 }
+    for (const item of stack.reverse()) {
+      const c = parse(getComputedStyle(item).backgroundColor)
+      if (c && c.a > 0) result = blend(c, result)
+    }
+    return result
+  }
+  const bad = []
+  for (const el of document.querySelectorAll('body *')) {
+    const style = getComputedStyle(el)
+    if (style.display === 'none' || style.visibility === 'hidden' || Number(style.opacity) < 0.15) continue
+    const rect = el.getBoundingClientRect()
+    if (rect.width < 2 || rect.height < 2 || el.closest('[hidden]')) continue
+    const own = [...el.childNodes].some(n => n.nodeType === 3 && n.textContent.trim().length > 1)
+    if (!own) continue
+    const fg = parse(style.color)
+    if (!fg) continue
+    const bg = bgOf(el)
+    const fgc = fg.a < 1 ? blend(fg, bg) : fg
+    const L1 = lum(fgc), L2 = lum(bg)
+    const ratio = (Math.max(L1, L2) + 0.05) / (Math.min(L1, L2) + 0.05)
+    const size = parseFloat(style.fontSize)
+    const large = size >= 24 || (size >= 18.66 && Number(style.fontWeight) >= 700)
+    if (ratio < (large ? 3 : 4.5)) bad.push(((el.textContent || '').trim().slice(0, 20)) + ' @' + ratio.toFixed(2))
+  }
+  return { bad: bad.slice(0, 6), count: bad.length, overflow: document.documentElement.scrollWidth - window.innerWidth }
+})()`
+
 const APP = (process.env.JARVIS_URL || 'http://127.0.0.1:3081/').replace(/\/+$/, '') + '/'
 const TIMEOUT = 15_000
 
@@ -276,6 +321,26 @@ async function main(): Promise<void> {
       overflow: document.querySelector('.modal-body').scrollWidth > document.querySelector('.modal-body').clientWidth + 1
     })`)
     check(mobileSettings.fits && mobileSettings.full && mobileSettings.tabs === 5 && !mobileSettings.overflow, 'mobile: settings sheet fits viewport')
+
+    // Contrast and overflow at both themes and a phone width. This is the check
+    // that caught "light theme text at 4.2:1" after a palette change.
+    for (const [theme, width] of [['dark', 1440], ['light', 1440], ['light', 390]] as const) {
+      await cdp.send('Emulation.setDeviceMetricsOverride', { width, height: 900, deviceScaleFactor: 1, mobile: width < 500 })
+      await cdp.evaluate(`window.JarvisTheme?.set('${theme}')`)
+      // Freeze transitions/animations: measuring mid-fade reports phantom
+      // contrast failures (a colour halfway between the two themes).
+      await cdp.evaluate("(() => { const s = document.createElement('style'); s.id = 'smoke-freeze'; s.textContent = '*,*::before,*::after{transition:none !important;animation:none !important}'; document.head.append(s) })()")
+      await sleep(200)
+      const applied = await cdp.evaluate<string>('document.documentElement.dataset.theme || ""')
+      check(applied === theme, `theme: ${theme} applied (@${width}px, got "${applied}")`)
+      const audit = await cdp.evaluate<{ bad: string[], count: number, overflow: number }>(CONTRAST_AUDIT)
+      await cdp.evaluate("document.getElementById('smoke-freeze')?.remove()")
+      check(audit.count === 0, `contrast: ${theme} @${width}px (${audit.bad.join(' | ')})`)
+      check(audit.overflow <= 1, `layout: ${theme} @${width}px has no horizontal overflow (${audit.overflow}px)`)
+    }
+    await cdp.send('Emulation.setDeviceMetricsOverride', { width: 390, height: 844, deviceScaleFactor: 1, mobile: true })
+    await cdp.evaluate("window.JarvisTheme?.set('dark')")
+    await sleep(250)
     await cdp.evaluate("document.querySelector('#modal-close').click()")
     await sleep(200)
   } finally {

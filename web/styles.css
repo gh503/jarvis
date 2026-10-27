@@ -1017,10 +1017,10 @@ kbd { font-family: var(--mono); font-size: 9px; border: 1px solid var(--line); b
   --line: rgb(var(--ink-rgb) / 0.10);
   --line-strong: rgb(var(--ink-rgb) / 0.18);
   --text: #111a22;
-  --muted: #566270;
-  --faint: #5f6b78;
-  --cyan: hsl(168 62% 30%);
-  --cyan-dim: hsl(168 62% 30% / 0.12);
+  --muted: #495563;
+  --faint: #55616e;
+  --cyan: hsl(168 70% 22%);
+  --cyan-dim: hsl(168 70% 22% / 0.12);
   --amber: #96620f;
   --amber-dim: rgba(150, 98, 15, 0.12);
   --danger: #b0263a;
@@ -1119,4 +1119,16 @@ kbd { font-family: var(--mono); font-size: 9px; border: 1px solid var(--line); b
 @media (max-width: 680px) {
   input, textarea, select { font-size: 16px; }
   .search-row input, .settings-field input, .settings-field select, .settings-field textarea { font-size: 16px; }
+}
+
+/* Touch targets: the priority arrows and refresh buttons were 21px tall. */
+@media (max-width: 680px) {
+  .model-action.quiet, .text-btn, .settings-chip, .s-icon-btn { min-height: 34px; min-width: 34px; }
+}
+
+/* Disclosure toggles and inline links were 14–15px tall touch targets. */
+.settings-advanced > summary { padding: 8px 0; }
+@media (max-width: 680px) {
+  .s-link, .model-action.link { padding: 8px 2px; }
+  input[type="checkbox"] { width: 18px; height: 18px; }
 }

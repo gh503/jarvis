@@ -663,3 +663,11 @@ kbd { border: 1px solid var(--line); border-radius: 4px; padding: 1px 4px; font-
 :root[data-theme="light"] .s-error { background: rgba(255, 255, 255, 0.92); }
 :root[data-theme="light"] .studio-toast { background: rgba(240, 253, 250, 0.97); }
 :root[data-theme="light"] .studio-toast[data-tone="danger"] { background: rgba(255, 240, 242, 0.97); color: #b0263a; }
+
+/* Light theme: the dark-tuned pill/eyebrow colours are too bright on white. */
+:root[data-theme="light"] .s-pill.green { color: #1c6b42; border-color: rgba(28, 107, 66, .28); background: rgba(28, 107, 66, .08); }
+:root[data-theme="light"] .s-pill.amber { color: #7c4a06; }
+:root[data-theme="light"] .s-pill.danger { color: #9c1f31; }
+:root[data-theme="light"] .studio-eyebrow,
+:root[data-theme="light"] .s-eyebrow { opacity: 1; }
+:root[data-theme="light"] .m-node text { fill: #2b3743; }
