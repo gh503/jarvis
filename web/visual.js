@@ -17,11 +17,34 @@ const DEFAULTS = {
 
 export let visualValues = { ...DEFAULTS }
 
+/* The accent color lives in two channels: --accent-h feeds hsl() usages
+   (--cyan, orb glow), while borders/pills/chips use rgb(var(--accent-rgb)/α)
+   with hardcoded channels. Deriving the RGB triplet from the hue keeps both
+   channels in sync, otherwise recoloring only touches half the accents. */
+function accentRgbFromHue(hue) {
+  const h = ((Number(hue) % 360) + 360) % 360 / 360
+  const s = 0.63
+  const l = 0.7
+  const q = l < 0.5 ? l * (1 + s) : l + s - l * s
+  const p = 2 * l - q
+  const channel = t0 => {
+    let t = t0
+    if (t < 0) t += 1
+    if (t > 1) t -= 1
+    if (t < 1 / 6) return p + (q - p) * 6 * t
+    if (t < 1 / 2) return q
+    if (t < 2 / 3) return p + (q - p) * (2 / 3 - t) * 6
+    return p
+  }
+  return [channel(h + 1 / 3), channel(h), channel(h - 1 / 3)].map(v => Math.round(v * 255)).join(' ')
+}
+
 export function applyVisualTuning(values = {}) {
   visualValues = { ...DEFAULTS, ...values }
   const root = document.documentElement
   const style = root.style
   style.setProperty('--orb-glow', String(visualValues['ui.orbGlow']))
+  style.setProperty('--accent-rgb', accentRgbFromHue(visualValues['ui.accentHue']))
   style.setProperty('--orb-speed', String(visualValues['ui.orbSpeed']))
   style.setProperty('--ambient-strength', String(visualValues['ui.ambient']))
   style.setProperty('--glass-blur', `${visualValues['ui.blur']}px`)
