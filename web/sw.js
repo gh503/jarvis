@@ -1,7 +1,7 @@
 /* A deliberately small shell cache. API responses and media are never cached.
    The shell is network-first so a local update is visible on the next load;
    the cache is only an offline fallback. */
-const CACHE = 'jarvis-shell-v23'
+const CACHE = 'jarvis-shell-v24'
 const SHELL = [
   '/', '/pair', '/pair.js', '/theme-boot.js', '/styles.css', '/studio.css', '/pair.css',
   '/app.js', '/theme.js', '/studio.js', '/visual.js', '/manifest.webmanifest',

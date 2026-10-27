@@ -1316,17 +1316,21 @@ function scenarioRowHtml(scenario, orderedProfiles, profiles) {
     </summary>
     <div class="scenario-body">
       <div class="scenario-row-head">
-        <label class="settings-field"><span>启用（参与自动识别）</span>
-          <input type="checkbox" class="scenario-enabled" ${scenario.enabled ? 'checked' : ''}>
+        <label class="scenario-enable-control">
+          <span class="scenario-enable-copy"><strong>启用场景</strong><small>参与自动识别</small></span>
+          <input type="checkbox" role="switch" class="scenario-enabled" ${scenario.enabled ? 'checked' : ''}>
+          <span class="scenario-switch-track" aria-hidden="true"></span>
         </label>
         ${scenario.custom ? `<button type="button" class="model-action quiet danger scenario-delete" title="删除该自定义场景">删除场景</button>` : ''}
       </div>
       ${scenario.custom ? `<label class="settings-field"><span>名称</span><input type="text" class="scenario-label" value="${escapeHtml(scenario.label)}" maxlength="32"></label>` : ''}
-      <div class="settings-field"><span>供应商链（按全局优先级勾排；不勾 = 跟随全局）</span>
+      <fieldset class="scenario-chain-field">
+        <legend>供应商链</legend>
+        <p class="scenario-chain-help">按全局优先级依次使用；不选择时跟随全局设置。</p>
         <div class="scenario-chain">
-          ${orderedProfiles.map(profile => `<label class="scenario-chain-item"><input type="checkbox" class="scenario-profile" value="${escapeHtml(profile.id)}" ${chain.includes(profile.id) ? 'checked' : ''}> ${escapeHtml(profile.label)}</label>`).join('')}
+          ${orderedProfiles.map(profile => `<label class="scenario-chain-item"><input type="checkbox" class="scenario-profile" value="${escapeHtml(profile.id)}" ${chain.includes(profile.id) ? 'checked' : ''}><span>${escapeHtml(profile.label)}</span></label>`).join('')}
         </div>
-      </div>
+      </fieldset>
       <div class="settings-form-grid">
         <label class="settings-field"><span>模型覆盖 <em>可选</em></span>
           <input type="text" class="scenario-model" value="${escapeHtml(scenario.model || '')}" placeholder="留空用供应商默认模型" autocomplete="off" spellcheck="false">
