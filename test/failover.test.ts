@@ -186,3 +186,36 @@ test('mid-stream failure is not retried on the next provider', async () => {
     b.close()
   }
 })
+
+test('scenario model override is dropped after failing over to another provider', async () => {
+  const mock: Mock = { quotaHits: 0, okHits: 0 }
+  let servedModel = ''
+  const b = await mockProvider((request, response) => {
+    if (request.url?.endsWith('/models')) {
+      response.writeHead(200, { 'content-type': 'application/json' })
+      response.end(JSON.stringify({ data: [{ id: 'b-model' }] }))
+      return
+    }
+    let raw = ''
+    request.on('data', chunk => { raw += chunk })
+    request.on('end', () => {
+      mock.okHits += 1
+      servedModel = JSON.parse(raw).model
+      response.writeHead(200, { 'content-type': 'application/json' })
+      response.end(JSON.stringify({ choices: [{ message: { content: 'ok' } }] }))
+    })
+  })
+  try {
+    const { router, dir } = await makeRouter('http://127.0.0.1:1/v1', b.base, mock)
+    try {
+      // Scenario pins a model that only exists on the first provider.
+      const reply = await router.chatOnce([{ role: 'user', content: 'hi' }], { timeoutMs: 5000, model: 'scenario-only-model' })
+      assert.equal(reply, 'ok')
+      assert.equal(servedModel, 'b-model', 'fallback provider must use its own default model')
+    } finally {
+      await rm(dir, { recursive: true, force: true })
+    }
+  } finally {
+    b.close()
+  }
+})

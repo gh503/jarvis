@@ -189,11 +189,15 @@ export class ModelRouter implements ModelClient {
   async *chatStream(messages: ChatMessage[], options: ChatOptions = {}): AsyncGenerator<string> {
     const chain = await this.chain(options.profileIds)
     let lastError: unknown = new Error('没有可用的模型供应商')
-    for (const profile of chain) {
+    for (const [index, profile] of chain.entries()) {
       const client = this.clientFor(profile)
+      // A scenario's model override only applies to the first provider in the
+      // chain; after a failover the fallback provider uses its own default
+      // model, because model ids are not portable across providers.
+      const attemptOptions = index === 0 ? options : { ...options, model: undefined }
       let produced = false
       try {
-        for await (const delta of client.chatStream(messages, options)) {
+        for await (const delta of client.chatStream(messages, attemptOptions)) {
           produced = true
           yield delta
         }
@@ -212,10 +216,11 @@ export class ModelRouter implements ModelClient {
   async chatOnce(messages: ChatMessage[], options: ChatOptions = {}): Promise<string> {
     const chain = await this.chain(options.profileIds)
     let lastError: unknown = new Error('没有可用的模型供应商')
-    for (const profile of chain) {
+    for (const [index, profile] of chain.entries()) {
       const client = this.clientFor(profile)
+      const attemptOptions = index === 0 ? options : { ...options, model: undefined }
       try {
-        const reply = await client.chatOnce(messages, options)
+        const reply = await client.chatOnce(messages, attemptOptions)
         this.noteSuccess(profile, client)
         return reply
       } catch (error) {
