@@ -2504,11 +2504,11 @@ function bindVoiceSettings() {
         state.voicePicker[kind] = false
         renderVoicePanel()
         const result = $('#voice-result')
-        if (result) { result.textContent = `已经在列表里：${existing.label}，保存后按顺序生效`; result.className = 'settings-feedback ok' }
+        if (result) { result.textContent = `已经在列表里：${existing.label}${local ? '（本地引擎，无需 Key）' : entry.adapter === 'edge' ? '（Edge TTS，无需 Key）' : ''}，保存后按顺序生效`; result.className = 'settings-feedback ok' }
         return
       }
       addVoiceEntry(kind, voiceProfileFromCatalog(entry), {
-        notice: local ? `已选中「${entry.name}」（本地引擎，无需 Key）` : `已加入「${entry.name}」并设为首选，粘贴 Key 后保存`,
+        notice: local ? `已选中「${entry.name}」（本地引擎，无需 Key）` : entry.adapter === 'edge' ? `已加入「${entry.name}」（无需 Key），保存后生效` : `已加入「${entry.name}」并设为首选，粘贴 Key 后保存`,
       })
       return
     }
@@ -2870,7 +2870,7 @@ async function applyVoiceGuide(id, options = {}) {
   addVoiceEntry(kind, voiceProfileFromCatalog(entry), {
     notice: local
       ? `已选中「${entry.name}」（本地引擎，无需 Key），保存后生效`
-      : `已把「${entry.name}」加到${VOICE_KIND_LABEL[kind]}链首位，粘贴 Key 后保存`,
+      : entry.adapter === 'edge' ? `已把「${entry.name}」加到${VOICE_KIND_LABEL[kind]}链首位（无需 Key），保存后生效` : `已把「${entry.name}」加到${VOICE_KIND_LABEL[kind]}链首位，粘贴 Key 后保存`,
   })
 }
 
