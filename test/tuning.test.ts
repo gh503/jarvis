@@ -90,3 +90,26 @@ test('tuning presets apply only their declared values', async () => {
     await rm(dir, { recursive: true, force: true })
   }
 })
+
+test('tuning rejects invalid select values, non-numeric numbers and blank text', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'jarvis-tuning-strict-'))
+  const store = new TuningStore(join(dir, 'tuning.json'), config(dir))
+  try {
+    await store.load()
+    await assert.rejects(() => store.update({ 'ui.motion': 'warp' }), /只能是/)
+    await assert.rejects(() => store.update({ 'ui.density': 42 }), /只能是/)
+    await assert.rejects(() => store.update({ 'ui.blur': 'abc' }), /必须是数字/)
+    await assert.rejects(() => store.update({ 'ui.particles': Number.NaN }), /必须是数字/)
+    await assert.rejects(() => store.update({ 'ui.motion': true }), /只能是/)
+    // Out-of-range numbers are clamped, not rejected: a slider may overshoot.
+    const clamped = await store.update({ 'ui.accentHue': 9999, 'ui.textScale': 0.1 })
+    assert.equal(clamped.values['ui.accentHue'], 230)
+    assert.equal(clamped.values['ui.textScale'], 0.85)
+    // Valid values still stick.
+    const ok = await store.update({ 'ui.motion': 'subtle', 'ui.density': 'compact' })
+    assert.equal(ok.values['ui.motion'], 'subtle')
+    assert.equal(ok.values['ui.density'], 'compact')
+  } finally {
+    await rm(dir, { recursive: true, force: true })
+  }
+})

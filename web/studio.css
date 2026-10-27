@@ -321,7 +321,8 @@ kbd { border: 1px solid var(--line); border-radius: 4px; padding: 1px 4px; font-
 .m-edge.similar { stroke: rgb(var(--accent-rgb) / .3); stroke-dasharray: 2 4; }
 .m-edge.supersedes { stroke: rgba(243,179,106,.75); stroke-width: 1.4; }
 .m-edge.link { stroke: rgba(185,166,255,.55); stroke-width: 1.1; }
-.m-node { cursor: pointer; outline: none; }
+.m-node { cursor: pointer; }
+.m-node:focus-visible { outline: 2px solid hsl(var(--accent-h) 70% 65%); outline-offset: 3px; }
 .m-node .m-halo { fill: none; stroke-width: 1; opacity: .06; transition: opacity 180ms ease; }
 .m-node:hover .m-halo, .m-node.selected .m-halo { opacity: .3; }
 .m-node .m-dot { stroke-width: 1.1; transition: filter 180ms ease, opacity 180ms ease; }

@@ -123,7 +123,7 @@ Cloudflare Workers AI 是例外：它没有 OpenAI `/models`，但有账号级�
 | server | HTTP 5xx | 5 分钟 |
 
 冷却持久化在 `model-config.json` 的 `cooldowns` 字段，重启不失效；切换事件
-`model.failover` 通过 SSE 推送到 UI（系统消息提示「已自动切换到 …」）。
+`model.failover` 通过 WebSocket 广播到 UI（系统消息提示「已自动切换到 …」，本仓库没有 SSE 端点）。
 流式回复一旦已经产出内容就**不再重试**（避免重复输出），整段未产出时才转移到
 下一家。 embedding 和视觉不做跨供应商 failover——向量维度不同，画面默认不出网。
 
@@ -148,7 +148,8 @@ Cloudflare Workers AI 是例外：它没有 OpenAI `/models`，但有账号级�
 
 每个场景可配置：供应商链（不配置 = 跟随全局优先级）、模型覆盖、温度、
 maxTokens、注入系统提示的场景指令、自动识别关键词。**自定义场景**（类似
-ChatGPT GPTs）可在设置页增删，id 自由、参与自动识别；内置场景可改名、改链、
+ChatGPT GPTs）可在设置页增删，参与自动识别；id 由界面生成
+（`s-<base36>`），服务端只接受 `^[a-z0-9-]{1,32}$`；内置场景可改名、改链、
 改提示词但不能删除。旧版 `reasoning` 场景会自动折入 `research`。
 
 `scenarioAuto` 开启时按消息内容确定性识别（技术信号 → 编程；纪要/邮件/周报等
@@ -164,4 +165,4 @@ chat 都接受 `scenario` 字段。识别结果通过 `assistant.scenario` 事�
 - 模型发现没有分页；超过 200 个模型会截断。
 - Azure OpenAI 的部署名和 `api-key` 头需要单独 adapter。
 - Cloudflare 模型搜索只过滤文本生成任务；音频/embedding 模型不会出现在聊天模型下拉中（语音设置单独填写）。
-- 切换 embedding 模型不会自动重建向量索引；需要 `npm run memory:reindex`（或删除投影后重建）。
+- 切换 embedding 模型不会自动重建向量索引；目前没有重建命令，删掉 `memory_items.embedding` 后跑一次 `POST /api/memory/consolidate` 会为缺失向量的行补算（敏感/秘密记忆只在本地 embedder 下补算）。

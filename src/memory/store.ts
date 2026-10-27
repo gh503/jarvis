@@ -128,6 +128,8 @@ export class MemoryStore {
       PRAGMA journal_mode = WAL;
       PRAGMA foreign_keys = ON;
       PRAGMA busy_timeout = 5000;
+      -- Overwrite deleted rows instead of leaving their bytes in free pages.
+      PRAGMA secure_delete = ON;
 
       CREATE TABLE IF NOT EXISTS memory_items (
         id TEXT PRIMARY KEY,
@@ -276,11 +278,17 @@ export class MemoryStore {
       expiresAt: input.expiresAt ?? null,
     }
 
+    // Embedding sends the text to the configured provider. Sensitive and
+    // secret notes are only embedded by an on-device embedder; otherwise they
+    // stay searchable through full-text search alone.
+    const embedderIsLocal = (this.embedder as { isLocal?: boolean }).isLocal === true
     let embedding: Float32Array | null = null
-    try {
-      embedding = await this.embedder.embed(`${item.gist}\n${item.content}`)
-    } catch (error) {
-      this.logger?.warn('embedding failed; storing without vector', { error: String(error) })
+    if (item.sensitivity === 'standard' || embedderIsLocal) {
+      try {
+        embedding = await this.embedder.embed(`${item.gist}\n${item.content}`)
+      } catch (error) {
+        this.logger?.warn('embedding failed; storing without vector', { error: String(error) })
+      }
     }
     this.insertItem(item, embedding)
     this.event(item.id, 'created', item.sourceKind)
@@ -398,7 +406,11 @@ export class MemoryStore {
       clauses.push('kind = ?')
       params.push(options.kind)
     }
-    if (options.includeSensitive === false) {
+    // Fail closed: a caller that does not explicitly ask for sensitive rows
+    // gets standard ones only. Every local view that needs to show sensitive
+    // memory passes includeSensitive: true, so a new call site cannot
+    // accidentally widen what leaves the store.
+    if (options.includeSensitive !== true) {
       clauses.push("sensitivity = 'standard'")
     }
     const where = clauses.length ? `WHERE ${clauses.join(' AND ')}` : ''
@@ -699,11 +711,13 @@ export class MemoryStore {
 
     // Repair vectors for imported or degraded rows. This is deliberately
     // bounded so consolidation never turns into an unbounded model job.
+    const embedderIsLocal = (this.embedder as { isLocal?: boolean }).isLocal === true
     const missingVectors = this.db.prepare(
       "SELECT * FROM memory_items WHERE status IN ('confirmed','proposed') AND embedding IS NULL LIMIT 100",
     ).all() as Row[]
     for (const row of missingVectors) {
       const item = this.rowToItem(row)
+      if (item.sensitivity !== 'standard' && !embedderIsLocal) continue
       try {
         const vector = await this.embedder.embed(`${item.gist}\n${item.content}`)
         if (vector) {
@@ -888,6 +902,9 @@ export class MemoryStore {
       DELETE FROM reminders;
     `)
     this.db.exec('VACUUM')
+    // VACUUM rewrites the database, but the write-ahead log can still hold the
+    // old pages until it is truncated.
+    try { this.db.exec('PRAGMA wal_checkpoint(TRUNCATE)') } catch { /* not in WAL mode */ }
     this.bus?.emit('memory.erased', result)
     return result
   }

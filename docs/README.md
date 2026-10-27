@@ -12,10 +12,10 @@
 
 ![调参实验室：实时预览、预设与生效范围](screenshots/studio-tuning.png)
 
-- Status: **v2 baseline accepted; a working vertical slice is implemented under `v2/`**
+- Status: **v2 baseline accepted; the implementation lives at the repository root (`src/`, `web/`, `scripts/`)**
 - Branch: `main`
-- Date: 2026-10-26
-- Supersedes for v2: [`docs/plan/architecture.md`](../plan/architecture.md) (retained as v1 history)
+- Date: 2026-10-27
+- v1 的历史设计文档保留在 `docs/`，但与当前实现不一致处以代码为准
 
 ## 为什么重做
 
@@ -70,7 +70,7 @@ v2 不再从“给 agent 加一个聊天窗口”出发，而是从下面这个�
 - 本地/远端语音：ASR 支持 WebSocket 流式（默认）和 HTTP；TTS 支持本地 Piper、OpenAI-compatible、Gemini、Cloudflare、Edge；两侧独立切换。
 - 多厂商模型：Gemini、Groq、硅基流动、OpenRouter、Cloudflare Workers AI 可直连；模型列表自动发现。
 - 供应商池与自动切换：按优先级组成故障转移链，额度/限流/鉴权/网络错误自动换下一家，冷却持久化并实时提示。
-- 工作场景：编程 / 写作 / 推理有独立供应商链、模型、温度与提示词，自动识别或手动指定。
+- 工作场景：编程 / 写作 / 研究 / 邮件 / 会议 / 报告 / 翻译 / 头脑风暴 / 学习 / 闲聊 共 10 个内置场景，各有独立的供应商链、模型、温度与提示词，自动识别或手动指定（`research` 吸收旧的 `reasoning`）。
 - 工具执行：文件、浏览器、日历、提醒；高风险动作走审批和审计。
 - 桌面浮窗/托盘 + 手机 PWA/WebRTC 远程入口（手机后置）。
 
@@ -88,7 +88,7 @@ v2 不再从“给 agent 加一个聊天窗口”出发，而是从下面这个�
 - v1 代码保留在 `main`，作为实现参考和历史证据。
 - v2 **不整体复用** v1 运行时；只复用经过评审的局部能力（审批、审计、设备身份、恢复）。
 - v1 的 `memory.json` 可以导入为 v2 的 `profile` / `episodic` 记忆，来源标记为 `v1-import`，状态为 `confirmed`，但必须保留原 id 和时间。
-- v2 的第一行代码从 `docs/v2` 的验收切片开始，不从“再加一个功能”开始。
+- 实现从验收切片开始，不从“再加一个功能”开始；切片脚本见 `scripts/acceptance-full.ts`。
 
 ## 平台决策
 
@@ -106,7 +106,7 @@ v2 不再从“给 agent 加一个聊天窗口”出发，而是从下面这个�
 
 ## 下一步
 
-当前 `v2/` 已跑通“文字/语音 → 注意力 → 记忆 → 回答 → TTS”和“按需屏幕 OCR → 回答”：
+当前实现已跑通“文字/语音 → 注意力 → 记忆 → 回答 → TTS”和“按需屏幕 OCR → 回答”：
 
 ```bash
 # 仓库根目录

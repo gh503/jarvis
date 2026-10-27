@@ -1,10 +1,11 @@
 # Jarvis v2 — 实现状态
 
-- Date: 2026-10-26
+- Date: 2026-10-27
 - Branch: `main`
-- Runtime: `v2/`（TypeScript / Node 24 / SQLite / 本地 Web UI）
-- Tests: 97 passing (`TZ=Asia/Shanghai npm test`), typecheck clean
+- Runtime: 仓库根目录（TypeScript / Node 24 / SQLite / 本地 Web UI，无构建步骤）
+- Tests: 100+ passing (`TZ=Asia/Shanghai npm test`), typecheck clean；`npm run acceptance:full` 端到端 170 项
 - Release acceptance: [release-acceptance-2026-10-26.md](release-acceptance-2026-10-26.md)
+- Production acceptance rerun: [acceptance-2026-10-27.md](acceptance-2026-10-27.md)（182/182，含安全加固与 UI 修复）
 
 ## 1. 已实现并跑通
 
@@ -23,7 +24,7 @@
 | 本地/远端模型切换（UI 一键） | `src/model/{router,openai,settings}.ts`, `web/app.js` | `test/{openai,model-settings}.test.ts`；mock 远端 + UI 实测 |
 | 三种 LLM 协议：Chat Completions / Responses / Anthropic Messages | `src/model/{openai,anthropic,router}.ts` | `test/{openai,anthropic}.test.ts`；SSE/非流式、图片、system、Key 头 |
 | 供应商池：任意数量远端 profile + 优先级链 | `src/model/{settings,router,failover}.ts`, `src/server.ts` | `test/{failover,scenarios,model-api}.test.ts`；真实服务故障演练（dead provider → local）通过 |
-| 额度/故障自动切换 + 冷却持久化 | `src/model/failover.ts`, `src/model/router.ts` | 402/429/401/网络/5xx 分类；冷却落盘；`model.failover` SSE；已产出流不重试 |
+| 额度/故障自动切换 + 冷却持久化 | `src/model/failover.ts`, `src/model/router.ts` | 402/429/401/网络/5xx 分类；冷却落盘；`model.failover` 通过 WebSocket 广播；已产出流不重试 |
 | 工作场景（10 内置 + 自定义，参考 ChatGPT/Claude Code/办公助手） | `src/model/scenarios.ts`, `src/conversation.ts`, `web/app.js` | 自动识别 + 手动钉住；场景链/模型/温度/提示词/maxTokens；旧 reasoning 折入 research；`test/scenarios.test.ts` |
 | 模型列表从服务地址自动发现 | `src/model/{openai,anthropic,ollama,router,cloudflare}.ts`, `src/server.ts`, `web/app.js` | `POST /api/model/list`；本地 Ollama 实测 5 个模型；Cloudflare 账号模型搜索 mock 测试；UI 下拉 |
 | 多厂商语音 adapter（Gemini / Cloudflare / Edge） | `src/voice/{providers,remote,edge}.ts`, `src/voice/{settings,runtime}.ts` | `test/{voice-providers,voice-settings}.test.ts`；Gemini ASR/TTS、Cloudflare ASR/TTS、Edge 可用性 |

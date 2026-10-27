@@ -102,6 +102,26 @@ export class ModelRouter implements ModelClient {
     return { ...this.current }
   }
 
+  /**
+   * A client that never leaves this machine. Screen and camera derived content
+   * (including OCR text) goes through this one so a failover can never carry it
+   * to a remote provider.
+   */
+  localClient(): ModelClient {
+    return this.fallback?.vision ?? this.clients.get('local') ?? this.client
+  }
+
+  /** True when the currently serving provider is reached over the network. */
+  servingRemote(): boolean {
+    const baseUrl = this.status().baseUrl
+    if (!baseUrl) return this.current.kind === 'openai'
+    try {
+      return !isLoopbackHost(new URL(baseUrl).hostname)
+    } catch {
+      return this.current.kind === 'openai'
+    }
+  }
+
   status(): ModelStatus {
     const base = this.client.status?.() ?? {
       id: this.current.id,
@@ -273,6 +293,18 @@ export class ModelRouter implements ModelClient {
     } catch (error) {
       return { ok: false, latencyMs: Date.now() - started, message: error instanceof Error ? error.message : String(error), models: [] }
     }
+  }
+
+  /**
+   * Drop every cached provider and serve from `profile` without probing it.
+   * Used after an erase resets the saved configuration.
+   */
+  resetTo(profile: ModelProfile): void {
+    this.clients.clear()
+    this.current = profile
+    this.client = createModelClient(profile)
+    this.clients.set(profile.id, this.client)
+    this.lastCooldowns = {}
   }
 
   /**

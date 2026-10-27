@@ -49,6 +49,11 @@ export class EventBus {
     return event
   }
 
+  /** Drop the replay ring. Used after an erase so no client can replay text. */
+  clear(): void {
+    this.ring.length = 0
+  }
+
   history(limit = 50): JarvisEvent[] {
     return this.ring.slice(-Math.max(1, Math.min(limit, this.capacity)))
   }

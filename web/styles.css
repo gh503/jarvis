@@ -8,13 +8,16 @@
   --ink-rgb: 255 255 255;
   /* 强调色的 RGB 通道（= #7ee7d5），半透明强调色都走它 */
   --accent-rgb: 126 231 213;
+  /* 分段控件 / 表单控件的实心底色 */
+  --panel: rgb(255 255 255 / 0.04);
   /* 玻璃面板底色通道 */
   --shade-rgb: 8 12 16;
   --line: rgb(var(--ink-rgb) / 0.09);
   --line-strong: rgb(var(--ink-rgb) / 0.16);
   --text: #e9eef4;
   --muted: #8b97a6;
-  --faint: #5b6674;
+  --faint: #86929f;
+
   --accent-h: 168;
   --cyan: hsl(var(--accent-h) 63% 70%);
   --cyan-dim: hsl(var(--accent-h) 63% 70% / 0.14);
@@ -50,7 +53,7 @@ body {
 
 button, input, textarea { font: inherit; color: inherit; }
 button { cursor: pointer; }
-button:focus-visible, textarea:focus-visible, input:focus-visible {
+button:focus-visible, textarea:focus-visible, input:focus-visible, select:focus-visible, summary:focus-visible {
   outline: 2px solid var(--cyan);
   outline-offset: 2px;
 }
@@ -540,6 +543,7 @@ kbd { font-family: var(--mono); font-size: 9px; border: 1px solid var(--line); b
 }
 .modal:focus { outline: none; }
 .modal.settings-modal { width: min(900px, 100%); max-height: min(880px, calc(100dvh - 96px)); }
+.modal.action-modal { width: min(460px, 100%); }
 .modal-head { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 18px 20px; border-bottom: 1px solid var(--line); flex: 0 0 auto; }
 .modal-head h2 { font-size: 15px; margin: 0; font-weight: 600; letter-spacing: .01em; }
 .modal-body { padding: 18px 20px 22px; overflow: auto; min-height: 0; overscroll-behavior: contain; }
@@ -777,7 +781,7 @@ kbd { font-family: var(--mono); font-size: 9px; border: 1px solid var(--line); b
 .voice-card-head { display: flex; justify-content: space-between; align-items: center; gap: 8px; margin-bottom: 8px; }
 .voice-card-head select { width: auto; min-width: 82px; }
 .voice-local-summary { display: flex; gap: 7px; align-items: baseline; color: var(--muted); font-size: 11px; margin-bottom: 4px; }
-.voice-local-summary b { color: var(--ink); font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.voice-local-summary b { color: var(--text); font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .voice-remote[hidden] { display: none; }
 .voice-remote label { margin-top: 6px; }
 .voice-remote .model-form-note { margin-top: 6px; }
@@ -1008,12 +1012,13 @@ kbd { font-family: var(--mono); font-size: 9px; border: 1px solid var(--line); b
   --bg-solid: #ffffff;
   --ink-rgb: 18 26 34;
   --accent-rgb: 26 122 108;
+  --panel: #ffffff;
   --shade-rgb: 255 255 255;
   --line: rgb(var(--ink-rgb) / 0.10);
   --line-strong: rgb(var(--ink-rgb) / 0.18);
   --text: #111a22;
   --muted: #566270;
-  --faint: #6b7683;
+  --faint: #5f6b78;
   --cyan: hsl(168 62% 30%);
   --cyan-dim: hsl(168 62% 30% / 0.12);
   --amber: #96620f;
@@ -1092,3 +1097,26 @@ kbd { font-family: var(--mono); font-size: 9px; border: 1px solid var(--line); b
   padding: 5px 14px; border-radius: 999px; font-size: 12px;
 }
 .segmented .segment.active { background: var(--panel); color: var(--text); box-shadow: inset 0 0 0 1px var(--line-strong, var(--line)); }
+
+.sr-only {
+  position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px;
+  overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; border: 0;
+}
+
+@media (max-width: 960px) {
+  .scenario-default select, .scenario-select { min-height: 40px; }
+  .segmented .segment { min-height: 38px; }
+  .quick { min-height: 40px; }
+}
+
+/* Notch/rounded-corner safety: the topbar sat under the status bar in PWA mode. */
+@supports (padding: env(safe-area-inset-top)) {
+  .studio { padding: env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left); }
+  .lightbox { padding: env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left); }
+}
+
+/* iOS zooms any focused field under 16px, which loses the layout. */
+@media (max-width: 680px) {
+  input, textarea, select { font-size: 16px; }
+  .search-row input, .settings-field input, .settings-field select, .settings-field textarea { font-size: 16px; }
+}

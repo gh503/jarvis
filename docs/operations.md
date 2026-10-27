@@ -33,12 +33,12 @@
 | 数据 | `~/.local/share/jarvis/data/jarvis.db`（SQLite，WAL） |
 | 日志 | `~/.local/share/jarvis/data/jarvis.log` |
 
-模型和二进制均在用户目录，不需要 sudo。`v2/.env.example` 是完整配置模板。
+模型和二进制均在用户目录，不需要 sudo。仓库根目录的 `.env.example` 是配置模板（含 `JARVIS_ALLOWED_HOSTS`、`JARVIS_ALLOW_REMOTE_VISION`、`JARVIS_LOG_LEVEL`）。
 
 ## 3. 启动
 
 ```bash
-cd ~/jarvis/v2
+cd ~/jarvis
 npm start
 # http://127.0.0.1:3081
 ```
@@ -46,7 +46,7 @@ npm start
 首次安装（幂等，慢的是模型下载）：
 
 ```bash
-cd ~/jarvis/v2
+cd ~/jarvis
 npm run setup
 npm run doctor
 ```
@@ -104,7 +104,7 @@ OLLAMA_MODELS=$HOME/.local/share/jarvis/ollama-models \
 
 ## 4. 模型来源：本地 / 远端，一键切换
 
-设置入口：右上角模型徽标，或“设置 → 模型来源”。设置弹窗分为**模型 / 语音 / 设备 / 系统**四个标签，状态概览固定在顶部，页签支持键盘左右键切换；改 Base URL、协议或 Key 后会自动刷新模型列表。不需要改 `.env`、不需要重启。
+设置入口：右上角模型徽标，或“设置 → 模型来源”。设置弹窗分为**模型 / 语音 / 外观 / 设备 / 系统**五个标签，状态概览固定在顶部，页签支持键盘左右键切换；改 Base URL、协议或 Key 后会自动刷新模型列表。不需要改 `.env`、不需要重启。
 
 ### 4.1 LLM 三种远端协议
 
@@ -253,7 +253,7 @@ bash scripts/install-hotkey.sh '<Super>j'
 ### 5.1 设备配对与撤销
 
 在已登录的桌面端打开 **设置 → 设备 → 生成配对码**，得到 6 位一次性配对码
-（5 分钟有效、最多尝试 5 次）。在手机/另一台电脑打开
+（5 分钟有效；每个客户端每分钟最多 8 次错误、全局限 60 次）。在手机/另一台电脑打开
 `https://<host>:3081/pair`，输入配对码和设备名即可。成功后服务端设置
 HttpOnly、SameSite=Strict 的 Cookie 并跳回首页；令牌只在配对响应中出现一次。
 
@@ -280,9 +280,11 @@ HttpOnly、SameSite=Strict 的 Cookie 并跳回首页；令牌只在配对响应
   路径穿越。
 - **每日简报**：08:30 生成本地规则简报（提醒 + 相关记忆 + 可选只读 ICS），
   通过 WebSocket 和桌面通知送达；不调用云端模型。
-- **数据导出/擦除**：设置 → 隐私 → 导出全部数据（JSON）；“删除全部本机数据”
-  会清空记忆、提醒、动作审计、音频、画面和 trace，必须输入中文确认短语，
-  不可撤销。
+- **数据导出/擦除**：设置 → 系统 → 隐私数据 → 导出数据（JSON：记忆、情景、
+  提醒、设备列表、不含密钥的配置摘要）；“删除全部本机数据”会清空记忆、提醒、
+  动作审计、音频、画面、trace、日志，重置已保存的模型/语音供应商（连同远端
+  API Key）、清空内存中的对话历史和事件回放、断开所有连接并轮换加密密钥。
+  必须输入确认短语，不可撤销。访问令牌不在擦除范围内，避免把自己锁在门外。
 
 Wayland 下拿不到活动窗口标题（`xdotool` 对原生 Wayland 失败，
 `org.gnome.Shell.Eval` 返回 false），因此窗口级黑名单目前只能在能拿到标题的

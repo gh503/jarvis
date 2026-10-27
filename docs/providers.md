@@ -169,7 +169,7 @@ Jarvis 会把浏览器音频先转成 16 kHz 单声道 WAV，再 multipart 上�
 ```bash
 # 仓库根目录
 npm run typecheck
-TZ=Asia/Shanghai npm test          # 86 tests
+TZ=Asia/Shanghai npm test          # 100+ tests
 ```
 
 新增测试使用本地 mock HTTP，不需要真实 Key：

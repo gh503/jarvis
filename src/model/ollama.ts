@@ -21,6 +21,7 @@ export class OllamaClient implements ModelClient, Embedder {
   readonly visionModel: string
   readonly embedModel: string
   readonly keepAlive: string
+  readonly isLocal: boolean
   private readonly id: string
   private readonly label: string
 
@@ -34,6 +35,11 @@ export class OllamaClient implements ModelClient, Embedder {
     this.keepAlive = options.keepAlive ?? '24h'
     this.id = options.id ?? 'local'
     this.label = options.label ?? '本地 Ollama'
+    let host = ''
+    try { host = new URL(baseUrl).hostname } catch { /* validated by the caller */ }
+    // "Local" means the socket never leaves this machine, not merely that the
+    // provider is an Ollama instance.
+    this.isLocal = host === '127.0.0.1' || host === 'localhost' || host === '::1' || host === '0.0.0.0'
   }
 
   status(): ModelStatus {

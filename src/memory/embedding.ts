@@ -15,6 +15,7 @@ export class NullEmbedder implements Embedder {
  */
 export class HashEmbedder implements Embedder {
   readonly model = 'hash-test'
+  readonly isLocal = true
 
   constructor(private readonly dimensions = 64) {}
 

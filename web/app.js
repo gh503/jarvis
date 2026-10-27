@@ -5,6 +5,7 @@ const $ = (selector, root = document) => root.querySelector(selector)
 const $$ = (selector, root = document) => [...root.querySelectorAll(selector)]
 
 const state = {
+  bootRetry: 0,
   ws: null,
   wsReady: false,
   reconnect: 0,
@@ -77,10 +78,25 @@ function authHeaders(extra = {}) {
 }
 
 async function api(path, options = {}) {
-  const response = await fetch(path, {
-    ...options,
-    headers: authHeaders({ 'content-type': 'application/json', ...(options.headers || {}) }),
-  })
+  // A hung request used to disable a button forever. Give every call a bound,
+  // and let callers override it for the genuinely long ones (model download,
+  // voice transcription).
+  const timeoutMs = options.timeoutMs ?? 30_000
+  const controller = new AbortController()
+  const timer = setTimeout(() => controller.abort(), timeoutMs)
+  let response
+  try {
+    response = await fetch(path, {
+      ...options,
+      signal: options.signal ?? controller.signal,
+      headers: authHeaders({ 'content-type': 'application/json', ...(options.headers || {}) }),
+    })
+  } catch (error) {
+    if (error?.name === 'AbortError') throw new Error(`请求超时（${Math.round(timeoutMs / 1000)} 秒）`)
+    throw error
+  } finally {
+    clearTimeout(timer)
+  }
   if (response.status === 401) {
     promptForToken()
     throw new Error('需要访问令牌')
@@ -317,6 +333,47 @@ function ttsLabel() {
   return `${voiceAdapterLabel(state.voice.ttsAdapter, state.voice.ttsProvider)} · 就绪`
 }
 
+function bindPushToTalk(control) {
+  let pointerHeld = false
+  let lastPointerUp = 0
+  const start = () => {
+    if (control.disabled) return
+    state.micHeld = true
+    void startRecording()
+  }
+  const stop = () => {
+    state.micHeld = false
+    stopRecording()
+  }
+  control.addEventListener('pointerdown', event => {
+    if (event.button !== undefined && event.button !== 0) return
+    if (event.pointerType === 'mouse' && event.button !== 0) return
+    event.preventDefault()
+    pointerHeld = true
+    control.setPointerCapture?.(event.pointerId)
+    start()
+  })
+  control.addEventListener('pointerup', event => {
+    if (!pointerHeld) return
+    event.preventDefault()
+    pointerHeld = false
+    lastPointerUp = Date.now()
+    stop()
+  })
+  control.addEventListener('pointercancel', () => {
+    if (!pointerHeld) return
+    pointerHeld = false
+    lastPointerUp = Date.now()
+    stop()
+  })
+  // A completed pointer gesture also fires click; ignore that one.
+  control.addEventListener('click', () => {
+    if (Date.now() - lastPointerUp < 400) return
+    if (state.micHeld) stop()
+    else start()
+  })
+}
+
 function applyStatus(status = {}) {
   state.status = { ...state.status, ...status }
   if (status.voice) state.voice = status.voice
@@ -351,7 +408,7 @@ function applyStatus(status = {}) {
   $('#reminder-count').textContent = String(state.reminders.length)
   if (state.status.attention) updateAttention(state.status.attention)
   renderRuntime()
-  if (!$('#modal').hidden && $('.modal')?.classList.contains('settings-modal')) updateSettingsOverview()
+  if (!$('#modal').hidden && $('#modal .modal')?.classList.contains('settings-modal')) updateSettingsOverview()
 }
 
 function appendMessage(role, text, options = {}) {
@@ -545,7 +602,10 @@ async function bootstrap() {
     renderRuntime()
     if (state.actions.length) setTimeout(() => showAction(state.actions[0]), 450)
   } catch (error) {
-    appendMessage('system', `初始化失败：${error.message}`)
+    // A transient failure used to leave an empty page with no way back.
+    appendMessage('system', `初始化失败：${error.message}。3 秒后自动重试。`)
+    clearTimeout(state.bootRetry)
+    state.bootRetry = setTimeout(() => { void boot() }, 3000)
   }
 }
 
@@ -681,12 +741,30 @@ function noteAction(action, text) {
   appendMessage('system', text)
 }
 
+/**
+ * The action prompt has its own overlay: reusing the settings modal would
+ * throw away whatever the person was editing when a proposal arrived.
+ */
+function openActionModal(html) {
+  state.actionOpener = document.activeElement
+  $('#action-body').innerHTML = html
+  $('#action-modal').hidden = false
+  requestAnimationFrame(() => $('#action-approve')?.focus({ preventScroll: true }))
+}
+
+function closeActionModal() {
+  if ($('#action-modal').hidden) return
+  $('#action-modal').hidden = true
+  $('#action-body').innerHTML = ''
+  state.actionOpener?.focus?.()
+}
+
 function showAction(action) {
   if (!action || action.status !== 'proposed') return
   const title = action.kind === 'open-url' ? '打开网页' : '打开应用'
   const target = escapeHtml(action.target)
   const label = escapeHtml(action.label || action.target)
-  openModal(`
+  openActionModal(`
     <h3>需要你确认的一次性动作</h3>
     <p>${title}：<strong>${label}</strong></p>
     <div class="action-target">${target}</div>
@@ -695,7 +773,7 @@ function showAction(action) {
       <button class="primary" id="action-approve" type="button">允许一次</button>
       <button id="action-deny" type="button">拒绝</button>
     </div>
-  `, '确认动作')
+  `)
   const approve = $('#action-approve')
   const deny = $('#action-deny')
   approve.addEventListener('click', async () => {
@@ -707,7 +785,7 @@ function showAction(action) {
     } catch (error) {
       noteAction(action, `执行失败：${error.message}`)
     }
-    closeModal()
+    closeActionModal()
   })
   deny.addEventListener('click', async () => {
     approve.disabled = true
@@ -718,7 +796,7 @@ function showAction(action) {
     } catch (error) {
       appendMessage('system', error.message)
     }
-    closeModal()
+    closeActionModal()
   })
 }
 
@@ -882,6 +960,8 @@ async function finishRecording(chunks, mimeType) {
       method: 'POST',
       headers: authHeaders({ 'content-type': blob.type || 'audio/webm' }),
       body: blob,
+      // Local transcription of a long clip is slow but not infinite.
+      signal: AbortSignal.timeout(120_000),
     })
     if (response.status === 401) {
       promptForToken()
@@ -935,7 +1015,7 @@ function promptForToken() {
   openModal(`
     <h3>需要访问令牌</h3>
     <p>这台机器不是本机回环访问。输入服务端配置的 <code>JARVIS_AUTH_TOKEN</code>；如果启动时没有设置该环境变量，再使用 <code>~/.local/share/jarvis/data/auth-token</code> 里的令牌。</p>
-    <div class="search-row"><input id="token-input" type="password" placeholder="粘贴令牌" autocomplete="off"></div>
+    <div class="search-row"><input id="token-input" type="password" placeholder="粘贴令牌" autocomplete="off" aria-label="访问令牌"></div>
     <button class="send-btn" id="token-save" type="button" style="width:auto;padding:0 14px;height:34px">保存并重连</button>
   `, '访问令牌')
   const saveToken = () => {
@@ -977,7 +1057,7 @@ async function showBrief() {
       button.disabled = true
       button.textContent = '准备语音…'
       try {
-        const result = await api('/api/brief/read', { method: 'POST', body: '{}' })
+        const result = await api('/api/brief/read', { method: 'POST', body: '{}', timeoutMs: 90_000 })
         if (result.audioUrl) playAudio(result.audioUrl)
         button.textContent = '已朗读'
       } catch (error) {
@@ -995,18 +1075,18 @@ function openModal(html, title = '设置', options = {}) {
   $('#modal-title').textContent = title
   $('#modal-body').innerHTML = html
   $('#modal').hidden = false
-  $('.modal').classList.toggle('settings-modal', options.className === 'settings-modal')
+  $('#modal .modal').classList.toggle('settings-modal', options.className === 'settings-modal')
   $('#modal').classList.toggle('settings-open', options.className === 'settings-modal')
   if (options.focus !== false) {
     requestAnimationFrame(() => {
-      const target = options.focusSelector ? $(options.focusSelector) : $('.modal')
+      const target = options.focusSelector ? $(options.focusSelector) : $('#modal .modal')
       target?.focus?.({ preventScroll: true })
     })
   }
 }
 
-function trapModalFocus(event) {
-  const modal = $('.modal')
+function trapModalFocus(event, root = $('#modal .modal')) {
+  const modal = root
   if (!modal) return
   const focusable = $$('button:not([disabled]), [href], input:not([disabled]), select:not([disabled]), textarea:not([disabled]), summary, [tabindex]:not([tabindex="-1"])', modal)
     .filter(element => element.getClientRects().length > 0)
@@ -1033,12 +1113,12 @@ function trapModalFocus(event) {
 
 function closeModal(force = false) {
   const dirty = state.settingsDirty.model || state.settingsDirty.voice
-  if (!force && !$('#modal').hidden && $('.modal')?.classList.contains('settings-modal') && dirty) {
+  if (!force && !$('#modal').hidden && $('#modal .modal')?.classList.contains('settings-modal') && dirty) {
     if (!window.confirm('设置里有未保存的修改，关闭后会丢失。确定关闭？')) return
   }
   state.settingsLoadToken += 1
   $('#modal').hidden = true
-  $('.modal')?.classList.remove('settings-modal')
+  $('#modal .modal')?.classList.remove('settings-modal')
   $('#modal').classList.remove('settings-open')
   state.settingsDirty = { model: false, voice: false }
   state.tokenPrompted = false
@@ -1430,7 +1510,7 @@ function settingsPanelsHtml(selected, settings) {
     </section>
     <section class="settings-panel" id="settings-panel-appearance" data-settings-panel="appearance" role="tabpanel" aria-labelledby="settings-tab-appearance" hidden>
       <div class="settings-section-head">
-        <div><h3>外观与主题</h3><p>颜色、动效、密度即时生效并保存到服务端，所有设备保持一致。</p></div>
+        <div><h3>外观与主题</h3><p>颜色、动效、密度保存到服务端，所有设备保持一致；深色/浅色只影响当前浏览器。</p></div>
       </div>
       <div id="appearance-host">${appearanceCardHtml()}</div>
     </section>
@@ -1468,17 +1548,17 @@ function settingsPanelsHtml(selected, settings) {
         </details>
         <div class="settings-actions">
           <button class="model-action" id="privacy-export" type="button" aria-expanded="false" aria-controls="export-confirm">导出全部数据</button>
-          <button class="model-action danger" id="privacy-erase" type="button" aria-expanded="false" aria-controls="erase-confirm">删除全部对话与记忆</button>
+          <button class="model-action danger" id="privacy-erase" type="button" aria-expanded="false" aria-controls="erase-confirm">擦除全部本机数据</button>
         </div>
         <div class="erase-confirm" id="export-confirm" hidden>
-          <p>导出文件包含全部记忆（包括 sensitive/secret）、提醒和回合摘要；只保存到可信位置。</p>
+          <p>导出文件包含全部记忆（包括 sensitive/secret）、情景、提醒、设备列表和不含密钥的配置摘要；只保存到可信位置。</p>
           <div class="device-pair-row">
             <button class="model-action primary" id="export-confirm-btn" type="button">确认导出</button>
             <button class="model-action" id="export-cancel" type="button">取消</button>
           </div>
         </div>
         <div class="erase-confirm" id="erase-confirm" hidden>
-          <p>删除会清空记忆、提醒、动作审计、语音与画面，并重置观察台历史；不可撤销，建议先导出。</p>
+          <p>擦除会清空记忆、提醒、动作审计、语音、画面、日志和观察台历史；同时重置已保存的模型/语音供应商（连同远端 API Key）、清空对话历史并断开所有连接。不可撤销，建议先导出。</p>
           <label for="erase-phrase">输入“删除全部”确认</label>
           <div class="device-pair-row">
             <input id="erase-phrase" type="text" autocomplete="off" spellcheck="false" placeholder="删除全部">
@@ -1798,11 +1878,16 @@ function bindScenarioCard() {
       renderScenarioCard()
       renderScenarioSelect()
       clearSettingsDirty('model')
-      if (result) { result.textContent = '场景已保存'; result.className = 'settings-feedback ok' }
+      // renderScenarioCard() replaced the card, so the old reference is detached;
+      // write the confirmation into the live element instead.
+      const fresh = $('#scenario-result')
+      if (fresh) { fresh.textContent = '场景已保存'; fresh.className = 'settings-feedback ok' }
     } catch (error) {
-      if (result) { result.textContent = `保存失败：${error.message}`; result.className = 'settings-feedback bad' }
+      const fresh = $('#scenario-result')
+      if (fresh) { fresh.textContent = `保存失败：${error.message}`; fresh.className = 'settings-feedback bad' }
     } finally {
-      save.disabled = false
+      const live = $('#scenario-save')
+      if (live) live.disabled = false
     }
   })
 }
@@ -2001,7 +2086,7 @@ function bindAppearance() {
     const button = event.currentTarget
     button.disabled = true
     try {
-      const data = await api('/api/tuning/reset', { method: 'POST', body: JSON.stringify({ group: 'ui' }) })
+      const data = await api('/api/tuning/reset', { method: 'POST', body: JSON.stringify({ group: 'appearance' }) })
       state.tuningSnapshot = data.tuning || state.tuningSnapshot
       applyVisualTuning(data.values || {})
       const host = $('#appearance-host')
@@ -2267,6 +2352,7 @@ async function refreshModelOptions(selected, options = {}) {
   }
   try {
     const data = await api('/api/model/list', {
+      timeoutMs: 60_000,
       method: 'POST',
       body: JSON.stringify({
         id: selected.id,
@@ -2327,7 +2413,7 @@ function bindModelForm(selected) {
     try {
       const payload = modelPayload(selected)
       if (!payload.baseUrl) throw new Error('请先填写 Base URL')
-      const data = await api('/api/model/test', { method: 'POST', body: JSON.stringify(payload) })
+      const data = await api('/api/model/test', { method: 'POST', body: JSON.stringify(payload), timeoutMs: 60_000 })
       if (Array.isArray(data.models) && data.models.length) renderModelSelect(selected, data.models)
       if (result) {
         result.textContent = `${data.ok ? '连接成功' : '连接失败'} · ${data.latencyMs ?? '—'} ms · ${data.message || ''}`
@@ -2478,7 +2564,10 @@ function bindSettingsActions() {
       $('#capture-strip').hidden = true
       $('#capture-image').removeAttribute('src')
       await Promise.all([refreshMemory(), refreshReminders(), refreshStatus()])
-      appendMessage('system', `本机数据已删除：${result.erased?.items ?? 0} 条记忆、${result.erased?.reminders ?? 0} 个提醒。`)
+      appendMessage('system', `擦除完成：${result.erased?.items ?? 0} 条记忆、${result.erased?.reminders ?? 0} 个提醒；供应商已重置为本机默认，连接会重新建立。`)
+      // The server dropped every socket and reset the provider config; reload so
+      // the UI starts from the same clean state instead of stale caches.
+      setTimeout(() => window.location.reload(), 1400)
     } catch (error) {
       button.disabled = false
       appendMessage('system', `删除失败：${error.message}`)
@@ -2582,6 +2671,8 @@ function bind() {
   })
   $('#settings-btn').addEventListener('click', () => { void showSettings() })
   $('#model-pill').addEventListener('click', () => { void showSettings({ tab: 'model' }) })
+  $('#action-modal-close').addEventListener('click', () => closeActionModal())
+  $('#action-modal').addEventListener('click', event => { if (event.target === $('#action-modal')) closeActionModal() })
   $('#modal-close').addEventListener('click', () => closeModal())
   $('#modal').addEventListener('click', event => { if (event.target === $('#modal')) closeModal() })
   $('#modal-body').addEventListener('input', event => {
@@ -2593,7 +2684,17 @@ function bind() {
     else if (event.target.closest('[data-settings-panel="voice"]')) markSettingsDirty('voice')
   })
   document.addEventListener('keydown', event => {
-    if (!$('#modal').hidden && $('.modal')?.classList.contains('settings-modal')) {
+    if (!$('#action-modal').hidden) {
+      if (event.key === 'Tab') trapModalFocus(event, $('#action-modal .modal'))
+      if (event.key === 'Escape') {
+        event.preventDefault()
+        closeActionModal()
+      }
+      return
+    }
+    // Every dialog rendered into #modal (settings, senses, brief, token,
+    // onboarding) traps Tab, not just the settings sheet.
+    if (!$('#modal').hidden) {
       if (event.key === 'Tab') trapModalFocus(event)
       if (event.key === 'Escape') {
         if (!$('#lightbox').hidden) $('#lightbox').hidden = true
@@ -2645,29 +2746,34 @@ function bind() {
   }))
   $$('.prompt-chips button').forEach(button => button.addEventListener('click', () => sendText(button.dataset.prompt)))
 
-  const mic = $('#mic-btn')
-  mic.addEventListener('pointerdown', event => {
-    event.preventDefault()
-    state.micHeld = true
-    mic.setPointerCapture?.(event.pointerId)
-    void startRecording()
-  })
-  mic.addEventListener('pointerup', event => {
-    event.preventDefault()
-    state.micHeld = false
-    stopRecording()
-  })
-  mic.addEventListener('pointercancel', () => {
-    state.micHeld = false
-    stopRecording()
-  })
+  // Push-to-talk works for pointers (hold) and keyboards/screen readers
+  // (click toggles). Both the composer mic and the big orb share it, so the
+  // orb is no longer a focusable control that does nothing.
+  for (const control of [$('#mic-btn'), $('#orb')]) {
+    if (!control) continue
+    bindPushToTalk(control)
+  }
 
   $('#capture-close').addEventListener('click', () => { $('#capture-strip').hidden = true })
-  $('#capture-image').addEventListener('click', () => {
+  const openLightbox = () => {
     if (!state.captureUrl) return
+    state.lightboxOpener = document.activeElement
     $('#lightbox-image').src = state.captureUrl
     $('#lightbox').hidden = false
+    $('#lightbox-close')?.focus({ preventScroll: true })
+  }
+  const closeLightbox = () => {
+    if ($('#lightbox').hidden) return
+    $('#lightbox').hidden = true
+    $('#lightbox-image').removeAttribute('src')
+    state.lightboxOpener?.focus?.()
+  }
+  $('#capture-image').addEventListener('click', openLightbox)
+  $('#capture-image').addEventListener('keydown', event => {
+    if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); openLightbox() }
   })
+  $('#lightbox-close').addEventListener('click', closeLightbox)
+  $('#lightbox').addEventListener('click', event => { if (event.target === $('#lightbox')) closeLightbox() })
   $('#lightbox-close').addEventListener('click', () => { $('#lightbox').hidden = true })
   $('#lightbox').addEventListener('click', event => { if (event.target === $('#lightbox')) $('#lightbox').hidden = true })
 }

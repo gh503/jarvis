@@ -569,16 +569,21 @@ export class Conversation {
   }
 
   private async look(target: 'screen' | 'camera', userText: string, forceVision = false): Promise<TurnResult> {
-    // A remote profile may advertise a vision model, but screen and camera
-    // pixels are the most sensitive context Jarvis has. Keep them local unless
-    // the operator explicitly opts in.
-    const activeModel = this.deps.model.status?.()
-    if (activeModel?.kind === 'openai' && process.env.JARVIS_ALLOW_REMOTE_VISION !== '1') {
+    // Screen and camera pixels are the most sensitive context Jarvis has.
+    // Decide by where the provider actually lives, not by its kind: an
+    // "ollama" profile pointed at a LAN box is remote too, and a local
+    // OpenAI-compatible server is still local.
+    const allowRemoteVision = process.env.JARVIS_ALLOW_REMOTE_VISION === '1'
+    const servingRemote = this.deps.model.servingRemote?.() ?? this.deps.model.status?.().kind === 'openai'
+    if (servingRemote && !allowRemoteVision) {
       this.deps.attention.send({ type: 'context_denied', reason: 'remote_vision_blocked' })
       return {
         reply: '当前使用的是远端模型。为了不把屏幕或摄像头画面发到服务商，我先不采集；切回本地模型后再看。',
       }
     }
+    // Pixels and the OCR text derived from them must never fail over to a
+    // remote provider, so local captures use the local-only client.
+    const visionClient = servingRemote && allowRemoteVision ? this.deps.model : (this.deps.model.localClient?.() ?? this.deps.model)
     this.deps.attention.send({ type: 'context_needed', reason: target })
     let capture: Capture | null = null
     try {
@@ -602,7 +607,7 @@ export class Conversation {
 
     this.deps.attention.send({ type: 'respond_start', reason: 'vision' })
     try {
-      const reply = await describeCapture(this.deps.model, capture, userText, this.abort?.signal, this.deps.ocr, forceVision || target === 'camera')
+      const reply = await describeCapture(visionClient, capture, userText, this.abort?.signal, this.deps.ocr, forceVision || target === 'camera')
       return { reply, contextUsed: [target] }
     } catch (error) {
       return { reply: `画面看到了，但理解失败：${error instanceof Error ? error.message : String(error)}` }
@@ -782,6 +787,17 @@ export class Conversation {
     } catch {
       // No captures yet.
     }
+  }
+
+  /** Forget in-memory state (history, queue) so an erase leaves no echo. */
+  reset(): void {
+    this.history.length = 0
+    this.turnAudioUrls = []
+    this.speechQueue = Promise.resolve()
+    this.abort?.abort()
+    this.abort = null
+    this.busy = false
+    this.turnActive = false
   }
 
   memoryItems(): MemoryItem[] {

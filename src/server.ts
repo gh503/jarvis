@@ -70,7 +70,7 @@ function securityHeaders(response: ServerResponse): void {
   response.setHeader('Permissions-Policy', 'camera=(self), microphone=(self), display-capture=(self), geolocation=()')
   response.setHeader(
     'Content-Security-Policy',
-    "default-src 'self'; connect-src 'self' ws: wss:; img-src 'self' data: blob:; media-src 'self' blob:; style-src 'self' 'unsafe-inline'; script-src 'self'; font-src 'self'; frame-ancestors 'none'; base-uri 'none'",
+    "default-src 'self'; connect-src 'self'; img-src 'self' data: blob:; media-src 'self' blob:; style-src 'self' 'unsafe-inline'; script-src 'self'; font-src 'self'; frame-ancestors 'none'; base-uri 'none'",
   )
 }
 
@@ -117,11 +117,16 @@ async function readBody(request: IncomingMessage, limit: number): Promise<Buffer
 async function readJson<T = Record<string, unknown>>(request: IncomingMessage, limit = 1_000_000): Promise<T> {
   const body = await readBody(request, limit)
   if (body.length === 0) return {} as T
+  let parsed: unknown
   try {
-    return JSON.parse(body.toString('utf8')) as T
+    parsed = JSON.parse(body.toString('utf8'))
   } catch {
     throw new HttpError(400, '请求不是合法 JSON')
   }
+  if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) {
+    throw new HttpError(400, '请求体必须是 JSON 对象')
+  }
+  return parsed as T
 }
 
 function parseCookies(header: string | undefined): Record<string, string> {
@@ -144,16 +149,33 @@ function isLoopback(request: IncomingMessage): boolean {
   return address === '127.0.0.1' || address === '::1' || address === '::ffff:127.0.0.1'
 }
 
+/** Best-effort client identity for throttling; the proxy header wins. */
+function clientKey(request: IncomingMessage): string {
+  const forwarded = request.headers['x-forwarded-for']
+  const first = Array.isArray(forwarded) ? forwarded[0] : forwarded
+  const hop = first?.split(',')[0]?.trim()
+  return hop || request.socket.remoteAddress || 'unknown'
+}
+
+function hostnameOf(hostHeader: string): string {
+  const parsed = new URL(`http://${hostHeader}`)
+  return parsed.hostname.replace(/^\[|\]$/g, '').toLowerCase()
+}
+
 function sameOrigin(request: IncomingMessage): boolean {
+  // Defence in depth: modern browsers state the relationship outright, and a
+  // cross-site value is a clear signal regardless of Origin handling.
+  const site = request.headers['sec-fetch-site']
+  if (typeof site === 'string' && site.toLowerCase() === 'cross-site') return false
   const origin = request.headers.origin
   if (!origin) return true
   try {
     const parsed = new URL(origin)
     const host = request.headers.host ?? ''
-    const [hostname, port = ''] = host.includes(':') ? [host.slice(0, host.lastIndexOf(':')), host.slice(host.lastIndexOf(':') + 1)] : [host, '']
+    if (!host) return false
     if (parsed.host === host) return true
-    const localNames = new Set(['127.0.0.1', 'localhost', '::1', '[::1]'])
-    return localNames.has(parsed.hostname) && localNames.has(hostname) && (parsed.port || '') === port
+    const localNames = new Set(['127.0.0.1', 'localhost', '::1'])
+    return localNames.has(parsed.hostname) && localNames.has(hostnameOf(host))
   } catch {
     return false
   }
@@ -165,6 +187,14 @@ function safeEqual(left: string, right: string): boolean {
   return timingSafeEqual(a, b)
 }
 
+interface SocketAuth {
+  credential: string
+  /** The connection was accepted because it came from loopback, not a token. */
+  loopbackTrusted: boolean
+}
+
+type JarvisSocket = WebSocket & { jarvisAuth?: SocketAuth }
+
 export class JarvisServer {
   private server: Server | null = null
   private wss: WebSocketServer | null = null
@@ -173,6 +203,7 @@ export class JarvisServer {
   private readonly devices: DeviceStore
   private readonly pairing = new Map<string, { expiresAt: number }>()
   private claimFailures: number[] = []
+  private readonly claimFailuresByClient = new Map<string, number[]>()
   private listeningPort = 0
 
   constructor(private readonly deps: ServerDeps) {
@@ -184,11 +215,20 @@ export class JarvisServer {
       void this.handle(request, response).catch(error => {
         const status = errorStatus(error)
         if (status >= 500) this.deps.logger.error('request failed', { error: String(error) })
-        if (!response.headersSent) {
-          sendJson(response, status, { error: status >= 500 ? 'internal error' : error instanceof Error ? error.message : String(error) })
-        } else {
+        if (response.headersSent) {
           response.end()
+          return
         }
+        // A body that was rejected before it was fully read (413) leaves
+        // unread bytes on the socket. Without an explicit close the client
+        // keeps the connection in its pool and the next request on it fails
+        // with ECONNRESET — which surfaces in the browser as an intermittent
+        // "Failed to fetch". Drain the rest, then politely close.
+        if (status === 413) {
+          response.setHeader('connection', 'close')
+          request.resume()
+        }
+        sendJson(response, status, { error: status >= 500 ? 'internal error' : error instanceof Error ? error.message : String(error) })
       })
     }
 
@@ -209,12 +249,19 @@ export class JarvisServer {
         socket.destroy()
         return
       }
-      if (!sameOrigin(request) || !this.authorized(request, url, true)) {
+      if (!this.hostAllowed(request) || !sameOrigin(request) || !this.authorized(request, url, true)) {
         socket.write('HTTP/1.1 401 Unauthorized\r\nConnection: close\r\n\r\n')
         socket.destroy()
         return
       }
       this.wss?.handleUpgrade(request, socket, head, ws => {
+        const auth = ws as JarvisSocket
+        auth.jarvisAuth = {
+          credential: this.credentialOf(request, url),
+          // Mirror authorized(): a plain loopback socket needs no token, and a
+          // proxy header forces token authentication even on loopback.
+          loopbackTrusted: isLoopback(request) && !request.headers['x-forwarded-for'] && !request.headers['x-real-ip'] && !request.headers['forwarded'],
+        }
         this.wss?.emit('connection', ws, request)
       })
     })
@@ -252,6 +299,37 @@ export class JarvisServer {
       Boolean(candidate) && (safeEqual(candidate, this.deps.config.authToken) || this.devices.verify(candidate)))
   }
 
+  private credentialOf(request: IncomingMessage, url: URL): string {
+    const header = request.headers.authorization
+    const bearer = header?.startsWith('Bearer ') ? header.slice(7) : ''
+    return bearer || parseCookies(request.headers.cookie).jarvis_token || url.searchParams.get('token') || ''
+  }
+
+  /** A live socket must stay authorised: revoking a device closes its streams. */
+  private socketAuthorized(ws: JarvisSocket): boolean {
+    const auth = ws.jarvisAuth
+    if (!auth) return false
+    if (auth.loopbackTrusted) return true
+    if (!auth.credential) return false
+    if (this.deps.config.authToken && safeEqual(auth.credential, this.deps.config.authToken)) return true
+    return this.devices.verify(auth.credential)
+  }
+
+  private pruneSockets(): void {
+    for (const client of [...this.clients]) {
+      if (this.socketAuthorized(client as JarvisSocket)) continue
+      this.clients.delete(client)
+      try { client.close(4401, 'unauthorized') } catch { /* already gone */ }
+    }
+  }
+
+  private closeAllSockets(): void {
+    for (const client of [...this.clients]) {
+      try { client.close(1001, 'server reset') } catch { /* already gone */ }
+    }
+    this.clients.clear()
+  }
+
   private onConnection(ws: WebSocket): void {
     this.clients.add(ws)
     ws.send(JSON.stringify({
@@ -284,6 +362,11 @@ export class JarvisServer {
     }
     if (message.kind === 'cancel') {
       this.deps.conversation.cancel()
+      return
+    }
+    if (!this.socketAuthorized(ws as JarvisSocket)) {
+      this.send(ws, { kind: 'error', error: 'unauthorized' })
+      try { ws.close(4401, 'unauthorized') } catch { /* already gone */ }
       return
     }
     if (message.kind === 'chat') {
@@ -322,6 +405,13 @@ export class JarvisServer {
       throw new HttpError(400, '请求路径编码无效')
     }
 
+    if (!this.hostAllowed(request)) {
+      // 421 Misdirected Request: the request reached a server that does not
+      // serve this host name.
+      sendJson(response, 421, { error: 'host not allowed' })
+      return
+    }
+
     if (path === '/' && url.searchParams.has('token')) {
       const token = url.searchParams.get('token') ?? ''
       if (this.deps.config.authToken && (safeEqual(token, this.deps.config.authToken) || this.devices.verify(token))) {
@@ -342,8 +432,12 @@ export class JarvisServer {
         return
       }
       const now = Date.now()
+      // Throttle per client first so one noisy caller cannot lock the owner out,
+      // with a global cap as a backstop against distributed guessing.
+      const key = clientKey(request)
+      const recent = (this.claimFailuresByClient.get(key) ?? []).filter(at => at > now - 60_000)
       this.claimFailures = this.claimFailures.filter(at => at > now - 60_000)
-      if (this.claimFailures.length >= 30) {
+      if (recent.length >= 8 || this.claimFailures.length >= 60) {
         sendJson(response, 429, { error: '尝试过于频繁，稍后再试' })
         return
       }
@@ -351,8 +445,11 @@ export class JarvisServer {
       const code = String(body.code ?? '').trim()
       const pending = this.pairing.get(code)
       if (!pending || pending.expiresAt < now) {
+        recent.push(now)
+        this.claimFailuresByClient.set(key, recent)
         this.claimFailures.push(now)
-        this.pairing.delete(code)
+        // Only drop the pending code once the attempts look deliberate.
+        if (recent.length >= 8) this.pairing.delete(code)
         sendJson(response, 401, { error: '配对码无效或已过期' })
         return
       }
@@ -417,6 +514,8 @@ export class JarvisServer {
         return
       }
       this.deps.logger.info('device revoked', { deviceId: id })
+      // A revoked token must not keep a live WebSocket: close those streams.
+      this.pruneSockets()
       sendJson(response, 200, { ok: true })
       return
     }
@@ -815,7 +914,7 @@ export class JarvisServer {
     if (request.method === 'POST' && path === '/api/look') {
       const body = await readJson<{ target?: string; vision?: boolean }>(request)
       const target = body.target === 'camera' ? 'camera' : 'screen'
-      const text = body.vision ? '用视觉看屏幕' : target === 'camera' ? '看下摄像头' : '看下屏幕'
+      const text = target === 'camera' ? '看下摄像头' : body.vision ? '用视觉看屏幕' : '看下屏幕'
       const result = await this.deps.conversation.handleText(text, { source: 'text' })
       sendJson(response, 200, result)
       return
@@ -823,7 +922,19 @@ export class JarvisServer {
 
     if (request.method === 'GET' && path === '/api/privacy/export') {
       const exported = this.deps.memory.exportAll()
-      sendJson(response, 200, exported, { 'content-disposition': `attachment; filename="jarvis-export-${new Date().toISOString().slice(0, 10)}.json"` })
+      const settings = await this.deps.modelSettings.load()
+      const payload = {
+        ...exported,
+        reminders: this.deps.reminders.list(),
+        devices: this.devices.list(),
+        config: {
+          host: this.deps.config.host,
+          port: this.deps.config.port,
+          model: settings.profiles.find(item => item.id === settings.active)?.label ?? 'local',
+          scenarios: settings.scenarios.length,
+        },
+      }
+      sendJson(response, 200, payload, { 'content-disposition': `attachment; filename="jarvis-export-${new Date().toISOString().slice(0, 10)}.json"` })
       return
     }
 
@@ -838,16 +949,45 @@ export class JarvisServer {
       this.devices.clear()
       this.deps.actions.clear()
       this.deps.telemetry.clearAll()
+      // In-memory echoes: a reconnecting client must not receive the previous
+      // conversation through the replay ring or the model's history.
+      this.deps.bus.clear()
+      this.deps.conversation.reset()
       for (const name of ['audio', 'captures']) {
         await rm(join(this.deps.config.dataDir, name), { recursive: true, force: true })
         await mkdir(join(this.deps.config.dataDir, name), { recursive: true, mode: 0o700 })
       }
-      await rm(join(this.deps.config.dataDir, 'audit', 'actions.jsonl'), { force: true })
-      await rm(join(this.deps.config.dataDir, 'telemetry.jsonl'), { force: true })
-      await rm(join(this.deps.config.dataDir, 'telemetry.jsonl.1'), { force: true })
+      for (const name of ['audit/actions.jsonl', 'telemetry.jsonl', 'telemetry.jsonl.1', 'jarvis.log']) {
+        await rm(join(this.deps.config.dataDir, name), { force: true })
+      }
+      // Provider files hold remote API keys, so a full erase resets them and
+      // falls back to the local model and local speech.
+      const modelDefaults = await this.deps.modelSettings.resetToDefaults()
+      const localProfile = modelDefaults.profiles.find(item => item.id === 'local')
+      if (localProfile) {
+        const profile = validateProfile(localProfile)
+        this.deps.models.resetTo(profile)
+        await this.deps.conversation.refreshModel().catch(() => undefined)
+      }
+      let voiceReset = false
+      if (this.deps.voiceSettings) {
+        const voiceDefaults = await this.deps.voiceSettings.resetToDefaults()
+        voiceReset = true
+        await this.deps.voice?.reconfigure().catch(() => undefined)
+        void voiceDefaults
+      }
       // Rotate only after the files that used the old key are gone.
       this.deps.secure.rotate()
-      sendJson(response, 200, { ok: true, erased: counts })
+      // No session may keep streaming after a wipe.
+      this.closeAllSockets()
+      this.deps.logger.info('privacy erase completed', { ...counts, voiceReset })
+      sendJson(response, 200, {
+        ok: true,
+        erased: counts,
+        providersReset: true,
+        voiceReset,
+        socketsClosed: true,
+      })
       return
     }
 
@@ -1039,6 +1179,34 @@ export class JarvisServer {
     }
 
     sendJson(response, 405, { error: 'method not allowed' })
+  }
+
+  /**
+   * DNS-rebinding defence: the Host header must name this machine. A malicious
+   * page can rebind its own domain to 127.0.0.1, which makes the socket look
+   * local — but the Host header still carries the attacker's domain, so
+   * rejecting unknown hosts closes the hole. Add LAN names through
+   * JARVIS_ALLOWED_HOSTS (comma separated) when serving beyond localhost.
+   */
+  private allowedHosts(): Set<string> {
+    const hosts = new Set(['localhost', '127.0.0.1', '::1'])
+    const configured = this.deps.config.host.trim().toLowerCase()
+    if (configured && configured !== '0.0.0.0' && configured !== '::') hosts.add(configured.replace(/^\[|\]$/g, ''))
+    for (const extra of (process.env.JARVIS_ALLOWED_HOSTS ?? '').split(',')) {
+      const name = extra.trim().toLowerCase().replace(/^\[|\]$/g, '')
+      if (name) hosts.add(name)
+    }
+    return hosts
+  }
+
+  private hostAllowed(request: IncomingMessage): boolean {
+    const header = request.headers.host
+    if (!header) return false
+    try {
+      return this.allowedHosts().has(hostnameOf(header))
+    } catch {
+      return false
+    }
   }
 
   private isLoopback(request: IncomingMessage): boolean {

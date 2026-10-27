@@ -18,8 +18,16 @@ Jarvis 是一个**单用户、单机优先**的私人助手。默认只监听 `1
 3. 配置 TLS 证书和私钥（否则启动失败，fail closed）。
 
 远端请求必须带 `Authorization: Bearer` 或配对设备 Cookie；跨源写请求被
-`SameSite`/Origin 检查拒绝。设备令牌是**全权限**的，等价于主令牌；当前没有
-按设备限权。
+`SameSite`/Origin 检查拒绝（`Sec-Fetch-Site: cross-site` 也会直接拒绝）。
+设备令牌是**全权限**的，等价于主令牌；当前没有按设备限权。撤销设备或用
+`/api/privacy/erase` 擦除时，服务端会关闭对应/全部 WebSocket，撤销的令牌不能
+继续接收广播。
+
+**Host 白名单（防 DNS rebinding）**：即使连接来自 loopback，`Host` 头也必须是
+`localhost` / `127.0.0.1` / `[::1]` / `JARVIS_HOST` / `JARVIS_ALLOWED_HOSTS` 里的
+名字，否则返回 `421`。浏览器把恶意域名解析到 `127.0.0.1` 时，`Host` 仍是攻击者
+的域名，所以这一步能挡掉“页面通过 rebinding 读走全部数据”。用局域网域名访问
+时必须显式列进 `JARVIS_ALLOWED_HOSTS`。
 
 ## 2. 凭据
 
@@ -27,7 +35,7 @@ Jarvis 是一个**单用户、单机优先**的私人助手。默认只监听 `1
 |---|---|---|
 | 主令牌 | 环境变量 `JARVIS_AUTH_TOKEN` | 不写数据库、不回显到 `/api/config` |
 | 设备令牌 | `data/devices.json` 的 SHA-256 哈希 | 只在配对响应中出现一次；可逐个撤销 |
-| 配对码 | 进程内存 | 6 位、5 分钟、一次性；60 秒内最多 30 次失败尝试 |
+| 配对码 | 进程内存 | 6 位、5 分钟、一次性；每个客户端每分钟 8 次失败，全局上限 60 次 |
 | 本地加密密钥 | `data/secret.key`，0600 | 32 字节随机；不进入备份、不写日志 |
 | 远端模型 Key | `data/model-config.json`，0600 | 设置页不回显；导出/备份默认不含 |
 | 远端 ASR/TTS Key | `data/voice-config.json`，0600 | 设置页不回显；导出默认不含；本地-only 可为空；Gemini/Cloudflare 共用此文件 |
@@ -83,11 +91,16 @@ Jarvis 是一个**单用户、单机优先**的私人助手。默认只监听 `1
 
 ## 5. 数据导出与擦除
 
-- `GET /api/privacy/export`：导出记忆、提醒、动作审计、配置摘要；需要认证。
+- `GET /api/privacy/export`：导出记忆条目、情景、提醒、设备列表和不含密钥的
+  配置摘要；需要认证。导出包含 `sensitive`/`secret` 记忆，因为这是本机所有者
+  主动发起的完整副本。
 - `POST /api/privacy/erase`：body 必须是 `{"confirm":"ERASE ALL"}`；清空
-  记忆/链接/事件/提醒/审计/音频/画面/观察台历史，撤销设备，`VACUUM` 数据库。
-- 导出/擦除都不会删除 `secret.key`（否则残留密文会变成永久垃圾）；擦除会
-  删除所有由它加密的文件。
+  记忆/链接/事件/提醒/审计/音频/画面/观察台历史/日志，撤销设备，`VACUUM` 数据库
+  并 `wal_checkpoint(TRUNCATE)`（配合 `secure_delete` 抹掉空闲页里的旧文本）。
+  同时重置已保存的模型与语音供应商（连同远端 API Key）、清空内存中的对话历史和
+  事件回放、断开所有 WebSocket，并轮换 `secret.key`。
+- 访问令牌（`auth-token`）不在擦除范围内：删掉它会把所有者自己锁在门外。
+- 浏览器缓存、系统截图缓存、备份归档不在擦除范围内；需要另行清理。
 - 浏览器缓存、系统截图缓存、备份归档不在擦除范围内；需要另行清理。
 
 ## 6. 已知残余风险（必须在验收时说明）

@@ -252,20 +252,37 @@ export class TuningStore {
     return this.current()
   }
 
+  /**
+   * Coerce an incoming value, rejecting input we cannot honour instead of
+   * silently substituting the default. Silent fallbacks make the UI report
+   * "saved" while nothing changed, which is exactly the bug class users hit
+   * when a select value or a number is mistyped.
+   *
+   * Out-of-range numbers are still clamped: a slider that overshoots should
+   * land on the limit, not error out.
+   */
   private coerce(param: TuningParam, value: unknown): TuningValue {
     if (param.type === 'boolean') {
-      return value === true || value === 'true' || value === 1 || value === '1'
+      if (value === true || value === 'true' || value === 1 || value === '1') return true
+      if (value === false || value === 'false' || value === 0 || value === '0') return false
+      throw new Error(`${param.label} 只能是 true/false`)
     }
     if (param.type === 'number' || param.type === 'range') {
-      const numeric = Number(value)
-      if (!Number.isFinite(numeric)) return param.default
+      const numeric = typeof value === 'number' ? value : Number(String(value ?? '').trim())
+      if (!Number.isFinite(numeric)) throw new Error(`${param.label} 必须是数字`)
       return clamp(numeric, param.min, param.max)
     }
     if (param.type === 'select') {
-      return param.options?.some(option => option.value === value) ? String(value) : String(param.default)
+      const allowed = param.options?.map(option => option.value) ?? []
+      const text = String(value ?? '')
+      if (!allowed.includes(text)) {
+        throw new Error(`${param.label} 只能是 ${allowed.join(' / ')} 之一`)
+      }
+      return text
     }
     const text = String(value ?? '').trim().slice(0, 500)
-    return text || String(param.default)
+    if (!text) throw new Error(`${param.label} 不能为空`)
+    return text
   }
 
   private validateText(param: TuningParam, value: string): string {

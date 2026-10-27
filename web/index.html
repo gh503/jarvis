@@ -10,7 +10,6 @@
   <link rel="apple-touch-icon" href="/icons/apple-touch-icon.png">
   <meta name="apple-mobile-web-app-capable" content="yes">
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
-  <meta name="theme-color" content="#080b0f">
   <link rel="icon" href="/icons/jarvis.svg" type="image/svg+xml">
   <script src="/theme-boot.js"></script>
   <link rel="stylesheet" href="/styles.css">
@@ -55,6 +54,7 @@
     </header>
 
     <main class="layout">
+      <h1 class="sr-only">Jarvis 对话</h1>
       <aside class="presence-panel">
         <div class="orb-wrap">
           <div class="orb-ring" aria-hidden="true"></div>
@@ -64,23 +64,23 @@
           </button>
           <span class="orb-level" id="orb-level" aria-hidden="true"></span>
         </div>
-        <p class="state-label" id="state-label">待命</p>
+        <p class="state-label" id="state-label" role="status" aria-live="polite">待命</p>
         <p class="state-hint" id="state-hint">说“看下这个”，或按住下方麦克风。</p>
 
         <div class="quick-actions" role="group" aria-label="快捷动作">
-          <button class="quick" data-action="screen" type="button">
+          <button class="quick" data-action="screen" type="button" aria-label="看屏幕">
             <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 5h18v12H3V5Zm2 2v8h14V7H5Zm4 12h6v2H9v-2Z"/></svg>
             <span>看屏幕</span>
           </button>
-          <button class="quick" data-action="camera" type="button">
+          <button class="quick" data-action="camera" type="button" aria-label="看摄像头">
             <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h3l1.5-2h7L17 7h3v12H4V7Zm8 3.2A3.8 3.8 0 1 0 12 18a3.8 3.8 0 0 0 0-7.6Zm0 2a1.8 1.8 0 1 1 0 3.6 1.8 1.8 0 0 1 0-3.6Z"/></svg>
             <span>看摄像头</span>
           </button>
-          <button class="quick" data-action="remember" type="button">
+          <button class="quick" data-action="remember" type="button" aria-label="记住">
             <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3a7 7 0 0 0-7 7c0 2.2 1 4.1 2.6 5.4V19h2.2v2h4.4v-2h2.2v-3.6A7 7 0 0 0 12 3Zm-2 6h4v2h-4V9Z"/></svg>
             <span>记住</span>
           </button>
-          <button class="quick" data-action="brief" type="button">
+          <button class="quick" data-action="brief" type="button" aria-label="今日简报">
             <svg viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2v3M12 19v3M2 12h3M19 12h3M4.9 4.9 7 7M17 17l2.1 2.1M19.1 4.9 17 7M7 17l-2.1 2.1"/><circle cx="12" cy="12" r="4"/></svg>
             <span>今日</span>
           </button>
@@ -99,7 +99,7 @@
       </aside>
 
       <section class="conversation-panel" aria-label="对话">
-        <div class="transcript" id="transcript" aria-live="polite">
+        <div class="transcript" id="transcript" role="log" aria-live="polite" aria-relevant="additions text" aria-label="对话记录">
           <div class="empty-state" id="empty-state">
             <p class="eyebrow">PERSONAL CONTEXT ENGINE</p>
             <h1>不用解释太多。<br>我在看，也在记。</h1>
@@ -115,7 +115,7 @@
 
         <div class="capture-strip" id="capture-strip" hidden>
           <div class="capture-preview">
-            <img id="capture-image" alt="刚捕获的画面">
+            <img id="capture-image" alt="刚捕获的画面，按 Enter 放大" tabindex="0" role="button" aria-label="放大刚刚捕获的画面">
             <div class="capture-meta">
               <strong id="capture-title">刚看了一眼</strong>
               <span id="capture-detail"></span>
@@ -156,19 +156,19 @@
                 <option value="auto">场景 · 自动</option>
               </select>
             </label>
-            <span class="hint" id="hint">本地推理 · 默认不录屏</span>
+            <span class="hint" id="hint" role="status" aria-live="polite">本地推理 · 默认不录屏</span>
           </div>
         </div>
       </section>
 
       <aside class="side-panel" aria-label="记忆与提醒">
-        <div class="side-tabs" role="tablist">
-          <button class="side-tab active" data-tab="memory" role="tab" aria-selected="true" type="button">记忆</button>
-          <button class="side-tab" data-tab="reminders" role="tab" aria-selected="false" type="button">提醒</button>
-          <button class="side-tab" data-tab="runtime" role="tab" aria-selected="false" type="button">运行</button>
+        <div class="side-tabs" role="tablist" aria-label="记忆、提醒与运行状态">
+          <button class="side-tab active" data-tab="memory" role="tab" aria-selected="true" id="side-tab-memory" aria-controls="side-panel-memory" type="button">记忆</button>
+          <button class="side-tab" data-tab="reminders" role="tab" aria-selected="false" id="side-tab-reminders" aria-controls="side-panel-reminders" type="button">提醒</button>
+          <button class="side-tab" data-tab="runtime" role="tab" aria-selected="false" id="side-tab-runtime" aria-controls="side-panel-runtime" type="button">运行</button>
         </div>
 
-        <section class="side-content active" data-panel="memory">
+        <section class="side-content active" data-panel="memory" id="side-panel-memory" role="tabpanel" aria-labelledby="side-tab-memory">
           <div class="side-head">
             <div>
               <h2>长期记忆</h2>
@@ -182,7 +182,7 @@
           <div class="memory-list" id="memory-list"></div>
         </section>
 
-        <section class="side-content" data-panel="reminders" hidden>
+        <section class="side-content" data-panel="reminders" id="side-panel-reminders" role="tabpanel" aria-labelledby="side-tab-reminders" hidden>
           <div class="side-head">
             <div>
               <h2>提醒</h2>
@@ -193,7 +193,7 @@
           <div class="memory-list" id="reminder-list"></div>
         </section>
 
-        <section class="side-content" data-panel="runtime" hidden>
+        <section class="side-content" data-panel="runtime" id="side-panel-runtime" role="tabpanel" aria-labelledby="side-tab-runtime" hidden>
           <div class="side-head">
             <div>
               <h2>运行状态</h2>
@@ -215,7 +215,7 @@
   </div>
 
 
-  <div class="studio" id="studio" hidden aria-hidden="true">
+  <div class="studio" id="studio" hidden aria-hidden="true" role="dialog" aria-modal="true" aria-label="Jarvis 观察台">
     <div class="studio-shell">
       <aside class="studio-rail">
         <div class="studio-brand">
@@ -235,7 +235,7 @@
           <button class="studio-close-link" id="studio-close" type="button">关闭观察台 <kbd>Esc</kbd></button>
         </div>
       </aside>
-      <main class="studio-main">
+      <div class="studio-main">
         <header class="studio-header">
           <div>
             <p class="studio-eyebrow" id="studio-eyebrow">OBSERVATORY / LIVE</p>
@@ -245,10 +245,22 @@
           <div class="studio-header-actions">
             <span class="studio-live"><i></i> LIVE</span>
             <button class="studio-icon-btn" id="studio-refresh" type="button" title="立即刷新" aria-label="刷新">↻</button>
+            <button class="studio-icon-btn studio-close-icon" id="studio-close-top" type="button" title="关闭观察台（Esc）" aria-label="关闭观察台">✕</button>
           </div>
         </header>
         <div class="studio-content" id="studio-content"></div>
-      </main>
+      </div>
+    </div>
+  </div>
+  <div class="modal-backdrop" id="action-modal" hidden>
+    <div class="modal action-modal" role="dialog" aria-modal="true" aria-labelledby="action-title" tabindex="-1">
+      <div class="modal-head">
+        <h2 id="action-title">确认动作</h2>
+        <button class="icon-btn" id="action-modal-close" type="button" aria-label="关闭">
+          <svg viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="m6 6 12 12M18 6 6 18"/></svg>
+        </button>
+      </div>
+      <div class="modal-body" id="action-body"></div>
     </div>
   </div>
   <div class="modal-backdrop" id="modal" hidden>
@@ -263,7 +275,7 @@
     </div>
   </div>
 
-  <div class="lightbox" id="lightbox" hidden>
+  <div class="lightbox" id="lightbox" hidden role="dialog" aria-modal="true" aria-label="画面预览">
     <button class="lightbox-close" id="lightbox-close" type="button" aria-label="关闭大图">×</button>
     <img id="lightbox-image" alt="捕获画面大图">
   </div>

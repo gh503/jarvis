@@ -12,6 +12,9 @@
  * conversation or mutate memory.
  */
 const CDP = (process.env.JARVIS_CDP_URL || 'http://127.0.0.1:9223').replace(/\/+$/, '')
+/** Interaction checks that write to the server are opt-in so a developer can
+ * run the smoke against the live instance without changing real settings. */
+const WRITE = process.env.JARVIS_SMOKE_WRITE === '1'
 const APP = (process.env.JARVIS_URL || 'http://127.0.0.1:3081/').replace(/\/+$/, '') + '/'
 const TIMEOUT = 15_000
 
@@ -70,7 +73,10 @@ class Cdp {
     const result = await this.send('Runtime.evaluate', { expression, awaitPromise: true, returnByValue: true }) as {
       result?: { value?: T }; exceptionDetails?: { exception?: { description?: string } }
     }
-    if (result.exceptionDetails) throw new Error(result.exceptionDetails.exception?.description || 'page evaluation failed')
+    if (result.exceptionDetails) {
+      const detail = result.exceptionDetails.exception?.description || 'page evaluation failed'
+      throw new Error(`${detail}\n  in: ${expression.slice(0, 160)}`)
+    }
     return result.result?.value as T
   }
 
@@ -154,6 +160,80 @@ async function main(): Promise<void> {
     check(await cdp.evaluate<boolean>("document.querySelector('#settings-panel-system').offsetParent !== null && document.querySelector('#settings-panel-system').getBoundingClientRect().height > 0"), 'settings: system panel visible')
     await cdp.evaluate("document.querySelector('[data-settings-tab=model]').click()")
     await sleep(200)
+    if (WRITE) {
+      // Theme: the header button cycles dark -> light -> auto, and the
+      // document reflects it immediately.
+      const themeBefore = await cdp.evaluate<string>("document.documentElement.dataset.themeMode")
+      await cdp.evaluate("document.querySelector('#theme-btn').click()")
+      await sleep(250)
+      const themeAfter = await cdp.evaluate<string>("document.documentElement.dataset.themeMode")
+      check(themeBefore !== themeAfter, 'theme: header button changes the mode')
+      // One click already moved off the start mode; two more complete the cycle.
+      for (let index = 0; index < 2; index += 1) {
+        await cdp.evaluate("document.querySelector('#theme-btn').click()")
+        await sleep(120)
+      }
+      check(await cdp.evaluate<string>("document.documentElement.dataset.themeMode") === themeBefore, 'theme: cycling three times returns to the start')
+
+      // Accent colour must repaint both CSS channels (this regressed once:
+      // only --accent-h moved while rgb(var(--accent-rgb)) stayed teal).
+      await cdp.evaluate("document.querySelector('[data-settings-tab=\"appearance\"]').click()")
+      await sleep(300)
+      const accentBefore = await cdp.evaluate<string>("getComputedStyle(document.documentElement).getPropertyValue('--accent-rgb').trim()")
+      await cdp.evaluate("document.querySelectorAll('.appearance-swatch')[4].click()")
+      await sleep(700)
+      const accentAfter = await cdp.evaluate<string>("getComputedStyle(document.documentElement).getPropertyValue('--accent-rgb').trim()")
+      check(accentBefore !== accentAfter, 'appearance: accent swatch repaints --accent-rgb')
+      await cdp.evaluate("document.querySelector('#appearance-reset').click()")
+      await sleep(900)
+      check(await cdp.evaluate<string>("getComputedStyle(document.documentElement).getPropertyValue('--accent-rgb').trim()") === accentBefore, 'appearance: reset restores the accent')
+
+      // Provider priority: the up arrow reorders cards and persists.
+      await cdp.evaluate("document.querySelector('[data-settings-tab=model]').click()")
+      await sleep(300)
+      const orderBefore = await cdp.evaluate<string[]>("[...document.querySelectorAll('[data-model-card]')].map(el => el.dataset.modelCard)")
+      if (orderBefore.length >= 2) {
+        await cdp.evaluate("document.querySelectorAll('[data-model-down]')[0].click()")
+        await sleep(900)
+        const orderAfter = await cdp.evaluate<string[]>("[...document.querySelectorAll('[data-model-card]')].map(el => el.dataset.modelCard)")
+        check(orderAfter[0] === orderBefore[1] && orderAfter[1] === orderBefore[0], 'settings: priority arrow reorders providers')
+        await cdp.evaluate("document.querySelectorAll('[data-model-up]')[1].click()")
+        await sleep(900)
+        check(JSON.stringify(await cdp.evaluate<string[]>("[...document.querySelectorAll('[data-model-card]')].map(el => el.dataset.modelCard)")) === JSON.stringify(orderBefore), 'settings: priority round-trips back')
+      }
+
+      // Scenario editor saves through the API and reports success.
+      if (await cdp.evaluate<boolean>("Boolean(document.querySelector('[data-scenario=coding]'))")) {
+        await cdp.evaluate("document.querySelector('[data-scenario=coding]').open = true")
+        await cdp.evaluate("document.querySelector('#scenario-result').textContent = ''")
+        await cdp.evaluate("document.querySelector('#scenario-save').click()")
+        await sleep(1200)
+        check(await cdp.evaluate<boolean>("document.querySelector('#scenario-result').classList.contains('ok')"), 'settings: scenario save reports success')
+      }
+
+      // Escape closes the modal and focus returns to the opener.
+      await cdp.send('Input.dispatchKeyEvent', { type: 'keyDown', key: 'Escape', code: 'Escape', windowsVirtualKeyCode: 27 })
+      await cdp.send('Input.dispatchKeyEvent', { type: 'keyUp', key: 'Escape', code: 'Escape', windowsVirtualKeyCode: 27 })
+      await sleep(500)
+      check(await cdp.evaluate<boolean>("document.querySelector('#modal').hidden"), 'settings: Escape closes the modal')
+      check(await cdp.evaluate<boolean>("document.activeElement?.id === 'settings-btn'"), 'settings: focus returns to the opener')
+
+      // A real message round-trips through the WebSocket into the transcript.
+      await cdp.evaluate("document.querySelector('#settings-btn') && 0")
+      await cdp.evaluate(`(() => {
+        const input = document.querySelector('#input')
+        input.value = 'UI 冒烟：用四个字回答'
+        input.dispatchEvent(new Event('input', { bubbles: true }))
+        document.querySelector('#send-btn').click()
+      })()`)
+      await sleep(9000)
+      const transcript = await cdp.evaluate<string>("document.querySelector('#transcript')?.innerText || ''")
+      check(transcript.includes('UI 冒烟'), 'chat: user message appears')
+      const assistantText = await cdp.evaluate<string>("[...document.querySelectorAll('.message.assistant .bubble')].map(el => el.innerText).join(String.fromCharCode(10))")
+      check(assistantText.trim().length > 0, 'chat: assistant reply appears')
+      await cdp.evaluate("document.querySelector('#settings-btn').click()")
+      await sleep(700)
+    }
     await cdp.evaluate("document.querySelector('[data-model-select=remote]').click()")
     await sleep(700)
     check(await cdp.evaluate<boolean>("document.querySelectorAll('#model-protocol option').length === 3"), 'settings: three LLM protocols')
@@ -190,7 +270,7 @@ async function main(): Promise<void> {
     await cdp.evaluate("document.querySelector('#settings-btn').click()")
     await sleep(900)
     const mobileSettings = await cdp.evaluate<{ fits: boolean; full: boolean; tabs: number; overflow: boolean }>(`({
-      fits: document.querySelector('.modal').getBoundingClientRect().width <= window.innerWidth + 1,
+      fits: document.querySelector('#modal .modal').getBoundingClientRect().width <= window.innerWidth + 1,
       full: document.querySelector('.settings-modal')?.getBoundingClientRect().height >= window.innerHeight - 2,
       tabs: document.querySelectorAll('[data-settings-tab]').length,
       overflow: document.querySelector('.modal-body').scrollWidth > document.querySelector('.modal-body').clientWidth + 1
@@ -209,7 +289,7 @@ async function main(): Promise<void> {
     process.exitCode = 1
     return
   }
-  console.log(JSON.stringify({ ok: true, url: APP, checked: ['home', 'settings', 'brief', 'studio', 'mobile'], browserErrors: 0 }, null, 2))
+  console.log(JSON.stringify({ ok: true, url: APP, checked: ['home', 'settings', 'brief', 'studio', 'mobile', ...(WRITE ? ['theme', 'appearance', 'priority', 'scenario', 'chat'] : [])], browserErrors: 0 }, null, 2))
 }
 
 void main().catch(error => {

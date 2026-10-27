@@ -75,6 +75,7 @@ const state = {
   layout: null,
   layoutNodes: [],
   recall: null,
+  recallQuery: '',
   recallLoading: false,
   eventsPaused: false,
   eventFilter: 'all',
@@ -177,6 +178,7 @@ function notify(message, tone = 'ok') {
 export function initStudio() {
   $('#studio-btn')?.addEventListener('click', () => openStudio('overview'))
   $('#studio-close')?.addEventListener('click', closeStudio)
+  $('#studio-close-top')?.addEventListener('click', closeStudio)
   $('#studio-refresh')?.addEventListener('click', () => {
     if (state.tab === 'tuning' && state.tuningDirty) { notify('先保存或放弃调参修改', 'danger'); return }
     void loadTab(state.tab, true)
@@ -190,8 +192,61 @@ export function initStudio() {
     if (event.key === 'Escape') {
       event.preventDefault()
       closeStudio()
+      return
+    }
+    if (event.key === 'Tab') trapStudioFocus(event)
+  })
+}
+
+/**
+ * Each panel is re-rendered wholesale, which drops focus and the caret while
+ * someone is typing in a search box. Remember the focused control and put the
+ * caret back after the swap.
+ */
+let contentObserver = null
+let lastContentFocus = null
+function observeContentFocus() {
+  const root = document.querySelector('#studio-content')
+  if (!root || contentObserver) return
+  document.addEventListener('focusin', event => {
+    const target = event.target
+    if (!target || !target.id || !root.contains(target)) return
+    if (!/^(INPUT|TEXTAREA|SELECT)$/.test(target.tagName)) return
+    lastContentFocus = { id: target.id, start: target.selectionStart ?? null, end: target.selectionEnd ?? null }
+  })
+  contentObserver = new MutationObserver(() => {
+    if (!lastContentFocus || !root.contains(document.body)) return
+    // Only restore when the render actually stole focus.
+    if (document.activeElement && document.activeElement !== document.body && root.contains(document.activeElement)) return
+    const next = document.getElementById(lastContentFocus.id)
+    if (!next || !root.contains(next)) return
+    next.focus({ preventScroll: true })
+    if (lastContentFocus.start !== null && typeof next.setSelectionRange === 'function') {
+      try { next.setSelectionRange(lastContentFocus.start, lastContentFocus.end) } catch { /* select */ }
     }
   })
+  contentObserver.observe(root, { childList: true })
+}
+
+function studioFocusable() {
+  const root = $('#studio')
+  if (!root) return []
+  return [...root.querySelectorAll('button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])')]
+    .filter(el => !el.hasAttribute('disabled') && el.getClientRects().length > 0)
+}
+
+function trapStudioFocus(event) {
+  const items = studioFocusable()
+  if (items.length === 0) return
+  const first = items[0]
+  const last = items[items.length - 1]
+  if (event.shiftKey && (document.activeElement === first || !$('#studio').contains(document.activeElement))) {
+    event.preventDefault()
+    last.focus()
+  } else if (!event.shiftKey && (document.activeElement === last || !$('#studio').contains(document.activeElement))) {
+    event.preventDefault()
+    first.focus()
+  }
 }
 
 export function openStudio(tab = 'overview') {
@@ -201,6 +256,9 @@ export function openStudio(tab = 'overview') {
   overlay.hidden = false
   overlay.setAttribute('aria-hidden', 'false')
   document.body.classList.add('studio-open')
+  const shell = document.querySelector('.app-shell')
+  if (shell) shell.setAttribute('inert', '')
+  observeContentFocus()
   setHeader()
   void setTab(tab, true)
   clearInterval(state.timer)
@@ -208,6 +266,9 @@ export function openStudio(tab = 'overview') {
     if (!state.open) return
     if (state.tab === 'tuning') return
     if (state.tab === 'events' && state.eventsPaused) return
+    // A re-render mid-keystroke is worse than a slightly stale panel.
+    const active = document.activeElement
+    if (active && active.closest?.('#studio-content') && /^(INPUT|TEXTAREA|SELECT)$/.test(active.tagName)) return
     void loadTab(state.tab, false)
   }, 3200)
   setTimeout(() => $('#studio-close')?.focus(), 40)
@@ -223,6 +284,7 @@ export function closeStudio() {
   overlay.hidden = true
   overlay.setAttribute('aria-hidden', 'true')
   document.body.classList.remove('studio-open')
+  document.querySelector('.app-shell')?.removeAttribute('inert')
   state.previousFocus?.focus?.()
 }
 
@@ -900,6 +962,7 @@ function renderRecall() {
       <div class="recall-why">${(item.why || []).map(why => pill(why, 'muted')).join('')}</div></div>`).join('')}`
 }
 
+
 function renderMemory() {
   if (!state.graph) return
   const graph = state.graph
@@ -911,7 +974,7 @@ function renderMemory() {
   const byKind = graph.counts || {}
   const kindChips = [['all', '全部', graph.nodes.length], ...Object.entries(KIND).map(([kind, meta]) => [kind, meta.label, byKind[kind] || 0])]
     .map(([kind, label, count]) => `<button class="filter-chip ${state.memoryView.kind === kind ? 'active' : ''}" data-kind="${kind}">${esc(label)} <b>${count}</b></button>`).join('')
-  const rows = nodes.slice().sort((a, b) => b.score - a.score).slice(0, 60).map(node => `<tr data-memory-id="${esc(node.id)}" class="${node.id === selected?.id ? 'selected' : ''}">
+  const rows = nodes.slice().sort((a, b) => b.score - a.score).slice(0, 60).map(node => `<tr data-memory-id="${esc(node.id)}" tabindex="0" class="${node.id === selected?.id ? 'selected' : ''}">
       <td><i class="kind-dot" style="background:${KIND[node.kind]?.color || '#888'}"></i>${esc(truncate(node.gist, 46))}</td>
       <td>${esc(KIND[node.kind]?.label || node.kind)}</td>
       <td>${pill(STATUS[node.status]?.label || node.status, STATUS[node.status]?.tone || 'muted')}</td>
@@ -938,10 +1001,10 @@ function renderMemory() {
         <div class="graph-controls">
           <select id="memory-status" aria-label="状态筛选"><option value="all">全部状态</option>${Object.entries(STATUS).map(([value, meta]) => `<option value="${value}" ${state.memoryView.status === value ? 'selected' : ''}>${esc(meta.label)}</option>`).join('')}</select>
           <select id="memory-sensitivity" aria-label="敏感级筛选"><option value="all">全部敏感级</option><option value="standard" ${state.memoryView.sensitivity === 'standard' ? 'selected' : ''}>标准</option><option value="sensitive" ${state.memoryView.sensitivity === 'sensitive' ? 'selected' : ''}>敏感</option><option value="secret" ${state.memoryView.sensitivity === 'secret' ? 'selected' : ''}>秘密</option></select>
-          <input id="memory-search" type="search" placeholder="搜索记忆…" value="${esc(state.memoryView.search)}">
-          <button class="s-icon-btn ${state.memoryView.labels ? 'active' : ''}" id="memory-labels" title="切换标签">Aa</button>
-          <button class="s-icon-btn" id="graph-zoom-out" title="缩小">−</button><span class="zoom-label">${Math.round(state.memoryView.zoom * 100)}%</span><button class="s-icon-btn" id="graph-zoom-in" title="放大">+</button>
-          <button class="s-icon-btn" id="graph-reset" title="复位">⌂</button>
+          <input id="memory-search" type="search" placeholder="搜索记忆…" aria-label="搜索记忆" value="${esc(state.memoryView.search)}">
+          <button class="s-icon-btn ${state.memoryView.labels ? 'active' : ''}" id="memory-labels" title="切换标签" aria-pressed="${state.memoryView.labels}" aria-label="显示节点标签">Aa</button>
+          <button class="s-icon-btn" id="graph-zoom-out" title="缩小" aria-label="缩小关系图">−</button><span class="zoom-label">${Math.round(state.memoryView.zoom * 100)}%</span><button class="s-icon-btn" id="graph-zoom-in" title="放大" aria-label="放大关系图">+</button>
+          <button class="s-icon-btn" id="graph-reset" title="复位" aria-label="复位关系图">⌂</button>
         </div>
       </div>
       <div class="memory-stage">
@@ -952,7 +1015,7 @@ function renderMemory() {
     <div class="s-grid memory-lower">
       ${panel('记忆时间线', '最近 21 天创建的记忆；空白不代表遗忘，可能只是没有新记忆。', memoryTimeline(nodes), 'span-4')}
       ${panel('状态分布', '候选记忆需要确认才会进入默认召回。', `<div class="donut-layout small">${donut(kindParts, String(graph.nodes.length))}<div class="status-bars">${memoryStatusBars(state.data?.memory?.byStatus)}</div></div>`, 'span-4')}
-      ${panel('召回实验台', '用真实查询验证召回解释；这是调参记忆门槛时最直接的反馈。', `<form class="recall-form" id="recall-form"><input id="recall-query" placeholder="例如：我上次说周五要做什么？" autocomplete="off"><button class="s-btn primary" type="submit">召回</button></form><div id="recall-results" class="recall-results">${renderRecall()}</div>`, 'span-4')}
+      ${panel('召回实验台', '用真实查询验证召回解释；这是调参记忆门槛时最直接的反馈。', `<form class="recall-form" id="recall-form"><input id="recall-query" placeholder="例如：我上次说周五要做什么？" autocomplete="off" aria-label="召回测试查询" value="${esc(state.recallQuery)}"><button class="s-btn primary" type="submit">召回</button></form><div id="recall-results" class="recall-results">${renderRecall()}</div>`, 'span-4')}
     </div>
     ${panel('记忆列表', `${nodes.length} 条符合筛选 · 按综合分排序`, `<div class="table-wrap"><table class="s-table"><thead><tr><th>摘要</th><th>类型</th><th>状态</th><th>置信</th><th>重要</th><th>更新</th></tr></thead><tbody>${rows || `<tr><td colspan="6" class="muted">没有符合筛选的记忆。</td></tr>`}</tbody></table></div>`, 'span-12')}`
 
@@ -974,17 +1037,22 @@ function renderMemory() {
   $('#graph-zoom-in')?.addEventListener('click', () => { state.memoryView.zoom = clamp(state.memoryView.zoom + 0.15, 0.6, 2); renderGraph() })
   $('#graph-zoom-out')?.addEventListener('click', () => { state.memoryView.zoom = clamp(state.memoryView.zoom - 0.15, 0.6, 2); renderGraph() })
   $('#graph-reset')?.addEventListener('click', () => { state.memoryView.zoom = 1; state.memoryView.panX = 0; state.memoryView.panY = 0; renderGraph() })
+  $$('tr[data-memory-id]').forEach(row => row.addEventListener('keydown', event => {
+    if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); selectMemory(row.dataset.memoryId) }
+  }))
   $$('tr[data-memory-id]').forEach(row => row.addEventListener('click', () => {
     selectMemory(row.dataset.memoryId)
     $('#memory-inspector')?.scrollIntoView({ block: 'nearest', behavior: 'smooth' })
   }))
   $('#recall-form')?.addEventListener('submit', event => { event.preventDefault(); void runRecall() })
+  $('#recall-query')?.addEventListener('input', event => { state.recallQuery = event.target.value })
 }
 
 async function runRecall() {
   const input = $('#recall-query')
   const query = input?.value.trim()
   if (!query) return
+  state.recallQuery = query
   state.recallLoading = true
   const target = $('#recall-results')
   if (target) target.innerHTML = renderRecall()
@@ -1112,7 +1180,7 @@ function renderTuning() {
     </div>
     <div class="tuning-layout">
       <div class="tuning-main">
-        <div class="tuning-tools"><input type="search" id="tuning-search" placeholder="搜索参数名、说明或 key…" value="${esc(state.tuningSearch)}"><button class="s-btn ghost ${state.showAdvanced ? 'active' : ''}" id="tuning-advanced">${state.showAdvanced ? '隐藏高级' : '显示高级'}</button><button class="s-btn ghost ${state.tuningCompare ? 'active' : ''}" id="tuning-compare">A/B 对照</button></div>
+        <div class="tuning-tools"><input type="search" id="tuning-search" aria-label="搜索调参项" placeholder="搜索参数名、说明或 key…" value="${esc(state.tuningSearch)}"><button class="s-btn ghost ${state.showAdvanced ? 'active' : ''}" id="tuning-advanced">${state.showAdvanced ? '隐藏高级' : '显示高级'}</button><button class="s-btn ghost ${state.tuningCompare ? 'active' : ''}" id="tuning-compare">A/B 对照</button></div>
         ${groups.map(tuningGroupHtml).join('') || '<div class="s-error"><strong>没有匹配的参数</strong><p>换一个关键词，或显示高级参数。</p></div>'}
       </div>
       <aside class="tuning-side">
@@ -1340,7 +1408,7 @@ function renderEvents() {
       ${statCard('捕获', String(t.counters.captures), '按需采集次数', '')}
     </div>
     <section class="s-panel">
-      <div class="event-toolbar"><div class="filter-chips">${chips}</div><div class="graph-controls"><input id="event-search" type="search" placeholder="搜索事件…" value="${esc(state.eventSearch)}"><button class="s-btn ghost" id="event-pause">${state.eventsPaused ? '继续' : '暂停'}</button></div></div>
+      <div class="event-toolbar"><div class="filter-chips">${chips}</div><div class="graph-controls"><input id="event-search" aria-label="搜索事件" type="search" placeholder="搜索事件…" value="${esc(state.eventSearch)}"><button class="s-btn ghost" id="event-pause">${state.eventsPaused ? '继续' : '暂停'}</button></div></div>
       <div class="event-detail-list">${events.length ? events.map(event => `<details class="event-detail">
         <summary><time>${esc(fmtTime(event.at))}</time><span class="event-type ${eventTone(event.type)}">${esc(EVENT_LABELS[event.type] || event.type)}</span><p>${esc(eventSummary(event))}</p><i>${esc(event.id.slice(0, 8))}</i></summary>
         <pre>${esc(JSON.stringify(event.data || {}, null, 2).slice(0, 6000))}</pre>

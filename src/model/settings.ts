@@ -1,4 +1,4 @@
-import { chmod, mkdir, readFile, rename, writeFile } from 'node:fs/promises'
+import { chmod, mkdir, readFile, rename, rm, writeFile } from 'node:fs/promises'
 import type { LlmProtocol } from './types.ts'
 import { dirname, join } from 'node:path'
 import { builtinScenarios, normalizeCustomScenario, normalizeScenario, SCENARIO_CHAT, type ScenarioConfig } from './scenarios.ts'
@@ -142,6 +142,20 @@ export class ModelSettingsStore {
     }
   }
 
+  /**
+   * Erase every saved provider (including remote API keys) and fall back to
+   * the built-in local profile. Used by the "erase all data" action.
+   */
+  async resetToDefaults(): Promise<ModelSettings> {
+    await rm(this.file, { force: true })
+    const defaults = this.defaultSettings()
+    // Local first: a wipe must not leave the assistant pointed at a remote
+    // provider that no longer has a key.
+    defaults.priority = ['local', ...defaults.priority.filter(id => id !== 'local')]
+    this.loaded = defaults
+    return this.loaded
+  }
+
   async load(): Promise<ModelSettings> {
     if (this.loaded) return this.loaded
     let saved: Partial<ModelSettings> = {}
@@ -262,7 +276,12 @@ export class ModelSettingsStore {
       try { loopback = isLoopbackHost(new URL(profileItem.baseUrl).hostname) } catch { /* validateProfile reports it */ }
       if (!loopback) throw new Error('远端配置还没有 API Key')
     }
-    const next = { ...settings, active: id }
+    // Activating a provider means "use this one now": promote it to the head of
+    // the failover chain as well. Without this the chain keeps its old order,
+    // so a UI that says "local is active" can still serve from a remote
+    // provider that sits earlier in the priority list.
+    const priority = [id, ...settings.priority.filter(item => item !== id)]
+    const next = { ...settings, active: id, priority }
     await this.save(next)
     return { settings: next, profile: profileItem }
   }

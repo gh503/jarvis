@@ -1,4 +1,4 @@
-import { chmod, mkdir, readFile, rename, writeFile } from 'node:fs/promises'
+import { chmod, mkdir, readFile, rename, rm, writeFile } from 'node:fs/promises'
 import { dirname } from 'node:path'
 import { isLoopbackHost } from '../model/settings.ts'
 import { normalizeVoiceAdapter, resolveAsrAdapter, resolveTtsAdapter, type VoiceAdapter } from './providers.ts'
@@ -202,6 +202,13 @@ export class VoiceSettingsStore {
     }
   }
 
+  /** Erase saved speech providers and remote keys; back to local defaults. */
+  async resetToDefaults(): Promise<VoiceSettings> {
+    await rm(this.file, { force: true })
+    this.loaded = this.defaultSettings()
+    return this.loaded
+  }
+
   async load(): Promise<VoiceSettings> {
     if (this.loaded) return this.loaded
     let saved: Partial<VoiceSettings> = {}
@@ -253,8 +260,43 @@ export class VoiceSettingsStore {
   }
 }
 
+function sameEndpoint(left: string, right: string): boolean {
+  if (!left || !right) return left === right
+  try {
+    return new URL(left).origin === new URL(right).origin
+  } catch {
+    return left === right
+  }
+}
+
+/**
+ * An empty key means "keep the saved key", but only as long as the endpoint
+ * stays the same. Re-pointing a provider at a different origin while keeping
+ * the stored key would hand that key to whoever controls the new host, so the
+ * same rule the model settings enforce applies here.
+ */
+function assertKeyStaysWithEndpoint(label: string, before: string, after: string, hasNewKey: boolean): void {
+  // Surface URL problems (TLS, credentials in the URL, metadata service) before
+  // the key-binding rule, so the person sees the more specific reason.
+  if (after) validateRemoteUrl(after, label)
+  if (hasNewKey || !before || sameEndpoint(before, after)) return
+  throw new Error(`${label} 更换服务地址后需要重新输入 API Key，避免把旧密钥发给新地址`)
+}
+
 /** Merge a browser update while treating an empty key as "keep the saved key". */
 export function mergeVoiceUpdate(current: VoiceSettings, input: VoiceUpdate): VoiceSettings {
+  assertKeyStaysWithEndpoint(
+    '远端 ASR',
+    current.asr.remote.baseUrl,
+    input.asr?.remote?.baseUrl ?? current.asr.remote.baseUrl,
+    Boolean(input.asr?.remote?.apiKey?.trim()),
+  )
+  assertKeyStaysWithEndpoint(
+    '远端 TTS',
+    current.tts.remote.baseUrl,
+    input.tts?.remote?.baseUrl ?? current.tts.remote.baseUrl,
+    Boolean(input.tts?.remote?.apiKey?.trim()),
+  )
   const next: VoiceSettings = {
     activeAsr: source(input.activeAsr, current.activeAsr),
     activeTts: source(input.activeTts, current.activeTts),

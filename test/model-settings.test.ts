@@ -93,3 +93,18 @@ test('legacy model config without protocol still loads as Chat Completions', asy
   assert.equal(loaded.profiles.find(item => item.id === 'remote')?.protocol, 'chat-completions')
   assert.equal(loaded.active, 'remote')
 })
+
+test('activating a provider promotes it to the head of the failover chain', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'jarvis-activate-priority-'))
+  const store = new ModelSettingsStore(join(dir, 'model-config.json'), defaults)
+  try {
+    await store.addProfile({ id: 'second', label: '第二家', kind: 'openai', protocol: 'chat-completions', baseUrl: 'https://api.example.com/v1', model: 'm', apiKey: 'sk-x' })
+    await store.setPriority(['second', 'local'])
+    const activated = await store.activate('local')
+    assert.equal(activated.settings.active, 'local')
+    assert.equal(activated.settings.priority[0], 'local', 'active provider must lead the chain')
+    assert.ok(activated.settings.priority.includes('second'))
+  } finally {
+    await rm(dir, { recursive: true, force: true })
+  }
+})

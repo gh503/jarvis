@@ -55,4 +55,10 @@ export interface ModelClient {
   embed(text: string): Promise<Float32Array | null>
   warmup?(): Promise<{ chatMs: number; embedMs: number }>
   status?(): ModelStatus
+  /** True when every call this client makes stays on this machine. */
+  readonly isLocal?: boolean
+  /** Router-only: does the serving provider live off this machine? */
+  servingRemote?(): boolean
+  /** Router-only: a client that never leaves this machine (captures, OCR). */
+  localClient?(): ModelClient
 }

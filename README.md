@@ -32,11 +32,13 @@ faster-whisper and RapidOCR into the user's home; it does not use sudo.
 ```bash
 npm run typecheck
 npm test
-npm run acceptance   # unattended API/voice/OCR checks
+npm run acceptance   # unattended API/voice/OCR checks against the running server
+npm run acceptance:full  # boots a throwaway instance and re-checks everything end to end
 npm run memory:eval  # 11-case recall/abstention/privacy regression suite
 JARVIS_CDP_URL=http://127.0.0.1:9223 npm run ui:smoke  # browser smoke, Chrome CDP
+JARVIS_SMOKE_UI=1 npm run acceptance:full  # also drives the real UI (needs Chrome on :9223)
 npm run backup -- ~/jarvis-backup.tar.gz
-npm run restore -- ~/jarvis-backup.tar.gz --yes   # stop Jarvis first
+npm run restore -- ~/jarvis-backup.tar.gz --yes   # stop Jarvis first; --force skips the pgrep guard
 npm run memory -- list
 npm run migrate-v1 -- /path/to/v1-memory.json
 bash scripts/install-desktop.sh
@@ -55,9 +57,13 @@ are in [voice.md](docs/voice.md).
 
 ## Tests
 
-73 tests cover attention, memory, server auth/CSRF, at-rest encryption,
-telemetry, voice cancellation, LLM protocols/model discovery and voice routing. `npm run memory:eval` is a
-separate deterministic recall/abstention/privacy regression gate.
+The suite (`npm test`, 100+ cases) covers attention, memory and its
+sensitive-data boundaries, server auth/CSRF/host checks, at-rest encryption,
+telemetry, voice cancellation, LLM protocols/model discovery and voice routing.
+`npm run memory:eval` is a separate deterministic recall/abstention/privacy
+regression gate, `npm run acceptance:full` boots a throwaway instance and
+exercises the running server end to end, and `npm run ui:smoke` drives the real
+UI over Chrome DevTools.
 
 ## Layout
 
@@ -92,7 +98,9 @@ scripts/              setup, workers, desktop/systemd installers, acceptance
   (`data/secret.key`, 0600). The memory DB is not full-disk encrypted; see
   `docs/security.md` for the exact boundary.
 - `npm run backup` excludes auth tokens, API keys, audio and captures by default.
-- Settings → 隐私 can export all memory or erase local data with an explicit
-  confirmation phrase.
+- Settings → 系统 → 隐私数据 can export memory, reminders and devices as JSON,
+  or erase local data with an explicit confirmation phrase. Erasing also resets
+  saved providers (their API keys), closes live connections, clears in-memory
+  history and rotates the encryption key.
 - First launch shows a one-time model/microphone/senses checklist; Skip never
   repeats the prompt.
