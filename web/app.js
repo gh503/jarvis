@@ -1370,10 +1370,34 @@ async function showBrief() {
   }
 }
 
+// Keep the shared dialog reusable for consent, tokens and other small prompts.
+function resetSettingsShell() {
+  $('#modal .settings-rail')?.remove()
+  const heading = $('#modal .settings-heading')
+  if (heading) {
+    heading.before($('#modal-title'))
+    heading.remove()
+  }
+}
+
 function openModal(html, title = '设置', options = {}) {
   if ($('#modal').hidden) state.modalOpener = options.opener || document.activeElement
+  resetSettingsShell()
   $('#modal-title').textContent = title
   $('#modal-body').innerHTML = html
+  if (options.className === 'settings-modal') {
+    const heading = document.createElement('div')
+    heading.className = 'settings-heading'
+    $('#modal-title').before(heading)
+    heading.innerHTML = '<p class="settings-eyebrow">JARVIS / SETTINGS</p>'
+    heading.append($('#modal-title'))
+    const subtitle = document.createElement('p')
+    subtitle.className = 'settings-subtitle'
+    subtitle.textContent = '模型、语音与设备，让 Jarvis 按你的方式工作。'
+    heading.append(subtitle)
+    const rail = $('#modal-body .settings-rail')
+    if (rail) $('#modal .modal').prepend(rail)
+  }
   $('#modal').hidden = false
   $('#modal .modal').classList.toggle('settings-modal', options.className === 'settings-modal')
   $('#modal').classList.toggle('settings-open', options.className === 'settings-modal')
@@ -1420,6 +1444,7 @@ function closeModal(force = false) {
   $('#modal').hidden = true
   $('#modal .modal')?.classList.remove('settings-modal')
   $('#modal').classList.remove('settings-open')
+  resetSettingsShell()
   state.settingsDirty = { model: false, voice: false }
   state.tokenPrompted = false
   const opener = state.modalOpener
@@ -1526,13 +1551,13 @@ function settingsTabBadge(name) {
 }
 
 function settingsTabsHtml() {
-  const tabs = [['model', '模型'], ['voice', '语音'], ['appearance', '外观'], ['access', '设备'], ['system', '系统']]
-  return `<div class="settings-tabs" role="tablist" aria-label="设置分类">
-    ${tabs.map(([id, label]) => {
+  const tabs = [['model', '模型', '◈', 'Models'], ['voice', '语音', '≋', 'Voice'], ['appearance', '外观', '◌', 'Appearance'], ['access', '设备', '⌘', 'Devices'], ['system', '系统', '◇', 'System']]
+  return `<div class="settings-tabs" role="tablist" aria-label="设置分类" aria-orientation="${window.matchMedia('(max-width: 760px)').matches ? 'horizontal' : 'vertical'}">
+    ${tabs.map(([id, label, glyph, caption]) => {
       const active = state.settingsTab === id
       const badge = settingsTabBadge(id)
       return `<button type="button" class="settings-tab${active ? ' active' : ''}${(id === 'model' && state.settingsDirty.model) || (id === 'voice' && state.settingsDirty.voice) ? ' has-dirty' : ''}" id="settings-tab-${id}" data-settings-tab="${id}" role="tab" aria-selected="${active}" aria-controls="settings-panel-${id}" tabindex="${active ? '0' : '-1'}">
-        <span>${label}</span>${badge ? `<small class="tab-badge">${escapeHtml(badge)}</small>` : ''}
+        <span class="settings-nav-glyph" aria-hidden="true">${glyph}</span><span class="settings-nav-copy"><strong>${label}</strong><small aria-hidden="true">${caption}</small></span>${badge ? `<small class="tab-badge">${escapeHtml(badge)}</small>` : ''}
       </button>`
     }).join('')}
   </div>`
@@ -2160,10 +2185,17 @@ function appearanceCardHtml() {
   </div>`
 }
 
+function settingsRailHtml(loading = false) {
+  return `<aside class="settings-rail" aria-label="设置导航">
+    <div class="settings-brand"><span class="settings-mark" aria-hidden="true">J</span><div><strong>JARVIS</strong><span>SETTINGS</span></div></div>
+    ${loading ? '<p class="settings-rail-loading">正在读取设置…</p>' : `<div class="settings-tabs-wrap">${settingsTabsHtml()}</div>`}
+    <div class="settings-rail-foot"><span>你的 Jarvis，由你设定。</span><span><kbd>Esc</kbd> 关闭设置</span></div>
+  </aside>`
+}
+
 function settingsBodyHtml(selected, settings) {
-  return `<div class="settings-wrap">
+  return `${settingsRailHtml()}<div class="settings-wrap">
     ${settingsOverviewHtml()}
-    <div class="settings-tabs-wrap">${settingsTabsHtml()}</div>
     <div class="settings-panels">${settingsPanelsHtml(selected, settings)}</div>
   </div>`
 }
@@ -2202,11 +2234,11 @@ function bindSettingsTabs() {
   $$('[data-settings-tab]').forEach(tab => {
     tab.addEventListener('click', () => activateSettingsTab(tab.dataset.settingsTab, { focus: true }))
     tab.addEventListener('keydown', event => {
-      if (!['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key)) return
+      if (!['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown', 'Home', 'End'].includes(event.key)) return
       event.preventDefault()
       const tabs = $$('[data-settings-tab]')
       const index = tabs.indexOf(tab)
-      const next = event.key === 'Home' ? 0 : event.key === 'End' ? tabs.length - 1 : (index + (event.key === 'ArrowRight' ? 1 : -1) + tabs.length) % tabs.length
+      const next = event.key === 'Home' ? 0 : event.key === 'End' ? tabs.length - 1 : (index + (['ArrowRight', 'ArrowDown'].includes(event.key) ? 1 : -1) + tabs.length) % tabs.length
       activateSettingsTab(tabs[next].dataset.settingsTab, { focus: true })
     })
   })
@@ -2894,7 +2926,7 @@ function renderSettings(options = {}) {
 }
 
 function settingsLoadingHtml() {
-  return `<div class="settings-loading" role="status" aria-live="polite">
+  return `${settingsRailHtml(true)}<div class="settings-loading" role="status" aria-live="polite">
     <span class="settings-spinner" aria-hidden="true"></span>
     <p>正在读取本机配置…</p>
   </div>`
@@ -3483,6 +3515,9 @@ function updateSendShortcutHint() {
 }
 
 function bind() {
+  window.matchMedia('(max-width: 760px)').addEventListener('change', event => {
+    $('#modal .settings-tabs')?.setAttribute('aria-orientation', event.matches ? 'horizontal' : 'vertical')
+  })
   bindHistory()
   updateSendShortcutHint()
   $('#send-btn').addEventListener('click', () => sendText($('#input').value))

@@ -1,0 +1,123 @@
+/* Settings uses the observatory shell; every rule stays inside its shared-dialog mode. */
+#modal.settings-open {
+  width: calc(100vw * var(--ui-inverse-scale, 1));
+  padding: 0;
+  place-items: stretch;
+  background: var(--bg-solid);
+}
+#modal.settings-open .modal.settings-modal {
+  display: grid;
+  grid-template-columns: 246px minmax(0, 1fr);
+  grid-template-rows: auto minmax(0, 1fr);
+  width: 100%;
+  height: calc(100dvh * var(--ui-inverse-scale, 1));
+  max-height: none;
+  border: 0;
+  border-radius: 0;
+  box-shadow: none;
+  background:
+    radial-gradient(900px 600px at 18% 0%, rgb(var(--accent-rgb) / .12), transparent 65%),
+    radial-gradient(700px 700px at 100% 100%, rgba(112, 76, 36, .16), transparent 60%),
+    var(--bg-solid);
+}
+#modal.settings-open .settings-rail {
+  grid-column: 1;
+  grid-row: 1 / -1;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  padding: 26px 18px 18px;
+  overflow-y: auto;
+  border-right: 1px solid var(--line);
+  background: rgb(var(--shade-rgb) / .72);
+  backdrop-filter: blur(var(--glass-blur));
+}
+#modal.settings-open .settings-brand { display: flex; align-items: center; gap: 12px; padding: 0 8px 30px; }
+#modal.settings-open .settings-mark {
+  width: 38px; height: 38px; display: grid; place-items: center; flex: 0 0 auto;
+  border: 1px solid rgb(var(--accent-rgb) / .32); border-radius: 12px;
+  color: var(--cyan); font: 18px var(--mono);
+  box-shadow: 0 0 28px rgb(var(--accent-rgb) / calc(.16 * var(--orb-glow, 1)));
+  background: linear-gradient(145deg, rgb(var(--accent-rgb) / .12), transparent);
+}
+#modal.settings-open .settings-brand div { display: flex; flex-direction: column; gap: 2px; }
+#modal.settings-open .settings-brand strong { font-size: 13px; letter-spacing: .14em; }
+#modal.settings-open .settings-brand div > span { color: var(--faint); font: 9px var(--mono); letter-spacing: .26em; }
+#modal.settings-open .settings-tabs-wrap { position: static; padding: 0; border: 0; background: none; backdrop-filter: none; }
+#modal.settings-open .settings-tabs { flex-direction: column; gap: 4px; overflow: visible; }
+#modal.settings-open .settings-tab {
+  width: 100%; gap: 12px; padding: 10px 11px;
+  border: 1px solid transparent; border-radius: 11px; text-align: left;
+  transition: background 150ms ease, border-color 150ms ease;
+}
+#modal.settings-open .settings-tab.active { border-color: rgb(var(--accent-rgb) / .16); background: linear-gradient(90deg, rgb(var(--accent-rgb) / .1), rgb(var(--accent-rgb) / .02)); }
+#modal.settings-open .settings-nav-glyph { width: 24px; flex: 0 0 24px; color: var(--cyan); font-size: 15px; text-align: center; opacity: .75; }
+#modal.settings-open .settings-tab.active .settings-nav-glyph { opacity: 1; }
+#modal.settings-open .settings-nav-copy { display: flex; flex-direction: column; gap: 2px; }
+#modal.settings-open .settings-nav-copy strong { font-size: 12.5px; font-weight: 540; }
+#modal.settings-open .settings-nav-copy small { color: var(--faint); font: 8.5px var(--mono); letter-spacing: .08em; }
+#modal.settings-open .tab-badge { margin-left: auto; font-size: 8px; }
+#modal.settings-open .settings-rail-foot { display: flex; flex-direction: column; gap: 10px; margin-top: auto; padding: 18px 8px 2px; border-top: 1px solid var(--line); color: var(--faint); font-size: 10px; line-height: 1.6; }
+#modal.settings-open .settings-rail-loading { color: var(--muted); font-size: 11px; padding: 0 8px; }
+#modal.settings-open .modal-head {
+  grid-column: 2; grid-row: 1; align-items: flex-start;
+  padding: 34px clamp(24px, 3.6vw, 58px) 28px; border-bottom: 0;
+}
+#modal.settings-open .settings-heading { min-width: 0; }
+#modal.settings-open .settings-eyebrow { margin: 0 0 10px; color: var(--cyan); font: 9px var(--mono); letter-spacing: .22em; opacity: .8; }
+#modal.settings-open .modal-head h2 { margin: 0 0 8px; font-size: clamp(28px, 3vw, 40px); line-height: 1.05; letter-spacing: -.045em; font-weight: 550; }
+#modal.settings-open .settings-subtitle { margin: 0; color: var(--muted); font-size: 12px; line-height: 1.7; }
+#modal.settings-open #modal-close { width: 30px; height: 30px; flex: 0 0 auto; margin-top: 8px; border: 1px solid var(--line); border-radius: 9px; background: rgb(var(--ink-rgb) / .025); }
+#modal.settings-open #modal-close:hover { border-color: var(--line-strong); background: rgb(var(--ink-rgb) / .055); }
+#modal.settings-open .modal-body { grid-column: 2; grid-row: 2; min-width: 0; padding: 0 clamp(24px, 3.6vw, 58px) 60px; }
+#modal.settings-open .settings-wrap { min-height: 0; max-width: 1370px; margin: 0 auto; }
+#modal.settings-open .settings-overview { padding: 15px 17px; gap: 16px; margin-bottom: 22px; border: 1px solid var(--line); border-radius: 14px; background: linear-gradient(155deg, rgb(var(--ink-rgb) / .04), rgb(var(--ink-rgb) / .015)); }
+#modal.settings-open .settings-overview-item { flex-basis: 150px; }
+#modal.settings-open .settings-panel { padding: 0; }
+#modal.settings-open .settings-section-head { margin-bottom: 18px; }
+#modal.settings-open .settings-card,
+#modal.settings-open .voice-card { border-radius: 16px; background: linear-gradient(160deg, rgb(var(--shade-rgb) / .36), rgb(var(--ink-rgb) / .018)); padding: 18px; }
+#modal.settings-open .provider-card { border-radius: 14px; }
+#modal.settings-open .settings-stat { padding: 14px 15px; border-radius: 14px; }
+#modal.settings-open .settings-savebar { margin: 18px 0 0; padding: 12px 16px calc(12px + env(safe-area-inset-bottom, 0px)); border: 1px solid var(--line); border-radius: 12px; background: var(--bg-solid); }
+#modal.settings-open .settings-field input:not([type="range"]),
+#modal.settings-open .settings-field select { background: rgb(var(--shade-rgb) / .5); }
+#modal.settings-open .settings-tab:focus-visible,
+#modal.settings-open #modal-close:focus-visible { outline: 2px solid var(--cyan); outline-offset: 3px; }
+:root[data-theme="light"] #modal.settings-open .modal.settings-modal {
+  background:
+    radial-gradient(900px 600px at 18% 0%, rgb(var(--accent-rgb) / .07), transparent 65%),
+    radial-gradient(700px 700px at 100% 100%, rgba(112, 76, 36, .08), transparent 60%),
+    var(--bg-solid);
+}
+:root[data-theme="light"] #modal.settings-open .settings-card,
+:root[data-theme="light"] #modal.settings-open .voice-card { background: linear-gradient(160deg, rgba(255,255,255,.8), rgba(255,255,255,.55)); }
+@media (max-width: 1000px) {
+  #modal.settings-open .voice-grid { grid-template-columns: 1fr; }
+}
+@media (max-width: 760px) {
+  #modal.settings-open .modal.settings-modal { grid-template-columns: minmax(0, 1fr); grid-template-rows: auto auto minmax(0, 1fr); }
+  #modal.settings-open .settings-rail { grid-column: 1; grid-row: 1; padding: calc(10px + env(safe-area-inset-top, 0px)) 12px 10px; border-right: 0; border-bottom: 1px solid var(--line); overflow: hidden; }
+  #modal.settings-open .settings-brand { padding: 0 4px 10px; gap: 8px; }
+  #modal.settings-open .settings-mark { width: 26px; height: 26px; border-radius: 8px; font-size: 14px; }
+  #modal.settings-open .settings-brand div { flex-direction: row; align-items: baseline; gap: 9px; }
+  #modal.settings-open .settings-brand strong { font-size: 11px; }
+  #modal.settings-open .settings-brand div > span { font-size: 8px; }
+  #modal.settings-open .settings-tabs { flex-direction: row; overflow-x: auto; gap: 4px; padding: 3px; }
+  #modal.settings-open .settings-tab { width: auto; flex: 1 0 auto; justify-content: center; padding: 9px 10px; gap: 5px; }
+  #modal.settings-open .settings-nav-glyph { width: 16px; flex-basis: 16px; font-size: 13px; }
+  #modal.settings-open .settings-nav-copy strong { font-size: 11px; }
+  #modal.settings-open .settings-nav-copy small,
+  #modal.settings-open .tab-badge,
+  #modal.settings-open .settings-rail-foot { display: none; }
+  #modal.settings-open .modal-head { grid-column: 1; grid-row: 2; padding: 22px 20px 20px; }
+  #modal.settings-open .modal-head h2 { font-size: 28px; }
+  #modal.settings-open .modal-body { grid-column: 1; grid-row: 3; padding: 0 20px calc(32px + env(safe-area-inset-bottom, 0px)); }
+  #modal.settings-open .settings-overview { gap: 12px; padding: 14px; margin-bottom: 20px; }
+  #modal.settings-open .settings-card,
+  #modal.settings-open .voice-card { padding: 15px; }
+  #modal.settings-open .settings-savebar { position: static; }
+}
+@media (prefers-reduced-motion: reduce) {
+  #modal.settings-open .settings-tab { transition: none; }
+}

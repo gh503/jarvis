@@ -15,15 +15,38 @@ let referencedIds = []
 const el = (tag, className, text) => { const n = document.createElement(tag); if (className) n.className = className; if (text !== undefined) n.textContent = text; return n }
 const button = (text, action, className = '') => { const n = el('button', `profile-button ${className}`, text); n.type = 'button'; n.addEventListener('click', action); return n }
 const dialog = el('dialog', 'profile-dialog'); dialog.id = 'profile-dialog'; dialog.setAttribute('aria-labelledby', 'profile-title')
+const rail = el('aside', 'profile-rail')
+const brand = el('div', 'profile-brand'); const brandCopy = el('div'); brandCopy.append(el('strong', '', 'JARVIS'), el('span', '', 'PROFILE')); brand.append(el('span', 'profile-mark', 'J'), brandCopy)
+const nav = el('nav', 'profile-nav'); nav.setAttribute('aria-label', '资料分区导航')
+const railFoot = el('div', 'profile-rail-foot'); railFoot.append(el('p', '', '由你确认 · 随时纠正'), button('关闭资料', () => closeProfile(), 'profile-close-link'))
+rail.append(brand, nav, railFoot)
+const main = el('div', 'profile-main')
 const header = el('header', 'profile-header')
-const heading = el('div'); heading.append(el('p', 'profile-eyebrow', '由你确认 · 随时纠正'))
-const title = el('h2', '', '对我的了解'); title.id = 'profile-title'; heading.append(title)
-header.append(heading, button('关闭', () => closeProfile()))
+const heading = el('div'); heading.append(el('p', 'profile-eyebrow', 'PROFILE / UNDERSTANDING'))
+const title = el('h2', '', '对我的了解'); title.id = 'profile-title'; heading.append(title, el('p', 'profile-subtitle', '查看 Jarvis 记住的资料，决定如何使用，也可以随时纠正。'))
+const closeButton = button('关闭', () => closeProfile(), 'profile-close'); closeButton.setAttribute('aria-label', '关闭对我的了解'); closeButton.title = '关闭（Esc）'
+header.append(heading, closeButton)
 const status = el('p', 'profile-status'); status.setAttribute('role', 'status'); status.setAttribute('aria-live', 'polite')
 const body = el('div', 'profile-body')
 const content = el('div', 'profile-content')
 const editPane = el('section', 'profile-editor'); editPane.hidden = true; editPane.setAttribute('aria-label', '编辑资料')
-body.append(content, editPane); dialog.append(header, status, body); document.body.append(dialog)
+body.append(content, editPane); main.append(header, status, body); dialog.append(rail, main); document.body.append(dialog)
+let sectionLinks = []
+function syncNavigation() {
+  if (!dialog.open || !sectionLinks.length) return
+  const top = body.getBoundingClientRect().top + 32
+  let current = sectionLinks[0]
+  for (const item of sectionLinks) { if (item.section.getBoundingClientRect().top <= top) current = item }
+  // At the end, short final sections must still become reachable and active.
+  if (body.scrollTop > 0 && body.scrollTop + body.clientHeight >= body.scrollHeight - 2) current = sectionLinks.at(-1)
+  for (const item of sectionLinks) {
+    const active = item === current
+    item.link.classList.toggle('active', active)
+    if (active) item.link.setAttribute('aria-current', 'location'); else item.link.removeAttribute('aria-current')
+  }
+}
+body.addEventListener('scroll', syncNavigation, { passive: true })
+new ResizeObserver(syncNavigation).observe(body)
 function notice(text) { status.replaceChildren(document.createTextNode(text)) }
 function pretty(value) { if (value == null) return ''; return typeof value === 'string' ? value : JSON.stringify(value, null, 2) }
 async function api(path = '', method = 'GET', data) {
@@ -77,9 +100,17 @@ async function abandonEditor() {
   if (dirty && !await ask('放弃这次修改？', '尚未保存的内容将被丢弃。', '放弃修改')) return false
   dirty = false; hideEditor(); return true
 }
-function section(name, helper) { const s = el('section', 'profile-section'); const h = el('div', 'profile-section-head'); h.append(el('h3', '', name)); s.append(h); if (helper) s.append(el('p', 'profile-help', helper)); content.append(s); return s }
+function section(name, helper) {
+  const s = el('section', 'profile-section'); s.id = `profile-section-${sectionLinks.length}`; s.tabIndex = -1
+  const h = el('div', 'profile-section-head'); const label = el('h3', '', name); label.id = `${s.id}-title`; h.append(label); s.setAttribute('aria-labelledby', label.id)
+  s.append(h); if (helper) s.append(el('p', 'profile-help', helper)); content.append(s)
+  const link = el('a', 'profile-nav-item'); link.href = `#${s.id}`
+  const number = el('span', 'profile-nav-glyph', String(sectionLinks.length + 1).padStart(2, '0')); number.setAttribute('aria-hidden', 'true'); link.append(number, el('span', '', name))
+  link.addEventListener('click', event => { event.preventDefault(); s.scrollIntoView({ block: 'start', behavior: 'instant' }); s.focus({ preventScroll: true }); syncNavigation() })
+  nav.append(link); sectionLinks.push({ section: s, link }); return s
+}
 function render() {
-  content.replaceChildren()
+  content.replaceChildren(); nav.replaceChildren(); sectionLinks = []
   if (referencedIds.length) {
     const reference = section('这次回答参考的资料', '以下为当前版本，可能已修改；已删除的资料无法恢复展示。')
     const entries = snapshot.entries.filter(entry => referencedIds.includes(entry.id) || referencedIds.includes(entry.memoryId))
@@ -124,6 +155,7 @@ function render() {
   snapshot.changes.slice(0, 60).forEach(change => {
     const row = el('div', 'profile-log'); row.append(el('span', 'profile-muted', change.createdAt || change.at || ''), el('span', '', change.summary || change.description || ({ created: '添加资料', updated: '更新资料', deleted: '删除资料', proposed: '提出新的理解', 'person-created': '添加人物', 'person-updated': '更新人物', 'person-deleted': '删除人物' }[change.action]) || change.action || change.type || '资料已更新')); log.append(row)
   })
+  syncNavigation()
 }
 function valueText(entry) {
   const v = entry.value
