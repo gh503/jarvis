@@ -1,5 +1,5 @@
 import { initStudio } from './studio.js'
-import { loadVisualTuning } from './visual.js'
+import { applyVisualTuning, loadVisualTuning, visualValues } from './visual.js'
 
 const $ = (selector, root = document) => root.querySelector(selector)
 const $$ = (selector, root = document) => [...root.querySelectorAll(selector)]
@@ -1119,7 +1119,7 @@ function settingsTabBadge(name) {
 }
 
 function settingsTabsHtml() {
-  const tabs = [['model', '模型'], ['voice', '语音'], ['access', '设备'], ['system', '系统']]
+  const tabs = [['model', '模型'], ['voice', '语音'], ['appearance', '外观'], ['access', '设备'], ['system', '系统']]
   return `<div class="settings-tabs" role="tablist" aria-label="设置分类">
     ${tabs.map(([id, label]) => {
       const active = state.settingsTab === id
@@ -1428,6 +1428,12 @@ function settingsPanelsHtml(selected, settings) {
       ${state.voiceSettings ? voiceSettingsHtml(state.voiceSettings) : '<p class="settings-error">语音设置暂不可用。</p>'}
       <p class="settings-hint">切换只影响之后的语音轮次，不会重启服务。浏览器目前仍在上传整段语音，流式发生在 Jarvis 后端到 ASR 服务之间。</p>
     </section>
+    <section class="settings-panel" id="settings-panel-appearance" data-settings-panel="appearance" role="tabpanel" aria-labelledby="settings-tab-appearance" hidden>
+      <div class="settings-section-head">
+        <div><h3>外观与主题</h3><p>颜色、动效、密度即时生效并保存到服务端，所有设备保持一致。</p></div>
+      </div>
+      <div id="appearance-host">${appearanceCardHtml()}</div>
+    </section>
     <section class="settings-panel" id="settings-panel-access" data-settings-panel="access" role="tabpanel" aria-labelledby="settings-tab-access" hidden>
       <div class="settings-section-head">
         <div><h3>设备与配对</h3><p>配对手机或另一台电脑；每台设备有独立令牌，可单独撤销。</p></div>
@@ -1499,6 +1505,60 @@ function settingsRuntimeHtml() {
     ['专注模式', state.focus ? '开' : '关'],
   ]
   return rows.map(([label, value]) => `<div class="settings-stat"><small>${escapeHtml(label)}</small><strong>${escapeHtml(value)}</strong></div>`).join('')
+}
+
+const ACCENT_SWATCHES = [
+  [145, '竹绿'], [168, '青玉'], [195, '湖蓝'], [220, '黛蓝'], [230, '靛紫'],
+]
+
+function appearanceCardHtml() {
+  const v = visualValues
+  const presets = (state.tuningSnapshot?.presets || []).filter(preset => preset.id !== 'balanced' || true)
+  const themeMode = window.JarvisTheme?.mode || 'dark'
+  return `<div class="settings-card" id="appearance-card">
+    <div class="settings-card-head"><div><h4>主题</h4><p>顶栏的 ☾/☀ 按钮也可以循环切换。</p></div>
+      <div class="segmented" id="appearance-theme" role="radiogroup" aria-label="主题">
+        ${[['dark', '深色'], ['light', '浅色'], ['auto', '跟随系统']].map(([mode, label]) => `<button type="button" class="segment${themeMode === mode ? ' active' : ''}" data-theme-mode="${mode}" role="radio" aria-checked="${themeMode === mode}">${label}</button>`).join('')}
+      </div>
+    </div>
+    <div class="settings-card-head"><div><h4>预设</h4><p>一键切换整套视觉参数。</p></div></div>
+    <div class="appearance-presets">
+      ${presets.map(preset => `<button type="button" class="model-action appearance-preset" data-preset="${escapeHtml(preset.id)}" title="${escapeHtml(preset.description || '')}">${escapeHtml(preset.label)}</button>`).join('')}
+    </div>
+    <div class="settings-form-grid">
+      <div class="settings-field wide"><span>强调色</span>
+        <div class="appearance-swatches">
+          ${ACCENT_SWATCHES.map(([hue, name]) => `<button type="button" class="appearance-swatch${Math.round(Number(v['ui.accentHue'])) === hue ? ' active' : ''}" data-hue="${hue}" style="--swatch-h:${hue}" title="${name}（色相 ${hue}°）" aria-label="${name}"></button>`).join('')}
+        </div>
+      </div>
+      <label class="settings-field"><span>动效等级</span>
+        <select id="appearance-motion">
+          <option value="full" ${v['ui.motion'] === 'full' ? 'selected' : ''}>完整</option>
+          <option value="subtle" ${v['ui.motion'] === 'subtle' ? 'selected' : ''}>减弱</option>
+          <option value="off" ${v['ui.motion'] === 'off' ? 'selected' : ''}>关闭</option>
+        </select>
+      </label>
+      <label class="settings-field"><span>信息密度</span>
+        <select id="appearance-density">
+          <option value="comfortable" ${v['ui.density'] === 'comfortable' ? 'selected' : ''}>舒适</option>
+          <option value="compact" ${v['ui.density'] === 'compact' ? 'selected' : ''}>紧凑</option>
+        </select>
+      </label>
+      <label class="settings-field"><span>文字比例 <em id="appearance-textscale-value">${Number(v['ui.textScale']).toFixed(2)}×</em></span>
+        <input id="appearance-textscale" type="range" min="0.85" max="1.15" step="0.01" value="${Number(v['ui.textScale'])}">
+      </label>
+      <label class="settings-field"><span>环境粒子 <em id="appearance-particles-value">${Number(v['ui.particles'])}</em></span>
+        <input id="appearance-particles" type="range" min="0" max="60" step="1" value="${Number(v['ui.particles'])}">
+      </label>
+      <label class="settings-field"><span>背景氛围 <em id="appearance-ambient-value">${Number(v['ui.ambient']).toFixed(2)}</em></span>
+        <input id="appearance-ambient" type="range" min="0" max="1" step="0.05" value="${Number(v['ui.ambient'])}">
+      </label>
+    </div>
+    <div class="settings-actions">
+      <button type="button" class="model-action" id="appearance-reset">恢复外观默认</button>
+      <span class="settings-feedback" id="appearance-result" role="status"></span>
+    </div>
+  </div>`
 }
 
 function settingsBodyHtml(selected, settings) {
@@ -1868,6 +1928,93 @@ function showModelNotice(text, kind = '') {
   notice.className = `settings-notice ${kind}`.trim()
 }
 
+function bindAppearance() {
+  const card = $('#appearance-card')
+  if (!card || card.dataset.bound) return
+  card.dataset.bound = '1'
+  const result = $('#appearance-result')
+  card.querySelectorAll('#appearance-theme .segment').forEach(button => {
+    button.addEventListener('click', () => {
+      window.JarvisTheme?.set(button.dataset.themeMode)
+      card.querySelectorAll('#appearance-theme .segment').forEach(item => {
+        const active = item === button
+        item.classList.toggle('active', active)
+        item.setAttribute('aria-checked', String(active))
+      })
+    })
+  })
+  const note = (text, kind = 'ok') => {
+    if (result) { result.textContent = text; result.className = `settings-feedback ${kind}`.trim() }
+  }
+  const persist = async values => {
+    applyVisualTuning({ ...visualValues, ...values })
+    try {
+      const data = await api('/api/tuning', { method: 'PUT', body: JSON.stringify({ values }) })
+      state.tuningSnapshot = data.tuning || state.tuningSnapshot
+      note('已保存，全设备生效')
+    } catch (error) {
+      note(`保存失败：${error.message}`, 'bad')
+    }
+  }
+  card.querySelectorAll('.appearance-preset').forEach(button => {
+    button.addEventListener('click', async () => {
+      button.disabled = true
+      try {
+        const data = await api('/api/tuning/preset', { method: 'POST', body: JSON.stringify({ id: button.dataset.preset }) })
+        state.tuningSnapshot = data.tuning || state.tuningSnapshot
+        applyVisualTuning(data.values || {})
+        const host = $('#appearance-host')
+        if (host) { host.innerHTML = appearanceCardHtml(); bindAppearance() }
+        note(`已应用「${button.textContent}」预设`)
+      } catch (error) {
+        note(`预设失败：${error.message}`, 'bad')
+      } finally {
+        button.disabled = false
+      }
+    })
+  })
+  card.querySelectorAll('.appearance-swatch').forEach(button => {
+    button.addEventListener('click', () => {
+      card.querySelectorAll('.appearance-swatch').forEach(item => item.classList.toggle('active', item === button))
+      void persist({ 'ui.accentHue': Number(button.dataset.hue) })
+    })
+  })
+  $('#appearance-motion')?.addEventListener('change', event => void persist({ 'ui.motion': event.target.value }))
+  $('#appearance-density')?.addEventListener('change', event => void persist({ 'ui.density': event.target.value }))
+  const slider = (id, key, format) => {
+    const input = $(`#appearance-${id}`)
+    const label = $(`#appearance-${id}-value`)
+    if (!input) return
+    let timer = 0
+    input.addEventListener('input', () => {
+      const value = Number(input.value)
+      if (label) label.textContent = format(value)
+      applyVisualTuning({ ...visualValues, [key]: value })
+      clearTimeout(timer)
+      timer = setTimeout(() => void persist({ [key]: value }), 350)
+    })
+  }
+  slider('textscale', 'ui.textScale', v => `${v.toFixed(2)}×`)
+  slider('particles', 'ui.particles', v => String(v))
+  slider('ambient', 'ui.ambient', v => v.toFixed(2))
+  $('#appearance-reset')?.addEventListener('click', async event => {
+    const button = event.currentTarget
+    button.disabled = true
+    try {
+      const data = await api('/api/tuning/reset', { method: 'POST', body: JSON.stringify({ group: 'ui' }) })
+      state.tuningSnapshot = data.tuning || state.tuningSnapshot
+      applyVisualTuning(data.values || {})
+      const host = $('#appearance-host')
+      if (host) { host.innerHTML = appearanceCardHtml(); bindAppearance() }
+      note('外观已恢复默认')
+    } catch (error) {
+      note(`重置失败：${error.message}`, 'bad')
+    } finally {
+      button.disabled = false
+    }
+  })
+}
+
 function bindVoiceSettings() {
   const sync = kind => {
     const source = $(`#${kind}-source`)
@@ -2001,6 +2148,7 @@ function renderSettings(options = {}) {
   renderProviderCards()
   renderModelForm()
   bindVoiceSettings()
+  bindAppearance()
   bindSettingsActions()
   updateDirtyUi()
   void refreshDevices()
@@ -2022,9 +2170,10 @@ async function showSettings(options = {}) {
   const token = ++state.settingsLoadToken
   const wasOpen = !$('#modal').hidden
   if (!wasOpen) openModal(settingsLoadingHtml(), '设置', { className: 'settings-modal', opener: $('#settings-btn') })
-  const [voiceResult, modelResult] = await Promise.allSettled([
+  const [voiceResult, modelResult, tuningResult] = await Promise.allSettled([
     api('/api/voice'),
     api('/api/model'),
+    api('/api/tuning'),
   ])
   if (voiceResult.status === 'fulfilled') {
     state.voiceSettings = voiceResult.value.settings
@@ -2047,6 +2196,10 @@ async function showSettings(options = {}) {
         visionModel: '', embedModel: '', keepAlive: '24h', hasKey: false,
       }],
     }
+  }
+  if (tuningResult.status === 'fulfilled') {
+    state.tuningSnapshot = tuningResult.value
+    applyVisualTuning(tuningResult.value.values || {})
   }
   if (token !== state.settingsLoadToken || $('#modal').hidden) return
   if (!state.modelSettings.profiles?.some(item => item.id === state.modelFormId)) {

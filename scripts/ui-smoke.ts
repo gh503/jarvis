@@ -139,7 +139,10 @@ async function main(): Promise<void> {
     check(settings.adapters, 'settings: provider adapters (OpenAI/Gemini/Cloudflare/Edge)')
     check(settings.pool, 'settings: provider pool + scenario card')
     check(settings.scenarioSelect, 'composer: scenario selector')
-    check(settings.tabs === 4 && settings.tabbed, 'settings: four-section tabbed layout')
+    await cdp.evaluate("document.querySelector('[data-settings-tab=\"appearance\"]').click()")
+    await sleep(400)
+    check(await cdp.evaluate<boolean>("Boolean(document.querySelector('#appearance-card') && document.querySelectorAll('.appearance-swatch').length === 5 && document.querySelectorAll('.appearance-preset').length >= 4)"), 'settings: appearance tab with swatches and presets')
+    check(settings.tabs === 5 && settings.tabbed, 'settings: five-section tabbed layout (incl. appearance)')
     await cdp.evaluate("document.querySelector('[data-settings-tab=voice]').click()")
     await sleep(200)
     check(await cdp.evaluate<boolean>("!document.querySelector('#settings-panel-voice').hidden && document.querySelector('#settings-panel-model').hidden"), 'settings: voice tab switches panel')
@@ -189,7 +192,7 @@ async function main(): Promise<void> {
       tabs: document.querySelectorAll('[data-settings-tab]').length,
       overflow: document.querySelector('.modal-body').scrollWidth > document.querySelector('.modal-body').clientWidth + 1
     })`)
-    check(mobileSettings.fits && mobileSettings.full && mobileSettings.tabs === 4 && !mobileSettings.overflow, 'mobile: settings sheet fits viewport')
+    check(mobileSettings.fits && mobileSettings.full && mobileSettings.tabs === 5 && !mobileSettings.overflow, 'mobile: settings sheet fits viewport')
     await cdp.evaluate("document.querySelector('#modal-close').click()")
     await sleep(200)
   } finally {

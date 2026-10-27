@@ -1074,3 +1074,21 @@ kbd { font-family: var(--mono); font-size: 9px; border: 1px solid var(--line); b
 :root[data-theme="light"] .settings-field input,
 :root[data-theme="light"] .settings-field select,
 :root[data-theme="light"] .settings-field textarea { background: rgba(255, 255, 255, 0.92); }
+/* Appearance tab */
+.appearance-presets { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 14px; }
+.appearance-swatches { display: flex; gap: 10px; align-items: center; }
+.appearance-swatch {
+  width: 28px; height: 28px; border-radius: 50%; cursor: pointer;
+  border: 2px solid transparent;
+  background: hsl(var(--swatch-h) 55% 55%);
+}
+.appearance-swatch.active { border-color: var(--text); box-shadow: 0 0 0 3px hsl(var(--swatch-h) 55% 55% / .35); }
+.appearance-swatch:hover { transform: scale(1.08); }
+
+/* Theme segmented control */
+.segmented { display: inline-flex; border: 1px solid var(--line); border-radius: 999px; padding: 2px; gap: 2px; }
+.segmented .segment {
+  border: 0; background: transparent; color: var(--muted); cursor: pointer;
+  padding: 5px 14px; border-radius: 999px; font-size: 12px;
+}
+.segmented .segment.active { background: var(--panel); color: var(--text); box-shadow: inset 0 0 0 1px var(--line-strong, var(--line)); }
