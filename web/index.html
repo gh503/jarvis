@@ -12,6 +12,7 @@
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
   <meta name="theme-color" content="#080b0f">
   <link rel="icon" href="/icons/jarvis.svg" type="image/svg+xml">
+  <script src="/theme-boot.js"></script>
   <link rel="stylesheet" href="/styles.css">
   <link rel="stylesheet" href="/studio.css">
 </head>
@@ -38,6 +39,9 @@
       </div>
       <div class="topbar-actions">
         <span class="clock" id="clock">--:--</span>
+        <button class="icon-btn" id="theme-btn" type="button" title="外观：深色（点击切换）" aria-label="外观：深色，点击切换">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M21 12.9A8.6 8.6 0 1 1 11.1 3a7 7 0 0 0 9.9 9.9Z"/></svg>
+        </button>
         <button class="icon-btn studio-trigger" id="studio-btn" type="button" title="观察台与调参" aria-label="打开观察台">
           <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 13h3l2.2-7 3.6 13L15 9l1.8 4H21v2h-5.4l-3.2-7-3.6 13L7.6 15H3v-2Z"/></svg>
         </button>
@@ -265,6 +269,7 @@
   </div>
 
   <audio id="player" preload="none"></audio>
+  <script type="module" src="/theme.js"></script>
   <script type="module" src="/app.js"></script>
 </body>
 </html>
