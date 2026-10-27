@@ -1,12 +1,13 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { mkdtempSync, mkdirSync, readFileSync, writeFileSync, existsSync, rmSync, readdirSync } from 'node:fs'
+import { mkdtempSync, mkdirSync, readFileSync, writeFileSync, existsSync, rmSync, readdirSync, statSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { spawnSync } from 'node:child_process'
 import { DatabaseSync } from 'node:sqlite'
 import { SessionStore } from '../src/sessions.ts'
+import { ToolJournal } from '../src/tool-journal.ts'
 import { MemoryStore } from '../src/memory/store.ts'
 import { ProfileStore } from '../src/profile.ts'
 
@@ -56,6 +57,13 @@ test('backup snapshots WAL sessions, includes manifest, restores transcripts and
   const session = store.create('Roundtrip')
   store.beginTurn(session.id, 'turn-one', 'Question', 'test')
   store.finishTurn('turn-one', { status: 'complete', text: 'Answer', metadata: { test: true } })
+  const journal = new ToolJournal(store)
+  const key = { sessionId: session.id, turnId: 'turn-one', step: 0 }
+  journal.beginStep(key)
+  journal.recordAssistant({ ...key, text: '', toolCalls: [{ id: 'call', name: 'read', arguments: '{}' }] })
+  journal.startCall({ ...key, callId: 'call', name: 'read', args: {}, definitionHash: 'hash', localOnly: true })
+  journal.finishCall({ ...key, callId: 'call', status: 'succeeded', content: 'private source', localOnly: true })
+  const expectedCalls = journal.listCalls(session.id)
   const expected = store.exportAll()
   const context = store.contextState(session.id, 'backup-scope')
   const summary = store.saveSummary({ sessionId:session.id,scope:'backup-scope',text:'测试摘要',sourceIds:context.messages.map(m=>m.id),throughMessageId:context.messages.at(-1)!.id,expectedRevision:context.revision })
@@ -83,6 +91,7 @@ test('backup snapshots WAL sessions, includes manifest, restores transcripts and
   }
   const reopened = new SessionStore({ file: join(target, 'sessions.db'), now: () => 1234 })
   try {
+    assert.deepEqual(new ToolJournal(reopened).listCalls(session.id), expectedCalls)
     assert.deepEqual(reopened.exportAll(), expected)
     assert.deepEqual(reopened.contextState(session.id, 'backup-scope').summary, summary)
   } finally { reopened.close() }
@@ -113,6 +122,77 @@ test('legacy archive preserves existing sessions and sidecars byte for byte with
   }
   assert.equal(store.list().items[0].title, 'Keep existing sessions')
 })
+
+test('default backup excludes MCP credentials and restore preserves existing MCP config', t => {
+  const { source, target, archive } = fixture(t)
+  const config = JSON.stringify({ servers: [{ id: 'fixture', headers: { Authorization: 'Bearer synthetic-source-token' } }] })
+  const existing = JSON.stringify({ servers: [{ id: 'existing', env: { TOKEN: 'synthetic-existing-token' } }] })
+  writeFileSync(join(source, 'mcp-config.json'), config, { mode: 0o600 })
+  writeFileSync(join(target, 'mcp-config.json'), existing, { mode: 0o600 })
+  const backup = success(script('backup.ts', source, [archive]))
+  assert.equal(backup.files.includes('mcp-config.json'), false)
+  const listing = command('tar', ['-tzf', archive])
+  assert.equal(listing.status, 0, listing.stderr)
+  assert.equal(listing.stdout.includes('mcp-config.json'), false)
+  const manifest = command('tar', ['-xOzf', archive, './manifest.json'])
+  assert.equal(manifest.status, 0, manifest.stderr)
+  assert.equal(JSON.parse(manifest.stdout).files.includes('mcp-config.json'), false)
+  assert.equal(manifest.stdout.includes('synthetic-source-token'), false)
+  const restored = success(script('restore.ts', target, [archive, '--yes', '--force']))
+  assert.equal(restored.restored.includes('mcp-config.json'), false)
+  assert.equal(readFileSync(join(target, 'mcp-config.json'), 'utf8'), existing)
+  assert.equal(readFileSync(join(restored.safety, 'mcp-config.json'), 'utf8'), existing)
+})
+
+test('explicit secret backup restores MCP credential bytes privately and preserves prior config', t => {
+  const { source, target, archive } = fixture(t)
+  const config = JSON.stringify({ servers: [
+    { id: 'remote-fixture', url: 'https://example.invalid/mcp', headers: { Authorization: 'Bearer synthetic-remote-token' } },
+    { id: 'local-fixture', command: 'example', env: { TOKEN: 'synthetic-env-token' } },
+  ] }, null, 2) + '\n'
+  const existing = '{"servers":[],"previous":"synthetic-old-secret"}\n'
+  writeFileSync(join(source, 'mcp-config.json'), config, { mode: 0o600 })
+  writeFileSync(join(target, 'mcp-config.json'), existing, { mode: 0o600 })
+  const backup = success(script('backup.ts', source, [archive, '--include-secrets']))
+  assert.ok(backup.files.includes('mcp-config.json'))
+  assert.equal(statSync(archive).mode & 0o777, 0o600)
+  const packed = command('tar', ['-xOzf', archive, './mcp-config.json'])
+  assert.equal(packed.status, 0, packed.stderr)
+  assert.equal(packed.stdout, config)
+  const manifest = command('tar', ['-xOzf', archive, './manifest.json'])
+  assert.equal(manifest.status, 0, manifest.stderr)
+  assert.ok(JSON.parse(manifest.stdout).files.includes('mcp-config.json'))
+  assert.equal(manifest.stdout.includes('synthetic-remote-token'), false)
+  const restored = success(script('restore.ts', target, [archive, '--yes', '--force']))
+  assert.ok(restored.restored.includes('mcp-config.json'))
+  assert.equal(readFileSync(join(target, 'mcp-config.json'), 'utf8'), config)
+  assert.equal(statSync(join(target, 'mcp-config.json')).mode & 0o777, 0o600)
+  assert.equal(readFileSync(join(restored.safety, 'mcp-config.json'), 'utf8'), existing)
+  assert.equal(statSync(restored.safety).mode & 0o777, 0o700)
+})
+
+for (const version of [1, 2]) {
+  test(`restore accepts v${version} sessions and migrates journal schema on open`, t => {
+    const { source, target, archive } = fixture(t)
+    const file = join(source, 'sessions.db')
+    const store = new SessionStore({ file })
+    const session = store.create('Older schema')
+    store.close()
+    const db = new DatabaseSync(file)
+    db.exec('DROP TABLE tool_calls; DROP TABLE tool_steps;')
+    if (version === 1) db.exec('DROP TABLE context_revisions; DROP TABLE session_summaries;')
+    db.exec(`PRAGMA user_version=${version}`)
+    db.close()
+    success(script('backup.ts', source, [archive]))
+    success(script('restore.ts', target, [archive, '--yes', '--force']))
+    const reopened = new SessionStore({ file: join(target, 'sessions.db') })
+    try {
+      assert.equal(reopened.get(session.id)?.title, 'Older schema')
+      assert.equal(reopened.databaseForTools().prepare('PRAGMA user_version').get()!.user_version, 3)
+      assert.deepEqual(new ToolJournal(reopened).listCalls(session.id), [])
+    } finally { reopened.close() }
+  })
+}
 
 for (const invalid of ['version', 'schema', 'corruption']) {
   test(`rejects invalid session ${invalid} before destination mutation`, t => {

@@ -32,7 +32,7 @@ try {
   if (statSync(archive).size > 1_000_000_000) throw new Error('backup archive is too large')
   const listing = spawnSync('tar', ['-tvzf', archive], { encoding: 'utf8', maxBuffer: 8 * 1024 * 1024 })
   if (listing.status !== 0) throw new Error(`cannot list backup archive: ${listing.stderr || 'tar failed'}`)
-  const allowed = new Set(['', 'jarvis.db', 'sessions.db', 'manifest.json', 'tuning.json', 'model-config.json', 'voice-config.json'])
+  const allowed = new Set(['', 'jarvis.db', 'sessions.db', 'manifest.json', 'tuning.json', 'model-config.json', 'voice-config.json', 'mcp-config.json'])
   for (const line of listing.stdout.split('\n').filter(Boolean)) {
     const type = line[0]
     const name = line.trim().split(/\s+/).pop()?.replace(/^\.\//, '') ?? ''
@@ -64,15 +64,16 @@ try {
         const reference = new DatabaseSync(referenceFile, { readOnly: true })
         try {
           const version = check.prepare('PRAGMA user_version').get()!.user_version
-          if (version !== 1 && version !== reference.prepare('PRAGMA user_version').get()!.user_version) {
+          if (version !== 1 && version !== 2 && version !== reference.prepare('PRAGMA user_version').get()!.user_version) {
             throw new Error(`Unsupported sessions database version: ${version}`)
           }
           const schema = (db: DatabaseSync) => db.prepare(
             "SELECT type,name,tbl_name,sql FROM sqlite_master WHERE name NOT LIKE 'sqlite_%' ORDER BY type,name"
           ).all()
-          // v1 has the identical transcript schema, before derived context tables were added.
-          const expected = schema(reference).filter(row => version !== 1
-            || !['context_revisions', 'session_summaries'].includes(String(row.tbl_name)))
+          // Older versions have the same transcript schema, before context/journal tables.
+          const expected = schema(reference).filter(row =>
+            (version !== 1 || !['context_revisions', 'session_summaries'].includes(String(row.tbl_name)))
+            && (Number(version) >= 3 || !['tool_steps', 'tool_calls'].includes(String(row.tbl_name))))
           if (JSON.stringify(schema(check)) !== JSON.stringify(expected)) {
             throw new Error('sessions.db does not match the SessionStore schema')
           }
@@ -93,7 +94,7 @@ try {
   await runProcess('mkdir', ['-p', dataDir, join(safety)], { timeoutMs: 10_000 })
   await chmod(dataDir, 0o700).catch(() => undefined)
   await chmod(safety, 0o700).catch(() => undefined)
-  for (const name of ['jarvis.db', 'jarvis.db-wal', 'jarvis.db-shm', 'sessions.db', 'sessions.db-wal', 'sessions.db-shm', 'tuning.json', 'model-config.json', 'voice-config.json']) {
+  for (const name of ['jarvis.db', 'jarvis.db-wal', 'jarvis.db-shm', 'sessions.db', 'sessions.db-wal', 'sessions.db-shm', 'tuning.json', 'model-config.json', 'voice-config.json', 'mcp-config.json']) {
     if (existsSync(join(dataDir, name))) await copyFile(join(dataDir, name), join(safety, name))
   }
 
@@ -103,13 +104,13 @@ try {
     await copyFile(join(work, name), join(dataDir, name))
     await chmod(join(dataDir, name), 0o600)
   }
-  for (const name of ['tuning.json', 'model-config.json', 'voice-config.json']) {
+  for (const name of ['tuning.json', 'model-config.json', 'voice-config.json', 'mcp-config.json']) {
     if (existsSync(join(work, name))) {
       await copyFile(join(work, name), join(dataDir, name))
       await chmod(join(dataDir, name), 0o600)
     }
   }
-  const restored = [...databases, ...['tuning.json', 'model-config.json', 'voice-config.json'].filter(name => existsSync(join(work, name)))]
+  const restored = [...databases, ...['tuning.json', 'model-config.json', 'voice-config.json', 'mcp-config.json'].filter(name => existsSync(join(work, name)))]
   const sessions = databases.includes('sessions.db')
     ? 'sessions.db restored from backup.'
     : 'Legacy backup has no sessions.db; existing sessions.db and its WAL/SHM files were preserved.'

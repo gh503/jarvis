@@ -10,7 +10,7 @@
   "scripts": {
     "start": "node --experimental-transform-types --enable-source-maps src/main.ts",
     "dev": "node --watch --experimental-transform-types src/main.ts",
-    "test": "TZ=Asia/Shanghai node --experimental-transform-types --test test/*.test.ts",
+    "test": "TZ=Asia/Shanghai node --experimental-transform-types --test --test-concurrency=4 test/*.test.ts",
     "typecheck": "tsc --noEmit",
     "doctor": "node --experimental-transform-types src/doctor.ts",
     "setup": "bash scripts/setup-models.sh",
@@ -26,6 +26,8 @@
     "package": "node --experimental-transform-types scripts/package-app.ts"
   },
   "dependencies": {
+    "@modelcontextprotocol/sdk": "1.32.2",
+    "ajv": "8.20.0",
     "ws": "8.21.3"
   },
   "devDependencies": {

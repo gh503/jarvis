@@ -1,3 +1,4 @@
+import { ToolCallBuffer, modelWire, finishToolEvents, type ModelStreamEvent } from './types.ts'
 import { contextWindow, contextLimitsFor, isContextOverflow, requireCompleteOutput } from './context-budget.ts'
 import type { ChatMessage, ChatOptions, ModelClient, ModelHealth, ModelInfo, ModelStatus } from './types.ts'
 
@@ -64,6 +65,9 @@ function blocks(message: ChatMessage): Array<Record<string, unknown>> {
  * all different, and guessing leads to silent empty replies.
  */
 export class AnthropicClient implements ModelClient {
+  private readonly toolsEnabled: boolean
+  // Opaque signed thinking blocks are replayed only on this live client (bounded cache).
+  private readonly reasoning = new Map<string, any[]>()
   private readonly configuredWindow: number
   readonly model: string
   readonly visionModel: string
@@ -74,6 +78,7 @@ export class AnthropicClient implements ModelClient {
   private readonly label: string
 
   constructor(options: {
+    supportsTools?: boolean
     contextWindow?: number
     baseUrl: string
     model: string
@@ -83,6 +88,7 @@ export class AnthropicClient implements ModelClient {
     label?: string
   }) {
     this.baseUrl = normalizeBase(options.baseUrl)
+    this.toolsEnabled = options.supportsTools === true
     this.configuredWindow = contextWindow(options.contextWindow)
     this.model = options.model
     this.apiKey = options.apiKey ?? ''
@@ -151,15 +157,98 @@ export class AnthropicClient implements ModelClient {
     const system = messages.filter(message => message.role === 'system').map(textOf).join('\n\n').trim()
     const turns = messages
       .filter(message => message.role !== 'system')
-      .map(message => ({ role: message.role, content: blocks(message) }))
+      .map(message => ({ role: message.role === 'tool' ? 'user' : message.role, content:
+        message.role === 'tool' ? [{ type: 'tool_result', tool_use_id: message.toolCallId, content: message.content }] : [
+          ...(message.toolCalls?.[0] ? this.reasoning.get(message.toolCalls[0].id) ?? [] : []),
+          ...(message.content || message.images?.length ? blocks(message) : []),
+          ...(message.toolCalls ?? []).map(call => ({ type: 'tool_use', id: call.id, name: call.name, input: JSON.parse(call.arguments) })),
+        ],
+      }))
     return JSON.stringify({
       model: options.model ?? this.model,
       max_tokens: contextLimitsFor(this.configuredWindow, options, this.model).maxOutputTokens,
       temperature: options.temperature ?? 0.4,
       stream,
       ...(system ? { system } : {}),
-      messages: turns,
+      messages: turns.reduce<Array<{ role: string; content: any[] }>>((merged, turn) => {
+        const last = merged.at(-1)
+        if (last?.role === turn.role) last.content.push(...turn.content)
+        else merged.push(turn)
+        return merged
+      }, []),
+      ...(options.tools?.length ? { tools: options.tools.map(tool => ({ name: tool.name, description: tool.description, input_schema: tool.parameters })) } : {}),
     })
+  }
+
+  async supportsTools(): Promise<boolean> { return this.toolsEnabled }
+
+  async *toolStream(messages: ChatMessage[], options: ChatOptions = {}): AsyncGenerator<ModelStreamEvent> {
+    const controller = new AbortController()
+    const timeout = setTimeout(() => controller.abort(), options.timeoutMs ?? 120_000)
+    const signal = options.signal ? AbortSignal.any([options.signal, controller.signal]) : controller.signal
+    const calls = new ToolCallBuffer()
+    const active = new Map<number, string>()
+    const thinking = new Map<number, any>()
+    const argumentDeltas = new Set<number>()
+    let finish: string | undefined
+    try {
+      signal.throwIfAborted()
+      const response = await fetch(this.endpoint('/messages'), { method: 'POST', headers: { ...this.headers(), accept: 'text/event-stream' }, body: this.body(messages, options, true), signal })
+      if (!response.ok) throw new AnthropicError(`Anthropic request failed: HTTP ${response.status} ${(await response.text()).slice(0, 300)}`, response.status)
+      const isSse = (response.headers.get('content-type') ?? '').includes('text/event-stream')
+      for await (const event of modelWire(response, signal)) {
+        if (!event || typeof event !== 'object') throw new Error('Malformed Anthropic response')
+        if (event.type === 'error' || event.error) throw new AnthropicError(event.error?.message ?? 'Anthropic stream error')
+        if (!isSse) {
+          if (!Array.isArray(event.content)) throw new Error('Malformed Anthropic content')
+          for (const [index, block] of event.content.entries()) {
+            if (block.type === 'tool_use') calls.patch(index, { id: block.id, name: block.name, arguments: JSON.stringify(block.input) })
+            else if (block.type === 'text') { if (typeof block.text !== 'string') throw new Error('Malformed Anthropic text'); if (block.text) yield { type: 'text', text: block.text } }
+            else if (['thinking', 'redacted_thinking'].includes(block.type)) thinking.set(index, block)
+          }
+          finish = event.stop_reason
+        } else if (event.type === 'content_block_start') {
+          if (!Number.isInteger(event.index) || active.has(event.index)) throw new Error('Malformed Anthropic block index')
+          const block = event.content_block
+          if (!block || typeof block.type !== 'string') throw new Error('Malformed Anthropic block')
+          active.set(event.index, block.type)
+          if (block.type === 'tool_use') calls.patch(event.index, { id: block.id, name: block.name, arguments: JSON.stringify(block.input ?? {}) })
+          else if (block.type === 'text' && block.text) yield { type: 'text', text: block.text }
+          else if (['thinking', 'redacted_thinking'].includes(block.type)) thinking.set(event.index, { ...block })
+        } else if (event.type === 'content_block_delta') {
+          const kind = active.get(event.index)
+          if (!kind) throw new Error('Anthropic delta without block start')
+          if (event.delta?.type === 'input_json_delta') {
+            if (kind !== 'tool_use' || typeof event.delta.partial_json !== 'string') throw new Error('Malformed Anthropic tool delta')
+            if (!argumentDeltas.has(event.index)) calls.patch(event.index, { arguments: '' })
+            argumentDeltas.add(event.index)
+            calls.patch(event.index, { arguments: event.delta.partial_json }, true)
+          } else if (event.delta?.type === 'text_delta') {
+            if (kind !== 'text' || typeof event.delta.text !== 'string') throw new Error('Malformed Anthropic text delta')
+            yield { type: 'text', text: event.delta.text }
+          } else if (event.delta?.type === 'thinking_delta' || event.delta?.type === 'signature_delta') {
+            const block = thinking.get(event.index)
+            if (!block) throw new Error('Malformed Anthropic thinking delta')
+            const field = event.delta.type === 'thinking_delta' ? 'thinking' : 'signature'
+            if (typeof event.delta[field] !== 'string') throw new Error('Malformed Anthropic thinking field')
+            block[field] = (block[field] ?? '') + event.delta[field]
+          }
+        } else if (event.type === 'content_block_stop') {
+          if (!active.delete(event.index)) throw new Error('Anthropic block stop without start')
+        } else if (event.type === 'message_delta') finish = event.delta?.stop_reason
+        if (!isSse || event.type === 'message_stop') {
+          signal.throwIfAborted()
+          if (active.size) throw new Error('Anthropic finished with open content blocks')
+          if (finish !== 'max_tokens') {
+            const completed = calls.complete()
+            for (const call of completed) if (thinking.size) this.reasoning.set(call.id, [...thinking.values()])
+            while (this.reasoning.size > 128) this.reasoning.delete(this.reasoning.keys().next().value!)
+          }
+          yield* finishToolEvents(calls, finish, signal); return
+        }
+      }
+      throw new Error('Anthropic stream ended without finish')
+    } finally { controller.abort(); clearTimeout(timeout) }
   }
 
   async *chatStream(messages: ChatMessage[], options: ChatOptions = {}): AsyncGenerator<string> {

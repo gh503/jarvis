@@ -144,14 +144,14 @@ test('contextState explicitly bounds the earliest whole pairs and flags the rema
   assert.equal(tail.hasMore, false);
 });
 
-test('migrates v1 transcripts to v2 without losing history; new stores are v2', t => {
+test('migrates v1 transcripts to v3 without losing history; new stores are v3', t => {
   const { store, file } = fixture(t);
   const id = store.create().id;
   const ids = turn(store, id, 'legacy');
   store.close();
   const db = new DatabaseSync(file);
-  assert.equal(db.prepare('PRAGMA user_version').get()!.user_version, 2);
-  db.exec('DROP TABLE session_summaries; DROP TABLE context_revisions; PRAGMA user_version=1;');
+  assert.equal(db.prepare('PRAGMA user_version').get()!.user_version, 3);
+  db.exec('DROP TABLE tool_calls; DROP TABLE tool_steps; DROP TABLE session_summaries; DROP TABLE context_revisions; PRAGMA user_version=1;');
   db.close();
   const migrated = new SessionStore({ file });
   try {
@@ -159,7 +159,7 @@ test('migrates v1 transcripts to v2 without losing history; new stores are v2', 
     save(migrated, id, ids);
   } finally { migrated.close(); }
   const check = new DatabaseSync(file);
-  assert.equal(check.prepare('PRAGMA user_version').get()!.user_version, 2);
+  assert.equal(check.prepare('PRAGMA user_version').get()!.user_version, 3);
   assert.deepEqual(check.prepare('PRAGMA foreign_key_check').all(), []);
   check.close();
 });

@@ -46,6 +46,7 @@ async function main(): Promise<void> {
     add(`embedding model ${config.ollama.embedModel}`, names.some(name => name === config.ollama.embedModel || name.startsWith(`${config.ollama.embedModel}:`)), names.join(', ') || 'no models', false)
   }
 
+  add('MCP settings lock', await fileExists('/usr/bin/flock'), '/usr/bin/flock (util-linux)', false)
   add('ffmpeg', await commandExists('ffmpeg'), config.voice.ffmpeg)
   add('arecord', await commandExists(config.voice.arecord), config.voice.arecord, false)
   try {

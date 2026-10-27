@@ -190,6 +190,7 @@ function handleEvent(event) {
     if (terminal) {
       if (state.snapshotLoading) state.snapshotDirty = true
       if (event.type === 'assistant.cancelled' && selectedTurn(data)) stopAudio()
+      if (event.type === 'assistant.done' && selectedTurn(data)) appendToolHistoryButton(state.streamEl, data.toolUsed, data)
       if (selectedTurn(data) && !state.snapshotLoading && data.audioUrl) playAudio(data.audioUrl, data)
       setActiveTurn(null)
       updateLatency()
@@ -201,6 +202,13 @@ function handleEvent(event) {
     if (!selectedTurn(data)) return
   }
   switch (event.type) {
+    case 'tool.started':
+    case 'tool.result':
+      if (!selectedTurn(data)) break
+      if (state.snapshotLoading) { state.snapshotDirty = true; break }
+      ensureStreaming()
+      appendToolHistoryButton(state.streamEl, true, data)
+      break
     case 'turn.start':
       if (data.sessionId && data.turnId && !sameTurn(data, state.activeTurn)) {
         setActiveTurn(data)
@@ -229,7 +237,11 @@ function handleEvent(event) {
       break
     case 'assistant.context':
       ensureStreaming()
-      if (!state.streamText) state.streamEl.querySelector('.bubble').textContent = data.state === 'compacting'
+      if (data.state === 'tool') {
+        const reason = data.reason || '正在使用工具…'
+        notify(reason)
+        if (!state.streamText) state.streamEl.querySelector('.bubble').textContent = reason
+      } else if (!state.streamText) state.streamEl.querySelector('.bubble').textContent = data.state === 'compacting'
         ? '正在整理较早的对话，保留近期内容…'
         : data.state === 'compacted' ? '上下文已整理，正在回答…' : (data.reason || '已按模型容量保留近期上下文，正在回答…')
       break
@@ -681,6 +693,16 @@ async function refreshSelected(older = false) {
     }
   }
 }
+function appendToolHistoryButton(article, toolUsed, identity) {
+  const count = Array.isArray(toolUsed) ? toolUsed.length : typeof toolUsed === 'number' ? toolUsed : toolUsed ? 1 : 0
+  if (!article || !count || !identity.sessionId || !identity.turnId || article.querySelector('[data-tool-history]')) return
+  const sessionId = identity.sessionId, turnId = identity.turnId
+  const button = document.createElement('button')
+  button.type = 'button'; button.className = 'text-btn'; button.dataset.toolHistory = 'true'
+  button.textContent = '查看本次工具调用'; button.setAttribute('aria-haspopup', 'dialog')
+  button.addEventListener('click', () => window.dispatchEvent(new CustomEvent('jarvis:tools-open', { detail: { sessionId, turnId } })))
+  article.querySelector('.bubble')?.append(button)
+}
 function renderMessages(older = false) {
   const transcript = $('#transcript')
   const previousHeight = transcript.scrollHeight
@@ -698,6 +720,7 @@ function renderMessages(older = false) {
     })
     article.dataset.messageId = String(message.id)
     article.dataset.turnId = message.turnId || ''
+    if (message.role === 'assistant') appendToolHistoryButton(article, message.metadata?.toolUsed, { sessionId: message.sessionId || state.selectedSessionId, turnId: message.turnId })
     const profileUsed = message.metadata?.profileUsed
     if (message.role === 'assistant' && Array.isArray(profileUsed) && profileUsed.length) {
       const used = document.createElement('button')
@@ -1669,7 +1692,7 @@ function modelHintText(profile) {
 function modelFormHtml(selected) {
   const remote = selected.kind === 'openai'
   const keyHint = selected.hasKey ? '已保存；留空保持不变' : isLoopbackUrl(selected.baseUrl) ? '可选（localhost 服务）' : '粘贴 API Key'
-  const advancedOpen = Boolean(selected.embedModel || selected.visionModel)
+  const advancedOpen = Boolean(selected.embedModel || selected.visionModel || selected.supportsTools)
   const visionHints = catalogModelList(selected, 'visionModels')
   const embedHints = catalogModelList(selected, 'embeddingModels')
   return `<div class="settings-card" id="model-form" data-model-form="${escapeHtml(selected.id)}">
@@ -1701,7 +1724,9 @@ function modelFormHtml(selected) {
       <input id="model-key" type="password" autocomplete="new-password" value="" placeholder="${escapeHtml(keyHint)}">
     </label>` : ''}
     <details class="settings-advanced" ${advancedOpen ? 'open' : ''}>
-      <summary>高级：上下文容量、记忆向量与视觉模型</summary>
+      <summary>高级：工具调用、上下文容量、记忆向量与视觉模型</summary>
+      <label class="scenario-auto"><input id="model-supports-tools" type="checkbox" ${selected.supportsTools === true ? 'checked' : ''}> 此模型支持工具调用</label>
+      <p class="settings-hint">默认关闭。仅在模型和接口确实支持工具调用时启用；工具的权限与资料去向仍分别检查。</p>
       <div class="settings-form-grid">
         <label class="settings-field"><span>上下文容量（tokens）</span>
           <input id="model-context-window" type="number" min="2048" max="2000000" step="1" value="${Number(selected.contextWindow) || 4096}">
@@ -2011,6 +2036,10 @@ function settingsPanelsHtml(selected, settings) {
         <span class="settings-chip">${state.status?.focus ? '专注模式' : '正常'}</span>
       </div>
       <div class="settings-stat-grid" id="settings-runtime">${settingsRuntimeHtml()}</div>
+      <div class="settings-card">
+        <div class="settings-card-head"><div><h4>工具与 MCP</h4><p>管理连接、工具权限和资料去向，查看待批准的调用。</p></div></div>
+        <div class="settings-actions"><button type="button" class="model-action" id="tools-open" aria-haspopup="dialog">管理工具与 MCP</button></div>
+      </div>
       <div class="settings-card">
         <div class="settings-card-head"><div><h4>安装与平台</h4><p>装成 App、在手机上用，以及这台机器支持哪些能力。</p></div></div>
         <div class="settings-actions">
@@ -2993,6 +3022,7 @@ async function refreshModelOptions(selected, options = {}) {
         visionModel: $('#model-vision')?.value.trim() || '',
         keepAlive: selected.keepAlive || '24h',
         contextWindow: Number($('#model-context-window')?.value || selected.contextWindow || 4096),
+        supportsTools: $('#model-supports-tools')?.checked ?? selected.supportsTools ?? false,
       }),
     })
     if (state.modelFormId !== selected.id) return
@@ -3407,6 +3437,7 @@ function modelPayload(selected) {
     visionModel: $('#model-vision')?.value.trim() || '',
     keepAlive: selected.keepAlive || '24h',
         contextWindow: Number($('#model-context-window')?.value || selected.contextWindow || 4096),
+        supportsTools: $('#model-supports-tools')?.checked ?? selected.supportsTools ?? false,
   }
 }
 

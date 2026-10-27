@@ -146,8 +146,8 @@ export class SessionStore {
   private migrate(): void {
     this.transaction(() => {
       const version = Number(this.db.prepare('PRAGMA user_version').get()!.user_version);
-      if (version === 2) return;
-      if (version !== 0 && version !== 1) throw new Error(`Unsupported sessions database version: ${version}`);
+      if (version === 3) return;
+      if (version !== 0 && version !== 1 && version !== 2) throw new Error(`Unsupported sessions database version: ${version}`);
       if (version === 0 && this.db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'").get()) {
         throw new Error('Refusing to adopt an existing non-session database');
       }
@@ -168,7 +168,7 @@ export class SessionStore {
         CREATE INDEX messages_session_id ON messages(session_id,id);
         CREATE INDEX messages_status ON messages(status);
       `);
-      this.db.exec(`
+      if (version < 2) this.db.exec(`
         CREATE TABLE context_revisions (
           session_id TEXT PRIMARY KEY, revision INTEGER NOT NULL DEFAULT 0
         );
@@ -181,8 +181,32 @@ export class SessionStore {
         );
         PRAGMA user_version=2;
       `);
+      this.db.exec(`
+        CREATE TABLE tool_steps (
+          session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+          turn_id TEXT NOT NULL, step INTEGER NOT NULL CHECK(step>=0),
+          status TEXT NOT NULL CHECK(status IN ('running','complete','failed')),
+          request_messages TEXT, tools TEXT, assistant_text TEXT, tool_calls TEXT,
+          created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL,
+          PRIMARY KEY(session_id,turn_id,step)
+        );
+        CREATE TABLE tool_calls (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          session_id TEXT NOT NULL, turn_id TEXT NOT NULL, step INTEGER NOT NULL,
+          call_id TEXT NOT NULL, name TEXT NOT NULL, args TEXT NOT NULL, definition_hash TEXT NOT NULL,
+          status TEXT NOT NULL CHECK(status IN ('pending','running','succeeded','failed','denied','cancelled','unknown')),
+          content TEXT NOT NULL DEFAULT '', error_code TEXT, local_only INTEGER NOT NULL CHECK(local_only IN (0,1)),
+          approval TEXT, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL, finished_at INTEGER,
+          UNIQUE(session_id,turn_id,call_id),
+          FOREIGN KEY(session_id,turn_id,step) REFERENCES tool_steps(session_id,turn_id,step) ON DELETE CASCADE
+        );
+        CREATE INDEX tool_calls_turn ON tool_calls(session_id,turn_id,id);
+        PRAGMA user_version=3;
+      `);
     });
   }
+  /** Shared owned connection: tool storage must not close it or open another writer. */
+  databaseForTools(): DatabaseSync { return this.db; }
   private timestamp(): number { return integer(this.now(), 'now()', 0, Number.MAX_SAFE_INTEGER); }
   private transaction<T>(fn: () => T): T {
     this.db.exec('BEGIN IMMEDIATE');

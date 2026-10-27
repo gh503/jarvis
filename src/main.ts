@@ -5,6 +5,11 @@ import { ActionManager } from './actions.ts'
 import { Conversation } from './conversation.ts'
 import { SessionStore } from './sessions.ts'
 import { ProfileStore } from './profile.ts'
+import { ToolJournal } from './tool-journal.ts'
+import { ToolRuntime } from './tools.ts'
+import { builtinTools } from './builtin-tools.ts'
+import { discoveryTool } from './tool-discovery.ts'
+import { McpManager } from './mcp/manager.ts'
 import { EventBus } from './events.ts'
 import { createLogger, defaultLogFile } from './logger.ts'
 import { BriefScheduler } from './brief.ts'
@@ -128,8 +133,14 @@ async function main(): Promise<void> {
     logger: logger.child('actions'),
     auditFile: join(config.dataDir, 'audit', 'actions.jsonl'),
   })
+  const toolJournal = new ToolJournal(sessions)
+  const mcp = new McpManager({file:join(config.dataDir,'mcp-config.json'),onChanged:()=>bus.emit('mcp.changed',{at:Date.now()})})
+  await mcp.initialize()
+  const builtins = builtinTools({memory,reminders,actions})
+  const tools = new ToolRuntime({definitions:()=>[discoveryTool(()=>[...builtins,...mcp.definitions()]),...builtins,...mcp.definitions()],journal:toolJournal,bus})
   const policy = new ProactivePolicy(config)
   const conversation = new Conversation({
+    tools, toolJournal,
     config,
     bus,
     attention,
@@ -177,6 +188,7 @@ async function main(): Promise<void> {
   })
 
   const server = new JarvisServer({
+    tools, toolJournal, mcp,
     config,
     bus,
     attention,
@@ -242,6 +254,7 @@ async function main(): Promise<void> {
     scheduler.stop()
     briefScheduler.stop()
     await conversation.quiesce()
+    await mcp.close()
     await server.close().catch(() => undefined)
     await voice.close().catch(() => undefined)
     await ocr.close().catch(() => undefined)

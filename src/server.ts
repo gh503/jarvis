@@ -17,6 +17,10 @@ import { isLoopbackHost, validateProfile, type ModelProfile, type ModelSettings,
 import type { AttentionManager } from './attention.ts'
 import type { JarvisConfig } from './config.ts'
 import type { Conversation } from './conversation.ts'
+import type { ToolRuntime } from './tools.ts'
+import type { ToolJournal } from './tool-journal.ts'
+import type { McpManager } from './mcp/manager.ts'
+import { RevisionConflict, type ServerInput } from './mcp/settings.ts'
 import { SessionStoreError, type SessionStore } from './sessions.ts'
 import { ProfileError, type ProfileStore, type ProfileEntryInput, type ProfilePersonInput } from './profile.ts'
 import type { EventBus, JarvisEvent } from './events.ts'
@@ -44,6 +48,9 @@ export interface ServerDeps {
   actions: ActionManager
   memory: MemoryStore
   sessions?: SessionStore
+  tools?: ToolRuntime
+  toolJournal?: ToolJournal
+  mcp?: McpManager
   profile?: ProfileStore
   reminders: ReminderStore
   policy: ProactivePolicy
@@ -225,6 +232,8 @@ export class JarvisServer {
   private readonly claimFailuresByClient = new Map<string, number[]>()
   private listeningPort = 0
   private erasing = false
+  private changingMcp = false
+  private changingModel = false
   private readonly caps: Capabilities = capabilities(resolve(import.meta.dirname, '..'))
 
   constructor(private readonly deps: ServerDeps) {
@@ -523,6 +532,17 @@ export class JarvisServer {
       throw new HttpError(503, '正在清空数据，请稍后再试')
     }
 
+    const modelMutation = request.method === 'POST' && ['/api/model/apply', '/api/model/activate', '/api/model/profile/add', '/api/model/profile/update', '/api/model/profile/delete', '/api/model/priority', '/api/model/scenarios'].includes(path)
+    if (modelMutation) {
+      this.assertModelMutable()
+      this.changingModel = true
+    }
+    try {
+    if (modelMutation) {
+      await this.deps.conversation.quiesce?.()
+      await this.deps.tools?.quiesce()
+    }
+
     if (request.method === 'GET' && path === '/api/health') {
       sendJson(response, 200, {
         ok: true,
@@ -609,6 +629,68 @@ export class JarvisServer {
           dailySpeakBudget: this.deps.config.dailySpeakBudget,
         },
       })
+      return
+    }
+
+    if (path === '/api/tools' && request.method === 'GET') {
+      if (!this.deps.tools) throw new HttpError(503, '工具运行时未启用')
+      sendJson(response, 200, { definitions: this.deps.tools.catalogue().map(({ execute, ...definition }) => definition), approvals: this.deps.tools.pending() })
+      return
+    }
+
+    if (path === '/api/tools/calls' && request.method === 'GET') {
+      if (!this.deps.toolJournal || !this.deps.sessions) throw new HttpError(503, '工具记录未启用')
+      const identity = conversationIdentity({ sessionId: url.searchParams.get('sessionId'), turnId: url.searchParams.get('turnId') })
+      if (!identity.sessionId) throw new HttpError(400, 'sessionId 必填')
+      if (!this.deps.sessions.get(identity.sessionId)) throw new HttpError(404, '会话不存在或已删除')
+      sendJson(response, 200, { items: this.deps.toolJournal.listCalls(identity.sessionId, identity.turnId) })
+      return
+    }
+
+    const approvalMatch = /^\/api\/tools\/approvals\/([a-zA-Z0-9_-]{1,128})$/.exec(path)
+    if (approvalMatch && request.method === 'POST') {
+      if (!this.deps.tools) throw new HttpError(503, '工具运行时未启用')
+      const body = await readJson<{ approved?: unknown; sessionId?: unknown; turnId?: unknown }>(request, 4096)
+      const identity = conversationIdentity(body)
+      if (typeof body.approved !== 'boolean' || !identity.sessionId || !identity.turnId) throw new HttpError(400, '需要 approved 布尔值和完整会话、回合标识')
+      if (!this.deps.tools.approve(approvalMatch[1], body.approved, { sessionId: identity.sessionId, turnId: identity.turnId })) throw new HttpError(409, '审批已失效或不属于此回合')
+      sendJson(response, 200, { ok: true })
+      return
+    }
+
+    if (path === '/api/mcp' && request.method === 'GET') {
+      if (!this.deps.mcp) throw new HttpError(503, 'MCP 未启用')
+      sendJson(response, 200, this.deps.mcp.snapshot())
+      return
+    }
+
+    const mcpMatch = /^\/api\/mcp\/servers\/([a-zA-Z0-9_-]{1,48})(\/reconnect)?$/.exec(path)
+    if ((path === '/api/mcp/servers' && request.method === 'POST') ||
+        (mcpMatch && ((!mcpMatch[2] && request.method === 'DELETE') || (mcpMatch[2] && request.method === 'POST')))) {
+      const mcp = this.deps.mcp
+      if (!mcp) throw new HttpError(503, 'MCP 未启用')
+      const body = await readJson<ServerInput>(request, 1_000_000)
+      if (body.expectedRevision !== undefined && (!Number.isSafeInteger(body.expectedRevision) || body.expectedRevision < 0)) throw new HttpError(400, 'expectedRevision 不合法')
+      if (request.method === 'DELETE' && body.expectedRevision === undefined) throw new HttpError(400, 'expectedRevision 必填')
+      if (path === '/api/mcp/servers' && (typeof body.id !== 'string' || !/^[a-zA-Z0-9_-]{1,48}$/.test(body.id))) throw new HttpError(400, 'MCP server id 不合法')
+      // Recheck after reading the body: another request may have started erasing.
+      if (this.erasing || this.changingMcp || this.changingModel || this.deps.conversation.status().busy) throw new HttpError(409, '请先停止回复或等待配置更新完成')
+      this.changingMcp = true
+      try {
+        // quiesce blocks new text, audio and proactive admissions synchronously.
+        await this.deps.conversation.quiesce()
+        await this.deps.tools?.quiesce()
+        if (!mcpMatch) await mcp.save(body)
+        else if (mcpMatch[2]) await mcp.reconnect(mcpMatch[1])
+        else await mcp.remove(mcpMatch[1], body.expectedRevision!)
+        sendJson(response, 200, mcp.snapshot())
+      } catch (error) {
+        // Never echo transport/configuration errors: they may contain credentials.
+        throw new HttpError(error instanceof RevisionConflict ? 409 : 400, error instanceof RevisionConflict ? 'MCP 配置已变化，请刷新后重试' : 'MCP 配置操作失败，请检查配置')
+      } finally {
+        this.deps.conversation.resumeAdmissions()
+        this.changingMcp = false
+      }
       return
     }
 
@@ -1015,7 +1097,7 @@ export class JarvisServer {
         const session = store.get(id)
         if (!session) throw new HttpError(404, '会话不存在或已删除')
         if (match?.[2] === '/export' && request.method === 'GET') {
-          sendJson(response, 200, store.exportSession(id), { 'content-disposition': `attachment; filename="jarvis-session-${id}.json"` })
+          sendJson(response, 200, { ...store.exportSession(id), ...(this.deps.toolJournal ? { toolCalls: this.deps.toolJournal.listCalls(id) } : {}) }, { 'content-disposition': `attachment; filename="jarvis-session-${id}.json"` })
           return
         }
         if (match?.[2]) throw new HttpError(405, '不支持此方法')
@@ -1131,9 +1213,12 @@ export class JarvisServer {
     if (request.method === 'GET' && path === '/api/privacy/export') {
       const exported = this.deps.memory.exportAll()
       const settings = await this.deps.modelSettings.load()
+      const conversations = this.deps.sessions?.exportAll()
       const payload = {
         ...exported,
-        conversations: this.deps.sessions?.exportAll(),
+        conversations: conversations && { ...conversations, sessions: conversations.sessions.map(session => ({
+          ...session, ...(this.deps.toolJournal ? { toolCalls: this.deps.toolJournal.listCalls(session.id) } : {}),
+        })) },
         reminders: this.deps.reminders.list(),
         devices: this.devices.list(),
         config: {
@@ -1153,9 +1238,11 @@ export class JarvisServer {
         sendJson(response, 400, { error: 'confirmation phrase is required' })
         return
       }
+      if (this.erasing || this.changingMcp || this.changingModel) throw new HttpError(409, '正在更新配置或清空数据，请稍后再试')
       this.erasing = true
       try {
       await this.deps.conversation.quiesce()
+      await this.deps.tools?.quiesce()
       this.deps.sessions?.clearAll()
       const counts = this.deps.memory.eraseAll()
       this.pairing.clear()
@@ -1190,6 +1277,17 @@ export class JarvisServer {
         // Rebuild the chain in memory too, otherwise status keeps advertising
         // the providers whose keys were just erased.
         await this.deps.voice?.apply(voiceDefaults).catch(() => undefined)
+      }
+      // This endpoint explicitly erases all data, including MCP credentials.
+      // Memory-only deletion never changes MCP configuration.
+      if (this.deps.mcp) {
+        try {
+          for (const server of this.deps.mcp.snapshot().servers) {
+            await this.deps.mcp.remove(server.id, this.deps.mcp.snapshot().revision)
+          }
+        } catch {
+          throw new HttpError(409, 'MCP 配置清空失败，请重试')
+        }
       }
       // Rotate only after the files that used the old key are gone.
       this.deps.secure.rotate()
@@ -1405,6 +1503,12 @@ export class JarvisServer {
     }
 
     sendJson(response, 405, { error: 'method not allowed' })
+    } finally {
+      if (modelMutation) {
+        this.deps.conversation.resumeAdmissions?.()
+        this.changingModel = false
+      }
+    }
   }
 
   /**
@@ -1464,6 +1568,10 @@ export class JarvisServer {
         startedAt: new Date(this.startedAt).toISOString(),
       },
     }
+  }
+
+  private assertModelMutable(): void {
+    if (this.erasing || this.changingMcp || this.changingModel || this.deps.conversation.status().busy) throw new HttpError(409, '请先停止回复或等待配置更新完成')
   }
 
   private assertActivatable(profile: ModelProfile): void {

@@ -1,3 +1,5 @@
+import { randomUUID } from 'node:crypto'
+import { ToolCallBuffer, modelWire, finishToolEvents, type ModelStreamEvent } from './types.ts'
 import { contextWindow, contextLimitsFor, isContextOverflow, requireCompleteOutput } from './context-budget.ts'
 import type { Embedder } from '../memory/types.ts'
 import type { ChatMessage, ChatOptions, ModelClient, ModelHealth, ModelInfo, ModelStatus } from './types.ts'
@@ -21,6 +23,7 @@ interface OllamaChatChunk {
 }
 
 export class OllamaClient implements ModelClient, Embedder {
+  private readonly toolsEnabled: boolean
   private readonly configuredWindow: number
   readonly model: string
   readonly visionModel: string
@@ -32,8 +35,9 @@ export class OllamaClient implements ModelClient, Embedder {
 
   constructor(
     private readonly baseUrl: string,
-    options: { contextWindow?: number; model: string; visionModel: string; embedModel: string; keepAlive?: string; id?: string; label?: string },
+    options: { supportsTools?: boolean; contextWindow?: number; model: string; visionModel: string; embedModel: string; keepAlive?: string; id?: string; label?: string },
   ) {
+    this.toolsEnabled = options.supportsTools === true
     this.configuredWindow = contextWindow(options.contextWindow)
     this.model = options.model
     this.visionModel = options.visionModel
@@ -79,7 +83,12 @@ export class OllamaClient implements ModelClient, Embedder {
   private body(messages: ChatMessage[], options: ChatOptions, model: string, stream: boolean): string {
     return JSON.stringify({
       model,
-      messages,
+      messages: messages.map(message => ({
+        role: message.role, content: message.content, images: message.images,
+        ...(message.toolCalls ? { tool_calls: message.toolCalls.map(call => ({ id: call.id, type: 'function', function: { name: call.name, arguments: JSON.parse(call.arguments) } })) } : {}),
+        ...(message.role === 'tool' ? { tool_name: message.name ?? messages.flatMap(m => m.toolCalls ?? []).find(c => c.id === message.toolCallId)?.name, tool_call_id: message.toolCallId } : {}),
+      })),
+      ...(options.tools?.length ? { tools: options.tools.map(tool => ({ type: 'function', function: tool })) } : {}),
       stream,
       keep_alive: options.keepAlive ?? this.keepAlive,
       options: {
@@ -88,6 +97,39 @@ export class OllamaClient implements ModelClient, Embedder {
         num_predict: contextLimitsFor(this.configuredWindow, options, this.model).maxOutputTokens,
       },
     })
+  }
+
+  async supportsTools(): Promise<boolean> { return this.toolsEnabled }
+
+  async *toolStream(messages: ChatMessage[], options: ChatOptions = {}): AsyncGenerator<ModelStreamEvent> {
+    const controller = new AbortController()
+    const timeout = setTimeout(() => controller.abort(), options.timeoutMs ?? 120_000)
+    const signal = options.signal ? AbortSignal.any([options.signal, controller.signal]) : controller.signal
+    const calls = new ToolCallBuffer()
+    let count = 0
+    try {
+      signal.throwIfAborted()
+      const response = await fetch(`${this.baseUrl}/api/chat`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: this.body(messages, options, options.model ?? this.model, true), signal })
+      if (!response.ok) throw new OllamaError(`Ollama chat failed: HTTP ${response.status} ${(await response.text()).slice(0, 300)}`, response.status)
+      for await (const chunk of modelWire(response, signal, true)) {
+        if (!chunk || typeof chunk !== 'object') throw new Error('Malformed Ollama response')
+        if (chunk.error) throw new OllamaError(String(chunk.error))
+        const message = chunk.message
+        if (message?.content !== undefined && typeof message.content !== 'string') throw new Error('Malformed Ollama content')
+        if (message?.content) yield { type: 'text', text: message.content }
+        if (message?.tool_calls !== undefined) {
+          if (!Array.isArray(message.tool_calls)) throw new Error('Malformed Ollama tool calls')
+          for (const call of message.tool_calls) {
+            if (!call?.function || call.function.arguments === undefined) throw new Error('Malformed Ollama tool call')
+            // Native Ollama sends complete argument objects, not JSON deltas.
+            calls.patch(count, { id: call.id ?? `ollama_${randomUUID()}`, name: call.function.name, arguments: typeof call.function.arguments === 'string' ? call.function.arguments : JSON.stringify(call.function.arguments) })
+            count++
+          }
+        }
+        if (chunk.done === true) { signal.throwIfAborted(); yield* finishToolEvents(calls, chunk.done_reason, signal); return }
+      }
+      throw new Error('Ollama stream ended without finish')
+    } finally { controller.abort(); clearTimeout(timeout) }
   }
 
   async *chatStream(messages: ChatMessage[], options: ChatOptions = {}): AsyncGenerator<string> {

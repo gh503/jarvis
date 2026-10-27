@@ -1,3 +1,4 @@
+import { ToolCallBuffer, modelWire, finishToolEvents, type ModelStreamEvent } from './types.ts'
 import { contextWindow, contextLimitsFor, isContextOverflow, requireCompleteOutput } from './context-budget.ts'
 import type { Embedder } from '../memory/types.ts'
 import type { ChatMessage, ChatOptions, ModelClient, ModelHealth, ModelInfo, ModelStatus } from './types.ts'
@@ -31,6 +32,9 @@ export class OpenAIError extends Error {
  * LM Studio, OpenRouter and Ollama's /v1 compatibility layer all work.
  */
 export class OpenAICompatibleClient implements ModelClient, Embedder {
+  private readonly toolsEnabled: boolean
+  // Bounded, in-memory replay only: restarting or switching providers loses reasoning state.
+  private readonly reasoning = new Map<string, any>()
   private readonly configuredWindow: number
   readonly model: string
   readonly visionModel: string
@@ -42,6 +46,7 @@ export class OpenAICompatibleClient implements ModelClient, Embedder {
   private readonly protocol: OpenAIProtocol
 
   constructor(options: {
+    supportsTools?: boolean
     contextWindow?: number
     baseUrl: string
     model: string
@@ -60,6 +65,7 @@ export class OpenAICompatibleClient implements ModelClient, Embedder {
       // Validation happens in ModelSettingsStore; keep the raw value for a useful error.
     }
     this.baseUrl = normalized
+    this.toolsEnabled = options.supportsTools === true
     this.configuredWindow = contextWindow(options.contextWindow)
     this.model = options.model
     this.apiKey = options.apiKey ?? ''
@@ -120,7 +126,13 @@ export class OpenAICompatibleClient implements ModelClient, Embedder {
 
   private chatBody(messages: ChatMessage[], options: ChatOptions, stream: boolean): string {
     const payloadMessages = messages.map(message => {
-      if (!message.images?.length) return { role: message.role, content: message.content }
+      if (!message.images?.length) return {
+        role: message.role, content: message.content,
+        ...(message.toolCallId ? { tool_call_id: message.toolCallId } : {}),
+        ...(message.name ? { name: message.name } : {}),
+        ...(message.toolCalls ? { tool_calls: message.toolCalls.map(call => ({ id: call.id, type: 'function', function: { name: call.name, arguments: call.arguments } })) } : {}),
+        ...(message.toolCalls?.[0] && this.reasoning.has(message.toolCalls[0].id) ? { reasoning_content: this.reasoning.get(message.toolCalls[0].id) } : {}),
+      }
       return {
         role: message.role,
         content: [
@@ -132,6 +144,7 @@ export class OpenAICompatibleClient implements ModelClient, Embedder {
     return JSON.stringify({
       model: options.model ?? this.model,
       messages: payloadMessages,
+      ...(options.tools?.length ? { tools: options.tools.map(tool => ({ type: 'function', function: tool })) } : {}),
       stream,
       temperature: options.temperature ?? 0.4,
       max_tokens: contextLimitsFor(this.configuredWindow, options, this.model).maxOutputTokens,
@@ -140,25 +153,112 @@ export class OpenAICompatibleClient implements ModelClient, Embedder {
 
   private responsesBody(messages: ChatMessage[], options: ChatOptions, stream: boolean): string {
     const instructions = messages.filter(message => message.role === 'system').map(message => message.content).join('\n\n').trim()
-    const input = messages
-      .filter(message => message.role !== 'system')
-      .map(message => message.images?.length
-        ? {
-            role: message.role,
-            content: [
-              { type: 'input_text', text: message.content },
-              ...message.images.map(image => ({ type: 'input_image', image_url: `data:image/jpeg;base64,${image}` })),
-            ],
-          }
-        : { role: message.role, content: message.content })
+    const input: any[] = []
+    for (const message of messages.filter(m => m.role !== 'system')) {
+      if (message.role === 'tool') { input.push({ type: 'function_call_output', call_id: message.toolCallId, output: message.content }); continue }
+      if (message.toolCalls?.[0]) input.push(...(this.reasoning.get(message.toolCalls[0].id) ?? []))
+      if (message.content || message.images?.length || !message.toolCalls?.length) input.push({ role: message.role, content: message.images?.length ? [
+        { type: 'input_text', text: message.content },
+        ...message.images.map(image => ({ type: 'input_image', image_url: `data:image/jpeg;base64,${image}` })),
+      ] : message.content })
+      for (const call of message.toolCalls ?? []) input.push({ type: 'function_call', call_id: call.id, name: call.name, arguments: call.arguments })
+    }
     return JSON.stringify({
       model: options.model ?? this.model,
       input,
+      ...(options.tools?.length ? { tools: options.tools.map(tool => ({ type: 'function', ...tool })), include: ['reasoning.encrypted_content'], store: false } : {}),
       stream,
       ...(instructions ? { instructions } : {}),
       ...(options.temperature !== undefined ? { temperature: options.temperature } : {}),
       max_output_tokens: contextLimitsFor(this.configuredWindow, options, this.model).maxOutputTokens,
     })
+  }
+
+  async supportsTools(): Promise<boolean> { return this.toolsEnabled }
+
+  async *toolStream(messages: ChatMessage[], options: ChatOptions = {}): AsyncGenerator<ModelStreamEvent> {
+    const controller = new AbortController()
+    const timeout = setTimeout(() => controller.abort(), options.timeoutMs ?? 120_000)
+    const signal = options.signal ? AbortSignal.any([options.signal, controller.signal]) : controller.signal
+    const calls = new ToolCallBuffer()
+    const responses = this.protocol === 'responses'
+    let reasoningText = ''
+    const reasoningItems: any[] = []
+    let sawText = false
+    try {
+      signal.throwIfAborted()
+      const response = await fetch(this.endpoint(responses ? '/responses' : '/chat/completions'), {
+        method: 'POST', headers: { ...this.headers(), accept: 'text/event-stream' }, signal,
+        body: responses ? this.responsesBody(messages, options, true) : this.chatBody(messages, options, true),
+      })
+      if (!response.ok) throw new OpenAIError(`Model request failed: HTTP ${response.status} ${(await response.text()).slice(0, 300)}`, response.status)
+      const isSse = (response.headers.get('content-type') ?? '').includes('text/event-stream')
+      let finish: string | undefined
+      for await (const event of modelWire(response, signal)) {
+        if (!event || typeof event !== 'object') throw new Error('Malformed OpenAI response')
+        if (event.error || event.type === 'error' || event.type === 'response.failed') throw new OpenAIError(event.error?.message ?? event.response?.error?.message ?? 'Model stream error')
+        if (!responses) {
+          if (!Array.isArray(event.choices)) throw new Error('Malformed OpenAI choices')
+          if (!event.choices.length) continue // usage-only frame
+          if (event.choices.length !== 1) throw new Error('Multiple choices are unsupported')
+          const choice = event.choices[0]
+          const delta = choice.delta ?? choice.message
+          if (delta?.content != null && typeof delta.content !== 'string') throw new Error('Malformed OpenAI text')
+          if (delta?.content) yield { type: 'text', text: delta.content }
+          if (delta?.reasoning_content != null && typeof delta.reasoning_content !== 'string') throw new Error('Malformed reasoning content')
+          if (delta?.reasoning_content) reasoningText += delta.reasoning_content
+          if (delta?.tool_calls !== undefined) {
+            if (!Array.isArray(delta.tool_calls)) throw new Error('Malformed OpenAI tool calls')
+            for (const [index, call] of delta.tool_calls.entries()) {
+              if (call.type !== undefined && call.type !== 'function') throw new Error('Unsupported tool call type')
+              calls.patch(isSse ? call.index : index, { id: call.id, name: call.function?.name, arguments: call.function?.arguments }, isSse)
+            }
+          }
+          if (choice.finish_reason != null) finish = choice.finish_reason
+        } else {
+          if (event.type === 'response.output_text.delta') {
+            if (typeof event.delta !== 'string') throw new Error('Malformed Responses text delta')
+            sawText = true; yield { type: 'text', text: event.delta }
+          }
+          if (event.type === 'response.output_item.added' && event.item?.type === 'function_call') {
+            calls.patch(event.output_index, { id: event.item.call_id, name: event.item.name, arguments: event.item.arguments ?? '' })
+          }
+          if (event.type === 'response.function_call_arguments.delta') {
+            if (typeof event.delta !== 'string') throw new Error('Malformed Responses tool delta')
+            calls.patch(event.output_index, { arguments: event.delta }, true)
+          }
+          if (event.type === 'response.output_item.done' && event.item?.type === 'function_call') {
+            calls.patch(event.output_index, { id: event.item.call_id, name: event.item.name, arguments: event.item.arguments })
+          }
+          if (event.type === 'response.output_item.done' && event.item?.type === 'reasoning') reasoningItems.push(event.item)
+          if (!isSse || event.type === 'response.completed' || event.type === 'response.incomplete') {
+            const final = isSse ? event.response : event
+            if (!final || final.error) throw new Error('Malformed Responses completion')
+            finish = event.type === 'response.incomplete' || final.status === 'incomplete' ? final.incomplete_details?.reason : final.status === 'completed' || event.type === 'response.completed' ? 'completed' : undefined
+            if (final.output !== undefined && !Array.isArray(final.output)) throw new Error('Malformed Responses output')
+            for (const [index, item] of (final.output ?? []).entries()) {
+              if (item.type === 'function_call') calls.patch(index, { id: item.call_id, name: item.name, arguments: item.arguments })
+              if (item.type === 'reasoning' && !reasoningItems.some(r => r.id === item.id)) reasoningItems.push(item)
+              if (!sawText && item.type === 'message') for (const block of item.content ?? []) if (block.type === 'output_text' && block.text) yield { type: 'text', text: block.text }
+            }
+            if (!sawText && !final.output?.length && final.output_text) yield { type: 'text', text: final.output_text }
+          }
+        }
+        if (finish !== undefined) {
+          signal.throwIfAborted()
+          // Validate every call before publishing any; retain opaque reasoning for follow-up requests.
+          if (!['length', 'max_output_tokens'].includes(finish)) {
+            const completed = calls.complete()
+            for (const call of completed) {
+              if (responses ? reasoningItems.length : reasoningText) this.reasoning.set(call.id, responses ? reasoningItems : reasoningText)
+            }
+            while (this.reasoning.size > 128) this.reasoning.delete(this.reasoning.keys().next().value!)
+          }
+          yield* finishToolEvents(calls, finish, signal); return
+        }
+      }
+      throw new Error('OpenAI stream ended without finish')
+    } finally { controller.abort(); clearTimeout(timeout) }
   }
 
   async *chatStream(messages: ChatMessage[], options: ChatOptions = {}): AsyncGenerator<string> {

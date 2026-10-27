@@ -1,4 +1,4 @@
-import type { ChatMessage, ChatOptions } from './types.ts'
+import type { ChatMessage, ChatOptions, ToolSchema } from './types.ts'
 
 export const DEFAULT_CONTEXT_WINDOW = 4096
 
@@ -29,10 +29,13 @@ export function estimateTextTokens(text: string): number {
   return Math.ceil(Buffer.byteLength(text, 'utf8') / 2)
 }
 
-export function estimateMessagesTokens(messages: readonly ChatMessage[]): number {
-  let total = 8
+export function estimateMessagesTokens(messages: readonly ChatMessage[], tools?: readonly ToolSchema[]): number {
+  let total = 8 + (tools?.length ? estimateTextTokens(JSON.stringify(tools)) : 0)
   for (const message of messages) {
     if (message.images?.length) throw new Error('Context token estimation supports text messages only')
+    if (message.toolCalls?.length) total += estimateTextTokens(JSON.stringify(message.toolCalls))
+    if (message.toolCallId) total += estimateTextTokens(message.toolCallId)
+    if (message.name) total += estimateTextTokens(message.name)
     total += 12 + estimateTextTokens(message.role) + estimateTextTokens(message.content)
   }
   return total

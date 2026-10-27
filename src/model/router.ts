@@ -6,7 +6,7 @@ import { OllamaClient } from './ollama.ts'
 import { OpenAICompatibleClient } from './openai.ts'
 import { isLoopbackHost } from './settings.ts'
 import type { ModelProfile, ModelSettings } from './settings.ts'
-import type { ChatMessage, ChatOptions, ModelClient, ModelHealth, ModelStatus } from './types.ts'
+import type { ChatMessage, ChatOptions, ModelClient, ModelHealth, ModelStatus, ModelStreamEvent } from './types.ts'
 
 export function createModelClient(profile: ModelProfile): ModelClient {
   if (profile.kind === 'openai' && profile.protocol === 'anthropic') {
@@ -18,6 +18,7 @@ export function createModelClient(profile: ModelProfile): ModelClient {
       id: profile.id,
       label: profile.label,
       contextWindow: profile.contextWindow,
+      supportsTools: profile.supportsTools,
     })
   }
   if (profile.kind === 'openai') {
@@ -30,6 +31,7 @@ export function createModelClient(profile: ModelProfile): ModelClient {
       id: profile.id,
       label: profile.label,
       contextWindow: profile.contextWindow,
+      supportsTools: profile.supportsTools,
       protocol: profile.protocol === 'responses' ? 'responses' : 'chat-completions',
     })
   }
@@ -41,6 +43,7 @@ export function createModelClient(profile: ModelProfile): ModelClient {
     id: profile.id,
     label: profile.label,
     contextWindow: profile.contextWindow,
+      supportsTools: profile.supportsTools,
   })
 }
 
@@ -77,10 +80,35 @@ export class ModelRouter implements ModelClient {
   private current: ModelProfile
   private clients = new Map<string, ModelClient>()
   private clientConfigs = new Map<string, string>()
+  // Tool transcripts are provider-bound: reasoning and local results cannot migrate.
+  private toolOrigins = new Map<string, { profile: ModelProfile; key: string }>()
+
+  private async toolChain(options: ChatOptions, messages: ChatMessage[] = []): Promise<ModelProfile[]> {
+    const ids = messages.flatMap(message => [
+      ...(message.toolCalls ?? []).map(call => call.id),
+      ...(message.role === 'tool' && message.toolCallId ? [message.toolCallId] : []),
+    ])
+    if (messages.some(message => message.role === 'tool' && !message.toolCallId)) throw new Error('Tool result missing call id')
+    let pinned = options.pinnedProfileId
+    let originKey: string | undefined
+    for (const id of ids) {
+      const origin = this.toolOrigins.get(id)
+      if (!origin) throw new Error('Tool transcript origin unavailable; start a new turn')
+      if ((pinned && pinned !== origin.profile.id) || (originKey && originKey !== origin.key)) throw new Error('Tool transcript belongs to a different provider')
+      pinned = origin.profile.id
+      originKey = origin.key
+    }
+    if (!pinned) return this.chain(options.profileIds)
+    const profile = this.failover
+      ? (await this.failover.loadSettings()).profiles.find(item => item.id === pinned)
+      : this.current.id === pinned ? this.current : undefined
+    if (!profile || (originKey && originKey !== this.configKey(profile))) throw new Error('Pinned tool provider changed or was removed')
+    return [profile]
+  }
 
   private configKey(profile: ModelProfile): string {
     return JSON.stringify([profile.kind, profile.protocol, profile.baseUrl, profile.model, profile.apiKey,
-      profile.visionModel, profile.embedModel, profile.keepAlive, profile.label, profile.contextWindow ?? 4096])
+      profile.visionModel, profile.embedModel, profile.keepAlive, profile.label, profile.contextWindow ?? 4096, profile.supportsTools === true])
   }
   private lastCooldowns: Record<string, { until: number; kind: string; reason: string }> = {}
 
@@ -235,9 +263,68 @@ export class ModelRouter implements ModelClient {
     // Image token costs are provider-specific; this guard protects text planning only.
     if (messages.some(message => message.images?.length)) return
     const limits = await client.contextLimits?.(options) ?? contextLimitsFor(profile.contextWindow, options, profile.model)
-    if (estimateMessagesTokens(messages) + (options.maxTokens ?? limits.maxOutputTokens) > limits.contextWindow) {
+    if (estimateMessagesTokens(messages, options.tools) + (options.maxTokens ?? limits.maxOutputTokens) > limits.contextWindow) {
       throw Object.assign(new Error('Request exceeds the selected model context window'), { code: 'CONTEXT_WINDOW_EXCEEDED' })
     }
+  }
+
+  async toolClient(options: ChatOptions = {}): Promise<ModelClient | undefined> {
+    options.signal?.throwIfAborted()
+    const [first] = await this.toolChain(options)
+    if (first?.supportsTools !== true) return undefined
+    const client = this.clientFor(first)
+    if (!client.toolStream || !await client.supportsTools?.(options)) return undefined
+    // Return the concrete adapter, never this router: the whole tool turn stays
+    // on this endpoint even if settings, priorities or cooldowns later change.
+    return client
+  }
+
+  async supportsTools(options: ChatOptions = {}): Promise<boolean> {
+    return Boolean(await this.toolClient(options))
+  }
+
+  async *toolStream(messages: ChatMessage[], options: ChatOptions = {}): AsyncGenerator<ModelStreamEvent> {
+    options.signal?.throwIfAborted()
+    const selected = await this.toolChain(options, messages)
+    if (selected[0]?.supportsTools !== true) throw new Error('Selected model does not support tools')
+    const chain = selected.filter(profile => profile.supportsTools === true)
+    const maxTokens = Math.min(...chain.map((profile, index) => contextLimitsFor(profile.contextWindow, index === 0 ? options : { ...options, model: undefined }, profile.model).maxOutputTokens))
+    options = { ...options, maxTokens }
+    let lastError: unknown = new Error('No tool-capable provider available')
+    for (const [index, profile] of chain.entries()) {
+      const client = this.clientFor(profile)
+      const attemptOptions = index === 0 ? options : { ...options, model: undefined }
+      if (!client.toolStream || !await client.supportsTools?.(attemptOptions)) {
+        if (index === 0) throw new Error('Selected model does not support tools')
+        continue
+      }
+      let produced = false
+      try {
+        options.signal?.throwIfAborted()
+        await this.assertTextBudget(client, profile, messages, attemptOptions)
+        for await (const event of client.toolStream(messages, attemptOptions)) {
+          options.signal?.throwIfAborted()
+          produced = true
+          // Set identity before yielding: consumers may stop at the finish event.
+          this.noteSuccess(profile, client)
+          if (event.type === 'tool-call') {
+            const existing = this.toolOrigins.get(event.call.id)
+            if (existing && (existing.profile.id !== profile.id || existing.key !== this.configKey(profile))) throw new Error('Tool call id collides with another provider transcript')
+            this.toolOrigins.set(event.call.id, { profile: { ...profile }, key: this.configKey(profile) })
+            while (this.toolOrigins.size > 128) this.toolOrigins.delete(this.toolOrigins.keys().next().value!)
+          }
+          yield event
+        }
+        this.noteSuccess(profile, client)
+        return
+      } catch (error) {
+        const kind = classifyModelError(error)
+        if (produced || options.signal?.aborted || !shouldFailover(kind)) throw error
+        lastError = error
+        await this.parkProvider(profile, kind, error, chain.map(item => item.id))
+      }
+    }
+    throw lastError
   }
 
   async *chatStream(messages: ChatMessage[], options: ChatOptions = {}): AsyncGenerator<string> {
@@ -342,6 +429,7 @@ export class ModelRouter implements ModelClient {
   resetTo(profile: ModelProfile): void {
     this.clients.clear()
     this.clientConfigs.clear()
+    this.toolOrigins.clear()
     this.current = profile
     this.client = createModelClient(profile)
     this.clients.set(profile.id, this.client)
