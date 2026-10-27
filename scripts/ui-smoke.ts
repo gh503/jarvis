@@ -336,8 +336,25 @@ async function main(): Promise<void> {
       check(cdp.dialogs.some(message => message.includes('未保存')), 'providers: unsaved prefill warns before closing')
       check(await cdp.evaluate<boolean>("document.querySelector('#modal').hidden"), 'providers: confirming closes the sheet')
 
+      // The guide and install pages have their own CSS; audit them the same way.
+      for (const [theme, width] of [['dark', 1440], ['light', 1440], ['light', 390]] as const) {
+        await cdp.send('Emulation.setDeviceMetricsOverride', { width, height: 900, deviceScaleFactor: 1, mobile: width < 500 })
+        await cdp.evaluate("(() => { document.documentElement.dataset.theme = '" + theme + "'; const s = document.createElement('style'); s.id = 'smoke-freeze'; s.textContent = '*,*::before,*::after{transition:none !important;animation:none !important}'; document.head.append(s) })()")
+        await sleep(220)
+        const audit = await cdp.evaluate<{ bad: string[], count: number, overflow: number }>(CONTRAST_AUDIT)
+        check(audit.count === 0, `providers contrast: ${theme} @${width}px (${audit.bad.join(' | ')})`)
+        check(audit.overflow <= 1, `providers layout: ${theme} @${width}px no overflow (${audit.overflow}px)`)
+        await cdp.evaluate("document.getElementById('smoke-freeze')?.remove()")
+      }
+      await cdp.send('Emulation.setDeviceMetricsOverride', { width: 1440, height: 960, deviceScaleFactor: 1, mobile: false })
+
       await cdp.send('Page.navigate', { url: `${origin}/install` })
       await sleep(1500)
+      {
+        const audit = await cdp.evaluate<{ bad: string[], count: number, overflow: number }>(CONTRAST_AUDIT)
+        check(audit.count === 0, `install contrast: dark (${audit.bad.join(' | ')})`)
+        check(audit.overflow <= 1, `install layout: no overflow (${audit.overflow}px)`)
+      }
       check(await cdp.evaluate<boolean>("(document.querySelector('#install-detect')?.textContent || '').includes('检测到')"), 'install: detects the current device')
       check(await cdp.evaluate<number>("document.querySelectorAll('#install-steps article').length") >= 2, 'install: renders device-specific steps')
       await cdp.send('Page.navigate', { url: `${origin}/` })

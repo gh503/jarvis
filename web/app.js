@@ -2948,7 +2948,7 @@ function showOnboarding() {
     <h3>先确认三件事。</h3>
     <p>Jarvis 默认只在本机运行。麦克风只在按住时采集，屏幕和摄像头按次授权；没有账号，也没有默认上传。</p>
     <div class="onboard-grid">
-      <div><b>1 · 本地模型</b><span class="${modelReady ? 'ok-text' : 'warn-text'}">${modelReady ? '已就绪，可以直接对话。' : '未就绪；先运行 npm run doctor，或到设置里配置模型。'}</span></div>
+      <div><b>1 · 本地模型</b><span class="${modelReady ? 'ok-text' : 'warn-text'}">${modelReady ? '已就绪，可以直接对话。' : '未就绪；先运行 npm run doctor，或到设置里配置模型。'}</span><a class="model-action" id="onboard-providers" href="/providers" target="_blank" rel="noopener" style="width:auto;display:inline-flex;align-items:center;min-height:34px;margin-top:6px">还没选供应商？看指南</a></div>
       <div><b>2 · 麦克风</b><span id="onboard-mic-result">按一次测试，确认浏览器权限。</span><button class="model-action" id="onboard-mic" type="button" style="width:auto">测试麦克风</button></div>
       <div><b>3 · 感官</b><span>看屏幕/摄像头前会再问你一次。</span><button class="model-action" id="onboard-senses" type="button" style="width:auto">查看权限说明</button></div>
     </div>
