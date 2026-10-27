@@ -69,6 +69,7 @@ v2 不再从“给 agent 加一个聊天窗口”出发，而是从下面这个�
 - 本地/远端模型路由：Web 设置里编辑本地 Ollama / 远端 OpenAI Chat Completions、OpenAI Responses、Anthropic Messages；模型列表从服务地址自动获取；测试通过后点一下切换，下一轮立即生效。
 - 本地/远端语音：ASR 支持 WebSocket 流式（默认）和 HTTP；TTS 支持本地 Piper、OpenAI-compatible、Gemini、Cloudflare、Edge；两侧独立切换。
 - 多厂商模型：Gemini、Groq、硅基流动、OpenRouter、Cloudflare Workers AI 可直连；模型列表自动发现。
+- Web UI：五标签设置、外观/主题（深色/浅色/跟随系统）、PWA 离线 shell、可键盘操作的对话与观察台；细节见 [ui.md](ui.md)。
 - 供应商池与自动切换：按优先级组成故障转移链，额度/限流/鉴权/网络错误自动换下一家，冷却持久化并实时提示。
 - 工作场景：编程 / 写作 / 研究 / 邮件 / 会议 / 报告 / 翻译 / 头脑风暴 / 学习 / 闲聊 共 10 个内置场景，各有独立的供应商链、模型、温度与提示词，自动识别或手动指定（`research` 吸收旧的 `reasoning`）。
 - 工具执行：文件、浏览器、日历、提醒；高风险动作走审批和审计。

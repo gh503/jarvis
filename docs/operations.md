@@ -326,15 +326,21 @@ Piper 每次启动的模型加载。v2 现在在启动时预热 LLM/nomic，并�
 
 ## 8. 验收命令
 
-本机 2026-10-26 的完整结果见
-[release-acceptance-2026-10-26.md](release-acceptance-2026-10-26.md)。
+最新结果见 [acceptance-2026-10-27.md](acceptance-2026-10-27.md)（182/182）；
+基线记录在 [release-acceptance-2026-10-26.md](release-acceptance-2026-10-26.md)。
 
 ```bash
-cd ~/jarvis/v2
+cd ~/jarvis
 npm run typecheck
 npm test
 npm run doctor
 curl -s http://127.0.0.1:3081/api/health
+
+# 端到端：自己起一个临时实例（临时数据目录 + 空闲端口），
+# 跑完自动清理；擦除/配对/调参等破坏性检查不会碰真实数据。
+npm run acceptance:full
+# 再带上真实浏览器（主题、外观色、优先级、场景保存、真实对话）
+JARVIS_SMOKE_UI=1 npm run acceptance:full
 
 # 记忆回归评测（11 条；弃权/隐私/候选/更新）
 npm run memory:eval
