@@ -15,6 +15,28 @@
   const notice = node('p', '', 'lt-notice'); notice.setAttribute('role', 'status'); notice.setAttribute('aria-live', 'polite')
   const editor = node('div'), questions = node('section'), activity = node('section')
   body.append(notice, editor, questions, activity); panel.append(body)
+  const inline = node('section', undefined, 'lt-dialog lt-inline'); inline.setAttribute('aria-label', '本地工具')
+  let inlineHost = null
+  const isOpen = () => !!inlineHost || panel.open
+  function mount(host, options = {}) {
+    if (!(host instanceof HTMLElement)) return false
+    const selected = typeof options.sessionId === 'string' ? options.sessionId : ''
+    const changed = selected !== sessionId; sessionId = selected
+    if (inlineHost) { host.append(inline); inlineHost = host; if (changed) { renderPending(); void loadSession() }; return true }
+    if (panel.open) panel.close()
+    inlineHost = host; inline.append(body); host.append(inline)
+    void load(); void loadSession(); return true
+  }
+  function unmount({ force = false } = {}) {
+    if (saving || submitting.size || (dirty && !force)) return false
+    if (!inlineHost) return true
+    ++loadEpoch; ++sessionEpoch; inlineHost = null; panel.append(body); inline.remove()
+    settings = undefined; capabilities = {}; dirty = false; conflict = false; editor.replaceChildren(); activity.replaceChildren(); notice.textContent = ''
+    return true
+  }
+  window.JarvisSettingsTools = { mount, unmount, isDirty: () => dirty, isBusy: () => saving || submitting.size > 0 }
+  window.addEventListener('jarvis:settings-tools-mount', event => mount(event.detail?.host, event.detail))
+  window.addEventListener('jarvis:settings-tools-unmount', event => unmount(event.detail))
   const questionDialog = dialog('local-tools-question', '需要你补充信息'), questionBody = node('div', undefined, 'lt-body'); questionDialog.append(questionBody)
   questionDialog.addEventListener('close', () => { if (!questionDialog.open) activeQuestion = null })
   async function api(path, method = 'GET', data, raw = false) {
@@ -169,7 +191,8 @@
   }
   window.addEventListener('jarvis:local-tools-open', event => {
     sessionId = typeof event.detail?.sessionId === 'string' ? event.detail.sessionId : ''
-    if (!panel.open) panel.showModal()
+    if (inlineHost) { inline.scrollIntoView({ block: 'nearest' }); inline.querySelector('input,button')?.focus() }
+    else if (!panel.open) panel.showModal()
     void load(); void loadSession()
   })
   window.addEventListener('jarvis:ws-event', event => {
@@ -180,6 +203,6 @@
       ended.add(turnKey(data)); for (const q of pending.values()) if (turnKey(q) === turnKey(data)) retire(q.id)
       renderPending(); scheduleExpiry()
     }
-    if (panel.open && data.sessionId === sessionId && /^(task\.(plan|job)|artifact\.)/.test(message.type)) void loadSession()
+    if (isOpen() && data.sessionId === sessionId && /^(task\.(plan|job)|artifact\.)/.test(message.type)) void loadSession()
   })
 })()

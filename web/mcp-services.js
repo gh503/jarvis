@@ -8,7 +8,17 @@
   let snapshot = null, epoch = 0, request = 0, busy = false, dirty = false, conflict = false, selected = null, form = null
   const dialog = el('dialog', 'mcp-services-dialog'); dialog.id = 'mcp-services-dialog'; dialog.setAttribute('aria-labelledby', 'mcp-services-title')
   const header = el('header', 'mcp-services-row'), title = el('h2', '', '服务连接'); title.id = 'mcp-services-title'
-  const closeDialog = () => { ++epoch; ++request; clearEditor(); busy = false; conflict = false; snapshot = null; lock(); dialog.close() }
+  const inline = el('section', 'mcp-services-dialog mcp-services-inline'); inline.setAttribute('aria-label', '服务连接')
+  let inlineHost = null
+  const root = () => inlineHost ? inline : dialog
+  const isOpen = () => !!inlineHost || dialog.open
+  const reset = () => { ++epoch; ++request; clearEditor(); conflict = false; snapshot = null; lock(); catalog.replaceChildren(); say('') }
+  const closeDialog = async () => {
+    const ticket = epoch
+    if (busy || (dirty && !await confirmAction('放弃未保存的凭据？', '关闭后未保存的凭据将被清空。', '放弃并关闭')) || ticket !== epoch) return
+    if (inlineHost) return
+    reset(); dialog.close()
+  }
   header.append(title, button('关闭', closeDialog))
   const notice = el('div', 'mcp-services-notice'); notice.setAttribute('role', 'status'); notice.setAttribute('aria-live', 'polite')
   const filters = el('div', 'mcp-services-filters'), search = el('input'), category = el('select')
@@ -19,10 +29,34 @@
   const advanced = button('高级：自定义 MCP', async () => {
     const ticket = epoch
     if (busy || (dirty && !await confirmAction('放弃未保存的凭据？', '进入高级设置会清空当前凭据草稿。', '放弃并继续')) || ticket !== epoch) return
-    closeDialog(); window.dispatchEvent(new CustomEvent('jarvis:tools-open'))
+    clearEditor(); conflict = false; render()
+    if (!inlineHost) { reset(); dialog.close() }
+    window.dispatchEvent(new CustomEvent('jarvis:tools-open'))
   })
   dialog.append(header, el('p', 'mcp-services-muted', '连接你使用的服务。默认只读，工具结果默认仅供本地模型使用；写入操作需要逐次确认。'), notice, filters, catalog, editor, el('hr'), advanced)
   document.body.append(dialog)
+  function mount(host) {
+    if (!(host instanceof HTMLElement)) return false
+    if (inlineHost) { host.append(inline); inlineHost = host; return true }
+    // Move the actual controls: one form, one set of credentials and listeners.
+    const alreadyOpen = dialog.open
+    inlineHost = host
+    if (dialog.open) dialog.close()
+    while (dialog.children.length > 1) inline.append(dialog.children[1])
+    host.append(inline)
+    if (!alreadyOpen) { ++epoch; say('正在载入服务目录…'); void refresh() }
+    return true
+  }
+  function unmount({ force = false } = {}) {
+    if (busy || (dirty && !force)) return false
+    if (!inlineHost) return true
+    reset()
+    while (inline.firstChild) dialog.append(inline.firstChild)
+    inline.remove(); inlineHost = null; return true
+  }
+  window.JarvisSettingsMcp = { mount, unmount, isDirty: () => dirty, isBusy: () => busy }
+  window.addEventListener('jarvis:settings-mcp-mount', event => mount(event.detail?.host))
+  window.addEventListener('jarvis:settings-mcp-unmount', event => unmount(event.detail))
   const say = text => { notice.replaceChildren(document.createTextNode(text)) }
   function safeLink(parent, label, value) {
     try { const url = new URL(value); if (!['http:', 'https:'].includes(url.protocol) || url.username || url.password) return
@@ -48,9 +82,9 @@
     editor.querySelectorAll('input').forEach(input => { input.value = '' }); editor.replaceChildren(); editor.hidden = true; selected = null; form = null; dirty = false
   }
   function lock() {
-    dialog.setAttribute('aria-busy', String(busy))
+    root().setAttribute('aria-busy', String(busy))
     // Re-rendered action controls carry their own policy-disabled state.
-    dialog.querySelectorAll('button,input,select').forEach(node => {
+    root().querySelectorAll('button,input,select').forEach(node => {
       if (node.dataset.locked === 'true') { node.disabled = false; delete node.dataset.locked }
       if (busy && !node.disabled) { node.dataset.locked = 'true'; node.disabled = true }
     })
@@ -84,10 +118,10 @@
     const ticket = epoch, serial = ++request
     try {
       const data = await api('')
-      if (!dialog.open || ticket !== epoch || serial !== request) return
+      if (!isOpen() || ticket !== epoch || serial !== request) return
       if (!Array.isArray(data.services) || data.revision == null) throw new Error('服务目录格式不正确，请重新加载。')
       snapshot = data; render(); say(message || '选择服务，按照官方说明准备凭据。')
-    } catch (error) { if (dialog.open && ticket === epoch && serial === request) say(error.message) }
+    } catch (error) { if (isOpen() && ticket === epoch && serial === request) say(error.message) }
   }
   function confirmAction(heading, text, accept) {
     return new Promise(resolve => {
@@ -144,20 +178,24 @@
     busy = true; const ticket = epoch; ++request; lock(); say('正在处理…')
     try {
       await api(`/${encodeURIComponent(service.id)}${suffix}`, method, { expectedRevision: snapshot.revision, ...body })
-      if (ticket !== epoch || !dialog.open) return
+      if (ticket !== epoch || !isOpen()) return
       clearEditor(); await refresh(message)
     } catch (error) {
-      if (ticket !== epoch || !dialog.open) return
+      if (ticket !== epoch || !isOpen()) return
       if (error.status === 409) { conflict = true; say('配置已在别处更改。凭据草稿已保留，不会自动重试。请明确重新加载并确认丢弃草稿后继续。'); notice.append(button('重新加载最新配置', () => reload())) }
       else say(error.message)
     } finally { if (ticket === epoch) { busy = false; lock(); render(); if (conflict && form) form.querySelector('[type="submit"]').disabled = true } }
   }
   search.addEventListener('input', render); category.addEventListener('change', render)
   dialog.addEventListener('cancel', event => { event.preventDefault(); closeDialog() })
-  dialog.addEventListener('close', () => { if (dialog.open) return; ++epoch; ++request; clearEditor(); busy = false; conflict = false; snapshot = null; lock(); catalog.replaceChildren(); say('') })
-  window.addEventListener('jarvis:mcp-services-open', () => { if (dialog.open) return; ++epoch; dialog.showModal(); say('正在载入服务目录…'); void refresh() })
+  dialog.addEventListener('close', () => { if (isOpen()) return; reset() })
+  window.addEventListener('jarvis:mcp-services-open', () => {
+    if (inlineHost) { inline.scrollIntoView({ block: 'nearest' }); search.focus(); return }
+    if (dialog.open) return
+    ++epoch; dialog.showModal(); say('正在载入服务目录…'); void refresh()
+  })
   window.addEventListener('jarvis:ws-event', event => {
-    if (event.detail?.type !== 'mcp.changed' || !dialog.open || busy) return
+    if (event.detail?.type !== 'mcp.changed' || !isOpen() || busy) return
     if (dirty || conflict) { ++request; say('服务状态已更新；当前草稿保留。保存时会检查版本，也可重新加载。'); return }
     // A clean editor still captures an older service definition; close before refreshing.
     clearEditor(); void refresh()

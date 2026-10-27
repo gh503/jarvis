@@ -62,7 +62,7 @@ const state = {
   modelFormId: 'local',
   modelOptions: {},
   settingsTab: 'model',
-  settingsDirty: { model: false, voice: false },
+  settingsDirty: { model: false, scenario: false, asr: false, tts: false },
   settingsLoadToken: 0,
   modalOpener: null,
 }
@@ -308,7 +308,7 @@ function handleEvent(event) {
         void api('/api/voice').then(payload => {
           state.voiceStatus = payload.status || state.voiceStatus
           state.voiceCooldowns = payload.cooldowns || state.voiceCooldowns
-          if (!state.settingsDirty.voice && !$('#modal').hidden && state.settingsTab === 'voice') renderVoicePanel()
+          if (!$('#modal').hidden && ['asr', 'tts'].includes(state.settingsTab) && !state.settingsDirty[state.settingsTab]) renderVoicePanel()
         }).catch(() => undefined)
       }
       void refreshStatus()
@@ -1435,17 +1435,31 @@ function trapModalFocus(event, root = $('#modal .modal')) {
   }
 }
 
+function settingsEditors() {
+  return [window.JarvisSettingsTools, window.JarvisSettingsMcp].filter(Boolean)
+}
+
+function hasSettingsDrafts() {
+  return Object.values(state.settingsDirty).some(Boolean) || settingsEditors().some(editor => editor.isDirty())
+}
+
 function closeModal(force = false) {
-  const dirty = state.settingsDirty.model || state.settingsDirty.voice
+  if (state.voiceSaving || state.scenarioSaving || settingsEditors().some(editor => editor.isBusy())) {
+    notify('设置正在保存或等待确认，请完成后再关闭。')
+    return
+  }
+  const dirty = hasSettingsDrafts()
   if (!force && !$('#modal').hidden && $('#modal .modal')?.classList.contains('settings-modal') && dirty) {
     if (!window.confirm('设置里有未保存的修改，关闭后会丢失。确定关闭？')) return
   }
+  settingsEditors().forEach(editor => editor.unmount({ force: true }))
+  state.voiceDraft = null
   state.settingsLoadToken += 1
   $('#modal').hidden = true
   $('#modal .modal')?.classList.remove('settings-modal')
   $('#modal').classList.remove('settings-open')
   resetSettingsShell()
-  state.settingsDirty = { model: false, voice: false }
+  state.settingsDirty = { model: false, scenario: false, asr: false, tts: false }
   state.tokenPrompted = false
   const opener = state.modalOpener
   state.modalOpener = null
@@ -1533,7 +1547,7 @@ function settingsOverviewInnerHtml() {
       ${settingsDot(Boolean(voice.tts))}
       <div><small>语音合成</small><strong>${escapeHtml(ttsSource)} · ${escapeHtml(ttsText)}</strong></div>
     </div>
-    <span class="settings-dirty" id="settings-dirty" ${state.settingsDirty.model || state.settingsDirty.voice ? '' : 'hidden'}>有未保存修改</span>`
+    <span class="settings-dirty" id="settings-dirty" ${hasSettingsDrafts() ? '' : 'hidden'}>有未保存修改</span>`
 }
 
 function settingsOverviewHtml() {
@@ -1542,21 +1556,17 @@ function settingsOverviewHtml() {
 
 function settingsTabBadge(name) {
   if (name === 'model') return state.status?.provider === 'remote' ? '远端' : '本地'
-  if (name === 'voice') {
-    const asr = voiceAdapterLabel(state.voice?.asrAdapter, state.voice?.asrProvider)
-    const tts = voiceAdapterLabel(state.voice?.ttsAdapter, state.voice?.ttsProvider)
-    return asr === tts ? asr : '混合'
-  }
+  if (name === 'asr' || name === 'tts') return voiceAdapterLabel(state.voice?.[`${name}Adapter`], state.voice?.[`${name}Provider`])
   return ''
 }
 
 function settingsTabsHtml() {
-  const tabs = [['model', '模型', '◈', 'Models'], ['voice', '语音', '≋', 'Voice'], ['appearance', '外观', '◌', 'Appearance'], ['access', '设备', '⌘', 'Devices'], ['system', '系统', '◇', 'System']]
+  const tabs = [['model', '模型', '◈', 'Models'], ['scenario', '工作场景', '▤', 'Scenarios'], ['tts', '语音合成', '≋', 'TTS'], ['asr', '语音识别', '◉', 'ASR'], ['tools', '工具', '⚒', 'Tools'], ['mcp', 'MCP', '⌁', 'MCP'], ['appearance', '外观', '◌', 'Appearance'], ['access', '设备', '⌘', 'Devices'], ['system', '系统', '◇', 'System']]
   return `<div class="settings-tabs" role="tablist" aria-label="设置分类" aria-orientation="${window.matchMedia('(max-width: 760px)').matches ? 'horizontal' : 'vertical'}">
     ${tabs.map(([id, label, glyph, caption]) => {
       const active = state.settingsTab === id
       const badge = settingsTabBadge(id)
-      return `<button type="button" class="settings-tab${active ? ' active' : ''}${(id === 'model' && state.settingsDirty.model) || (id === 'voice' && state.settingsDirty.voice) ? ' has-dirty' : ''}" id="settings-tab-${id}" data-settings-tab="${id}" role="tab" aria-selected="${active}" aria-controls="settings-panel-${id}" tabindex="${active ? '0' : '-1'}">
+      return `<button type="button" class="settings-tab${active ? ' active' : ''}${state.settingsDirty[id] ? ' has-dirty' : ''}" id="settings-tab-${id}" data-settings-tab="${id}" role="tab" aria-selected="${active}" aria-controls="settings-panel-${id}" tabindex="${active ? '0' : '-1'}">
         <span class="settings-nav-glyph" aria-hidden="true">${glyph}</span><span class="settings-nav-copy"><strong>${label}</strong><small aria-hidden="true">${caption}</small></span>${badge ? `<small class="tab-badge">${escapeHtml(badge)}</small>` : ''}
       </button>`
     }).join('')}
@@ -1924,7 +1934,7 @@ function voiceFormHtml(kind) {
     }
     if (name === 'apiKey') {
       const hint = entry.hasKey ? '已保存；留空保持不变' : '粘贴 API Key'
-      return `<label class="settings-field"><span>API Key</span><input ${attrs} type="password" autocomplete="new-password" value="" placeholder="${hint}" ${options.id ? `id="${options.id}"` : ''}></label>`
+      return `<label class="settings-field"><span>API Key</span><input ${attrs} type="password" autocomplete="new-password" value="${escapeHtml(entry.apiKey || '')}" placeholder="${hint}" ${options.id ? `id="${options.id}"` : ''}></label>`
     }
     const type = name === 'baseUrl' ? 'url' : 'text'
     const extra = name === 'baseUrl' ? 'autocomplete="off" spellcheck="false"' : ''
@@ -1966,36 +1976,23 @@ function voiceFormHtml(kind) {
   ${datalists}`
 }
 
-function voicePanelHtml() {
+function voicePanelHtml(kind) {
   ensureVoiceDraft()
-  const status = state.voiceStatus
   return `<div class="settings-section-head">
-      <div><h3>语音模型</h3><p>ASR 与 TTS 各自是一条优先级链，可以配多个服务；前一个失效时自动切换。</p></div>
-      <span class="settings-chip">${ensureVoiceDraft().asr.length + ensureVoiceDraft().tts.length} 个服务</span>
+      <div><h3>${VOICE_KIND_LABEL[kind]}</h3><p>${kind === 'asr' ? '将语音转成文字，配置识别模型、语言和传输方式。' : '将回复转换成语音，配置合成模型与音色。'} 按优先级自动切换服务。</p></div>
+      <span class="settings-chip">${ensureVoiceDraft()[kind].length} 个服务</span>
     </div>
-    <div class="voice-grid">
-      <div class="voice-card" data-voice-card="asr">
-        <div class="voice-card-head"><div><span class="voice-kicker">ASR</span><strong>语音识别</strong></div></div>
-        ${voiceChainHtml('asr')}
-        ${voiceFormHtml('asr')}
-      </div>
-      <div class="voice-card" data-voice-card="tts">
-        <div class="voice-card-head"><div><span class="voice-kicker">TTS</span><strong>语音合成</strong></div></div>
-        ${voiceChainHtml('tts')}
-        ${voiceFormHtml('tts')}
-      </div>
+    <div class="voice-card" data-voice-card="${kind}">
+      <div class="voice-card-head"><div><span class="voice-kicker">${kind.toUpperCase()}</span><strong>${VOICE_KIND_LABEL[kind]}</strong></div></div>
+      ${voiceChainHtml(kind)}
+      ${voiceFormHtml(kind)}
     </div>
     <div class="settings-savebar">
-      <span class="settings-inline-dirty" id="voice-dirty" ${state.settingsDirty.voice ? '' : 'hidden'}>未保存</span>
-      <span class="settings-feedback" id="voice-result" role="status"></span>
-      <button type="button" class="model-action primary" id="voice-save">保存语音设置</button>
+      <span class="settings-inline-dirty" id="${kind}-dirty" ${state.settingsDirty[kind] ? '' : 'hidden'}>未保存</span>
+      <span class="settings-feedback" id="${kind}-result" role="status"></span>
+      <button type="button" class="model-action primary" id="${kind}-save" data-voice-save="${kind}" ${state.voiceSaving ? 'disabled' : ''}>保存${VOICE_KIND_LABEL[kind]}</button>
     </div>`
 }
-
-function voiceSettingsHtml(settings) {
-  return voicePanelHtml()
-}
-
 
 function settingsPanelsHtml(selected, settings) {
   return `
@@ -2019,16 +2016,23 @@ function settingsPanelsHtml(selected, settings) {
       <div class="provider-grid" id="provider-grid"></div>
       <div id="model-form-host"></div>
       ${addProviderCardHtml()}
-      ${state.modelSettings ? scenarioCardHtml(state.modelSettings) : ''}
       <p class="settings-notice" id="settings-model-notice" role="status"></p>
     </section>
-    <section class="settings-panel" id="settings-panel-voice" data-settings-panel="voice" role="tabpanel" aria-labelledby="settings-tab-voice" hidden>
-      <div class="settings-section-head">
-        <div><h3>语音模型</h3><p>ASR 与 TTS 可以分别切换本地或远端；远端 ASR 默认 WebSocket 流式。</p></div>
-        <span class="settings-chip">${voiceLabel()}</span>
-      </div>
-      ${state.voiceSettings ? voiceSettingsHtml(state.voiceSettings) : '<p class="settings-error">语音设置暂不可用。</p>'}
-      <p class="settings-hint">切换只影响之后的语音轮次，不会重启服务。浏览器目前仍在上传整段语音，流式发生在 Jarvis 后端到 ASR 服务之间。</p>
+    <section class="settings-panel" id="settings-panel-scenario" data-settings-panel="scenario" role="tabpanel" aria-labelledby="settings-tab-scenario" hidden>
+      ${state.modelSettings ? scenarioCardHtml(state.modelSettings) : ''}
+    </section>
+    ${['tts', 'asr'].map(kind => `<section class="settings-panel" id="settings-panel-${kind}" data-settings-panel="${kind}" role="tabpanel" aria-labelledby="settings-tab-${kind}" hidden>
+      ${state.voiceSettings ? voicePanelHtml(kind) : '<p class="settings-error">语音设置暂不可用。</p>'}
+    </section>`).join('')}
+    <section class="settings-panel" id="settings-panel-tools" data-settings-panel="tools" role="tabpanel" aria-labelledby="settings-tab-tools" hidden>
+      <div class="settings-section-head"><div><h3>工具</h3><p>管理本地工具、权限与任务。</p></div></div>
+      <div id="settings-tools-host"></div>
+      <div class="settings-actions"><button type="button" class="model-action" id="local-tools-open" aria-haspopup="dialog">打开工具窗口</button></div>
+    </section>
+    <section class="settings-panel" id="settings-panel-mcp" data-settings-panel="mcp" role="tabpanel" aria-labelledby="settings-tab-mcp" hidden>
+      <div class="settings-section-head"><div><h3>MCP</h3><p>管理服务连接、资料去向与调用权限。</p></div></div>
+      <div id="settings-mcp-host"></div>
+      <div class="settings-actions"><button type="button" class="model-action" id="mcp-services-open" aria-haspopup="dialog">打开服务窗口</button><button type="button" class="model-action" id="tools-open" aria-haspopup="dialog">高级：自定义 MCP</button></div>
     </section>
     <section class="settings-panel" id="settings-panel-appearance" data-settings-panel="appearance" role="tabpanel" aria-labelledby="settings-tab-appearance" hidden>
       <div class="settings-section-head">
@@ -2061,10 +2065,6 @@ function settingsPanelsHtml(selected, settings) {
         <span class="settings-chip">${state.status?.focus ? '专注模式' : '正常'}</span>
       </div>
       <div class="settings-stat-grid" id="settings-runtime">${settingsRuntimeHtml()}</div>
-      <div class="settings-card">
-        <div class="settings-card-head"><div><h4>工具与 MCP</h4><p>管理连接、工具权限和资料去向，查看待批准的调用。</p></div></div>
-        <div class="settings-actions"><button type="button" class="model-action" id="mcp-services-open" aria-haspopup="dialog">服务连接</button><button type="button" class="model-action" id="local-tools-open" aria-haspopup="dialog">本地工具与任务</button><button type="button" class="model-action" id="tools-open" aria-haspopup="dialog">高级：自定义 MCP</button></div>
-      </div>
       <div class="settings-card">
         <div class="settings-card-head"><div><h4>安装与平台</h4><p>装成 App、在手机上用，以及这台机器支持哪些能力。</p></div></div>
         <div class="settings-actions">
@@ -2207,7 +2207,7 @@ function updateSettingsTabs() {
     tab.classList.toggle('active', active)
     tab.setAttribute('aria-selected', String(active))
     tab.tabIndex = active ? 0 : -1
-    tab.classList.toggle('has-dirty', (id === 'model' && state.settingsDirty.model) || (id === 'voice' && state.settingsDirty.voice))
+    tab.classList.toggle('has-dirty', state.settingsDirty[id])
     const badge = tab.querySelector('.tab-badge')
     const next = settingsTabBadge(id)
     if (badge && next) badge.textContent = next
@@ -2215,7 +2215,7 @@ function updateSettingsTabs() {
 }
 
 function activateSettingsTab(name, options = {}) {
-  const valid = ['model', 'voice', 'appearance', 'access', 'system']
+  const valid = ['model', 'scenario', 'tts', 'asr', 'tools', 'mcp', 'appearance', 'access', 'system']
   state.settingsTab = valid.includes(name) ? name : 'model'
   $$('[data-settings-panel]').forEach(panel => { panel.hidden = panel.dataset.settingsPanel !== state.settingsTab })
   if (options.resetScroll !== false) {
@@ -2245,25 +2245,27 @@ function bindSettingsTabs() {
 }
 
 function updateDirtyUi() {
-  const any = state.settingsDirty.model || state.settingsDirty.voice
+  const any = hasSettingsDrafts()
   const overview = $('#settings-dirty')
   if (overview) overview.hidden = !any
   const model = $('#model-dirty')
   if (model) model.hidden = !state.settingsDirty.model
-  const voice = $('#voice-dirty')
-  if (voice) voice.hidden = !state.settingsDirty.voice
+  for (const kind of ['asr', 'tts']) {
+    const dirty = $(`#${kind}-dirty`)
+    if (dirty) dirty.hidden = !state.settingsDirty[kind]
+  }
   updateSettingsTabs()
 }
 
 function markSettingsDirty(panel) {
-  if (panel !== 'model' && panel !== 'voice') return
+  if (!['model', 'scenario', 'asr', 'tts'].includes(panel)) return
   state.settingsDirty[panel] = true
   updateDirtyUi()
 }
 
 function clearSettingsDirty(panel) {
   if (panel) state.settingsDirty[panel] = false
-  else state.settingsDirty = { model: false, voice: false }
+  else state.settingsDirty = { model: false, scenario: false, asr: false, tts: false }
   updateDirtyUi()
 }
 
@@ -2353,6 +2355,7 @@ function renderProviderCards() {
 }
 
 function renderScenarioCard() {
+  if (state.settingsDirty.scenario) return // Preserve this page's unsaved DOM when model settings change.
   const host = $('#scenario-card')
   if (!host || !state.modelSettings) return
   const wrapper = host.parentElement
@@ -2401,7 +2404,7 @@ function bindScenarioCard() {
     row.open = true
     list.appendChild(row)
     bindScenarioRowDeletes(list)
-    markSettingsDirty('model')
+    markSettingsDirty('scenario')
   })
 
   bindScenarioRowDeletes($('#scenario-list'))
@@ -2415,6 +2418,9 @@ function bindScenarioCard() {
       return
     }
     const result = $('#scenario-result')
+    state.scenarioSaving = true
+    const controls = $$('#scenario-card input, #scenario-card select, #scenario-card textarea, #scenario-card button')
+    controls.forEach(control => { control.disabled = true })
     save.disabled = true
     try {
       const data = await api('/api/model/scenarios', {
@@ -2426,9 +2432,9 @@ function bindScenarioCard() {
         }),
       })
       state.modelSettings = data.settings
+      clearSettingsDirty('scenario')
       renderScenarioCard()
       renderScenarioSelect()
-      clearSettingsDirty('model')
       // renderScenarioCard() replaced the card, so the old reference is detached;
       // write the confirmation into the live element instead.
       const fresh = $('#scenario-result')
@@ -2437,6 +2443,8 @@ function bindScenarioCard() {
       const fresh = $('#scenario-result')
       if (fresh) { fresh.textContent = `保存失败：${error.message}`; fresh.className = 'settings-feedback bad' }
     } finally {
+      state.scenarioSaving = false
+      controls.forEach(control => { control.disabled = false })
       const live = $('#scenario-save')
       if (live) live.disabled = false
     }
@@ -2451,7 +2459,7 @@ function bindScenarioRowDeletes(scope) {
       const row = button.closest('[data-scenario]')
       if (row && window.confirm('删除这个自定义场景？')) {
         row.remove()
-        markSettingsDirty('model')
+        markSettingsDirty('scenario')
       }
     })
   })
@@ -2681,12 +2689,10 @@ function applyVoiceAdapterDefaults(entry, kind) {
   }
 }
 
-function renderVoicePanel() {
-  const panel = $('#settings-panel-voice')
-  if (!panel) return
-  panel.innerHTML = voicePanelHtml()
-  const dirty = $('#voice-dirty')
-  if (dirty) dirty.hidden = !state.settingsDirty.voice
+function renderVoicePanel(kind = state.settingsTab) {
+  if (!['asr', 'tts'].includes(kind)) return
+  const panel = $(`#settings-panel-${kind}`)
+  if (panel) panel.innerHTML = voicePanelHtml(kind)
 }
 
 function voiceProfileFromCatalog(entry) {
@@ -2712,7 +2718,7 @@ function addVoiceEntry(kind, entry, options = {}) {
   chain.unshift(entry)
   state.voiceEdit[kind] = entry.id
   state.voicePicker[kind] = false
-  markSettingsDirty('voice')
+  markSettingsDirty(kind)
   renderVoicePanel()
   const form = document.querySelector(`[data-voice-form="${kind}"]`)
   form?.scrollIntoView({ block: 'center', behavior: 'smooth' })
@@ -2720,67 +2726,61 @@ function addVoiceEntry(kind, entry, options = {}) {
   setTimeout(() => form?.classList.remove('flash'), 1600)
   const key = document.getElementById(`${kind}-key`)
   if (key) key.focus({ preventScroll: true })
-  else $('#voice-save')?.focus({ preventScroll: true })
-  const result = $('#voice-result')
+  else $(`#${kind}-save`)?.focus({ preventScroll: true })
+  const result = $(`#${kind}-result`)
   if (result && options.notice) {
     result.textContent = options.notice
     result.className = 'settings-feedback ok'
   }
 }
 
-async function saveVoiceSettings() {
-  const button = $('#voice-save')
-  const result = $('#voice-result')
-  const original = button?.textContent || '保存语音设置'
-  if (button) { button.disabled = true; button.textContent = '保存中…' }
-  if (result) { result.textContent = '正在校验并切换语音运行时…'; result.className = 'settings-feedback' }
-  const chain = ensureVoiceDraft()
-  const strip = entry => {
-    const { hasKey, ...rest } = entry
-    if (!rest.apiKey) delete rest.apiKey
-    return rest
+async function saveVoiceSettings(kind) {
+  if (state.voiceSaving || !['asr', 'tts'].includes(kind)) return
+  const draft = ensureVoiceDraft()
+  const submitted = JSON.stringify(draft[kind])
+  const strip = ({ hasKey, ...entry }) => {
+    if (!entry.apiKey) delete entry.apiKey
+    return entry
   }
+  state.voiceSaving = true
+  $$('[data-voice-save]').forEach(button => { button.disabled = true })
+  const feedback = (text, style = '') => {
+    const result = $(`#${kind}-result`)
+    if (result) { result.textContent = text; result.className = `settings-feedback ${style}`.trim() }
+  }
+  feedback('正在校验并切换语音运行时…')
   try {
+    // The server merges omitted chains from persisted settings. Never submit
+    // the other page's draft or a stale snapshot of its saved configuration.
     const data = await api('/api/voice/apply', {
-      method: 'POST',
-      body: JSON.stringify({ asr: chain.asr.map(strip), tts: chain.tts.map(strip) }),
+      method: 'POST', body: JSON.stringify({ [kind]: JSON.parse(submitted).map(strip) }),
     })
     state.voiceSettings = data.settings
     state.voiceStatus = data.status
     state.voiceCooldowns = data.cooldowns ?? state.voiceCooldowns
-    state.settingsDirty.voice = false
-    resetVoiceDraft()
-    renderVoicePanel()
-    // renderVoicePanel rebuilt the savebar, so re-query instead of writing to
-    // the detached nodes captured before the render.
-    const feedback = $('#voice-result')
-    if (feedback) {
-      const asr = data.status?.asr
-      const tts = data.status?.tts
-      feedback.textContent = `已生效：ASR ${asr?.label || '—'}（${asr?.chain?.length || 1} 个）· TTS ${tts?.label || '—'}（${tts?.chain?.length || 1} 个）`
-      feedback.className = 'settings-feedback ok'
+    // Keep edits made while the request was in flight, including secret inputs.
+    if (state.voiceDraft === draft && JSON.stringify(draft[kind]) === submitted) {
+      draft[kind] = cloneVoiceChain(data.settings[kind])
+      clearSettingsDirty(kind)
+      renderVoicePanel(kind)
     }
+    feedback(state.settingsDirty[kind] ? '已保存提交的配置；新的修改尚未保存' : `${VOICE_KIND_LABEL[kind]}已保存并生效`, 'ok')
     await refreshStatus()
     updateSettingsOverview()
-    appendMessage('system', `语音设置已保存：ASR ${data.status?.asr?.label ?? ''} · TTS ${data.status?.tts?.label ?? ''}`)
   } catch (error) {
-    if (result) {
-      result.textContent = `保存失败：${error.message}`
-      result.className = 'settings-feedback bad'
-    }
+    feedback(`保存失败：${error.message}`, 'bad')
   } finally {
-    const live = $('#voice-save')
-    if (live) { live.disabled = false; live.textContent = original }
-    else if (button) { button.disabled = false; button.textContent = original }
+    state.voiceSaving = false
+    $$('[data-voice-save]').forEach(button => { button.disabled = false })
   }
 }
 
-function bindVoiceSettings() {
-  const panel = $('#settings-panel-voice')
+function bindVoiceSettings(kind) {
+  const panel = $(`#settings-panel-${kind}`)
   if (!panel) return
   const touch = () => {
-    markSettingsDirty('voice')
-    const dirty = $('#voice-dirty')
+    markSettingsDirty(kind)
+    const dirty = $(`#${kind}-dirty`)
     if (dirty) dirty.hidden = false
   }
 
@@ -2808,8 +2808,8 @@ function bindVoiceSettings() {
   })
 
   panel.addEventListener('click', async event => {
-    const save = event.target.closest('#voice-save')
-    if (save) { await saveVoiceSettings(); return }
+    const save = event.target.closest('[data-voice-save]')
+    if (save) { await saveVoiceSettings(save.dataset.voiceSave); return }
 
     const add = event.target.closest('[data-voice-add]')
     if (add) {
@@ -2843,7 +2843,7 @@ function bindVoiceSettings() {
         state.voiceEdit[kind] = existing.id
         state.voicePicker[kind] = false
         renderVoicePanel()
-        const result = $('#voice-result')
+        const result = $(`#${kind}-result`)
         if (result) { result.textContent = `已经在列表里：${existing.label}${local ? '（本地引擎，无需 Key）' : entry.adapter === 'edge' ? '（Edge TTS，无需 Key）' : ''}，保存后按顺序生效`; result.className = 'settings-feedback ok' }
         return
       }
@@ -2900,7 +2900,7 @@ function bindVoiceSettings() {
 
 function renderSettings(options = {}) {
   if (!state.modelSettings) return
-  if (options.resetDirty !== false) state.settingsDirty = { model: false, voice: false }
+  if (options.resetDirty !== false) state.settingsDirty = { model: false, scenario: false, asr: false, tts: false }
   state.settingsTab = options.tab || state.settingsTab || 'model'
   let selected = state.modelSettings.profiles.find(item => item.id === state.modelFormId)
   if (!selected) selected = state.modelSettings.profiles.find(item => item.id === state.modelSettings.active) || state.modelSettings.profiles[0]
@@ -2908,11 +2908,16 @@ function renderSettings(options = {}) {
   state.modelFormId = selected.id
   const scrollTop = options.scrollTop ?? $('.settings-modal .modal-body')?.scrollTop ?? 0
   openModal(settingsBodyHtml(selected, state.modelSettings), '设置', { className: 'settings-modal', focus: options.focus !== false, opener: $('#settings-btn') })
+  const toolsMounted = window.JarvisSettingsTools?.mount($('#settings-tools-host'), { sessionId: state.selectedSessionId })
+  const mcpMounted = window.JarvisSettingsMcp?.mount($('#settings-mcp-host'), { sessionId: state.selectedSessionId })
+  $('#local-tools-open').parentElement.hidden = !!toolsMounted
+  $('#mcp-services-open').parentElement.hidden = !!mcpMounted
   bindSettingsTabs()
   activateSettingsTab(state.settingsTab)
   renderProviderCards()
   renderModelForm()
-  bindVoiceSettings()
+  bindVoiceSettings('asr')
+  bindVoiceSettings('tts')
   bindAppearance()
   bindSettingsActions()
   updateDirtyUi()
@@ -2933,6 +2938,10 @@ function settingsLoadingHtml() {
 }
 
 async function showSettings(options = {}) {
+  if (!$('#modal').hidden && $('#modal .modal')?.classList.contains('settings-modal') && $('[data-settings-panel]')) {
+    activateSettingsTab(options.tab || state.settingsTab)
+    return
+  }
   const token = ++state.settingsLoadToken
   const wasOpen = !$('#modal').hidden
   if (!wasOpen) openModal(settingsLoadingHtml(), '设置', { className: 'settings-modal', opener: $('#settings-btn') })
@@ -3187,8 +3196,8 @@ async function applyVoiceGuide(id, options = {}) {
     appendMessage('system', '没有找到这个语音服务，请到「语音服务」页面重新选择。')
     return
   }
-  if ($('#modal').hidden) await showSettings({ tab: 'voice' })
-  else if (state.settingsTab !== 'voice') activateSettingsTab('voice')
+  if ($('#modal').hidden) await showSettings({ tab: entry.kind })
+  else if (state.settingsTab !== entry.kind) activateSettingsTab(entry.kind)
   ensureVoiceDraft()
   const kind = entry.kind
   const chain = state.voiceDraft[kind]
@@ -3197,9 +3206,9 @@ async function applyVoiceGuide(id, options = {}) {
   if (existing) {
     state.voiceEdit[kind] = existing.id
     state.voicePicker[kind] = false
-    markSettingsDirty('voice')
+    markSettingsDirty(kind)
     renderVoicePanel()
-    const result = $('#voice-result')
+    const result = $(`#${kind}-result`)
     if (result) {
       result.textContent = local
         ? `「${existing.label}」已经在链里（本地引擎，无需 Key），保存后生效`
@@ -3288,8 +3297,7 @@ async function applyProviderGuide(id) {
   const existing = (state.modelSettings?.profiles ?? []).find(item => normalize(item.baseUrl) === normalize(entry.baseUrl))
   if (existing) {
     // Already configured: select that profile instead of adding a duplicate.
-    state.modelFormId = existing.id
-    renderSettings({ tab: 'model', focus: false })
+    switchModelProfile(existing.id)
     $('#model-form')?.scrollIntoView({ block: 'center', behavior: 'smooth' })
     $('#model-key')?.focus({ preventScroll: true })
     const result = $('#model-result')
@@ -3449,7 +3457,11 @@ function bindSettingsActions() {
     }
   })
   $('#onboard-again')?.addEventListener('click', () => {
-    if ((state.settingsDirty.model || state.settingsDirty.voice) && !window.confirm('设置里有未保存的修改，重新查看引导会丢弃它们。继续？')) return
+    if (state.voiceSaving || state.scenarioSaving || settingsEditors().some(editor => editor.isBusy())) {
+      notify('设置正在保存或等待确认，请完成后再查看引导。')
+      return
+    }
+    if ((hasSettingsDrafts()) && !window.confirm('设置里有未保存的修改，重新查看引导会丢弃它们。继续？')) return
     closeModal(true)
     localStorage.removeItem('jarvis_onboarded')
     showOnboarding()
@@ -3515,6 +3527,16 @@ function updateSendShortcutHint() {
 }
 
 function bind() {
+  for (const [eventName, tab] of [['jarvis:mcp-services-open', 'mcp'], ['jarvis:local-tools-open', 'tools']]) {
+    window.addEventListener(eventName, () => {
+      if ($('#modal').hidden || !$('#modal .modal')?.classList.contains('settings-modal')) return
+      activateSettingsTab(tab)
+      requestAnimationFrame(() => {
+        const host = $(`#settings-${tab}-host`)
+        host?.querySelector('button:not([disabled]), input:not([disabled]), select:not([disabled])')?.focus({ preventScroll: true })
+      })
+    })
+  }
   window.matchMedia('(max-width: 760px)').addEventListener('change', event => {
     $('#modal .settings-tabs')?.setAttribute('aria-orientation', event.matches ? 'horizontal' : 'vertical')
   })
@@ -3567,12 +3589,12 @@ function bind() {
     if (event.target.closest('#local-tools-open')) window.dispatchEvent(new CustomEvent('jarvis:local-tools-open', { detail: { sessionId: state.selectedSessionId } }))
   })
   $('#modal-body').addEventListener('input', event => {
-    if (event.target.closest('[data-settings-panel="model"]')) markSettingsDirty('model')
-    else if (event.target.closest('[data-settings-panel="voice"]')) markSettingsDirty('voice')
+    const panel = event.target.closest('[data-settings-panel]')?.dataset.settingsPanel
+    if (panel) markSettingsDirty(panel)
   })
   $('#modal-body').addEventListener('change', event => {
-    if (event.target.closest('[data-settings-panel="model"]')) markSettingsDirty('model')
-    else if (event.target.closest('[data-settings-panel="voice"]')) markSettingsDirty('voice')
+    const panel = event.target.closest('[data-settings-panel]')?.dataset.settingsPanel
+    if (panel) markSettingsDirty(panel)
   })
   document.addEventListener('keydown', event => {
     if ($('#mcp-services-dialog')?.open || $('#mcp-services-confirm')?.open || $('#tools-dialog')?.open || $('#local-tools-dialog')?.open || $('#local-tools-question')?.open || $('#profile-dialog')?.open || $('#history-confirm').open || $('#history-dialog').open) return

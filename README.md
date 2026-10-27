@@ -64,7 +64,7 @@ snapshots do not guarantee one shared instant with output files.
 
 ## Service connections without MCP configuration
 
-Open **设置 → 系统 → 服务连接** for the curated life, office, developer and
+Open **设置 → MCP** for the curated life, office, developer and
 general service catalogue. Each card supplies official credential links, setup
 steps, usage examples and limitations. Users enter only the required key/token
 or account fields; Jarvis maintains endpoints, commands and transport settings.

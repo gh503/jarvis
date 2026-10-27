@@ -38,6 +38,10 @@
 .lt-download { display: block; padding: 12px 0; color: var(--cyan, #7ee7d5); overflow-wrap: anywhere; }
 .lt-dialog :is(button, input, textarea, summary, a):focus-visible { outline: 2px solid var(--cyan, #7ee7d5); outline-offset: 3px; }
 #local-tools-question { width: min(580px, calc(100vw - 24px)); }
+/* Settings owns the title and scrolling; this section is not a dialog. */
+.lt-dialog.lt-inline { display: block; position: static; width: 100%; min-width: 0; max-height: none; margin: 0; padding: 0; border: 0; border-radius: 0; background: transparent; box-shadow: none; }
+.lt-inline > .lt-body { padding: 0; overflow: visible; }
+.lt-inline .lt-notice { margin-top: 0; }
 @media (max-width: 600px) {
   #local-tools-dialog { width: 100%; height: 100dvh; max-height: 100dvh; margin: 0; border: 0; border-radius: 0; }
   .lt-header { padding: calc(14px + env(safe-area-inset-top, 0px)) 12px 14px; }

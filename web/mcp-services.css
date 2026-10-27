@@ -36,4 +36,8 @@
 [data-theme="light"] .mcp-services-muted,[data-theme="light"] .mcp-services-category,[data-theme="light"] .mcp-services-field small{color:#4a5c72}
 [data-theme="light"] .mcp-services-links a{color:#155a9e}
 [data-theme="light"] .mcp-services-error,[data-theme="light"] .mcp-services-danger{color:#a12820}
+/* The settings shell owns layout and its heading; forms stay mounted here. */
+.mcp-services-dialog.mcp-services-inline{position:static;width:100%;min-width:0;max-height:none;overflow:visible;margin:0;padding:0;border:0;border-radius:0;background:transparent;box-shadow:none}
+.mcp-services-inline>.mcp-services-muted:first-child{margin-top:0}
+.mcp-services-inline .mcp-services-catalog{grid-template-columns:repeat(auto-fit,minmax(min(100%,260px),1fr))}
 @media(max-width:600px){.mcp-services-dialog,.mcp-services-confirm{padding:15px}.mcp-services-catalog{grid-template-columns:minmax(0,1fr)}.mcp-services-filters input{flex-basis:100%}.mcp-services-filters select{flex:1;min-width:0}.mcp-services-editor{padding:12px}.mcp-services-actions>*{flex:1}.mcp-services-row h2{font-size:1.15rem}}

@@ -15,6 +15,12 @@ const CDP = (process.env.JARVIS_CDP_URL || 'http://127.0.0.1:9223').replace(/\/+
 /** Interaction checks that write to the server are opt-in so a developer can
  * run the smoke against the live instance without changing real settings. */
 const WRITE = process.env.JARVIS_SMOKE_WRITE === '1'
+if (WRITE) {
+  const target = new URL(process.env.JARVIS_URL || 'http://127.0.0.1:3081/')
+  if (target.protocol !== 'http:' || !['localhost', '127.0.0.1', '[::1]'].includes(target.hostname) || target.port !== '3097') {
+    throw new Error('Write smoke requires the parent-managed isolated localhost:3097 instance')
+  }
+}
 
 const CONTRAST_AUDIT = `(() => {
   const parse = value => {
@@ -183,7 +189,7 @@ async function main(): Promise<void> {
       onboarding: Boolean(document.querySelector('#onboard-again')),
       modelSelect: document.querySelector('#model-name')?.tagName === 'SELECT',
       protocols: Boolean(document.querySelector('#model-protocol') || document.querySelector('[data-model-select=remote]')),
-      voice: Boolean(document.querySelector('#voice-chain-asr') && document.querySelector('#voice-chain-tts') && document.querySelector('#voice-save') && document.querySelectorAll('[data-voice-add]').length === 2),
+      voice: Boolean(document.querySelector('#voice-chain-asr') && document.querySelector('#voice-chain-tts') && document.querySelector('#tts-save') && document.querySelector('#asr-save') && document.querySelectorAll('[data-voice-add]').length === 2),
       adapters: Boolean(document.querySelector('#provider-add-card') && document.querySelector('#scenario-card')),
       pool: Boolean(document.querySelector('#provider-add-card') && document.querySelector('#scenario-card') && document.querySelector('#scenario-save')),
       scenarioSelect: Boolean(document.querySelector('#scenario-select')),
@@ -208,10 +214,12 @@ async function main(): Promise<void> {
     await sleep(400)
     check(await cdp.evaluate<boolean>("Boolean(document.querySelector('#appearance-card') && document.querySelectorAll('.appearance-swatch').length === 5 && document.querySelectorAll('.appearance-preset').length >= 4)"), 'settings: appearance tab with swatches and presets')
     check(await cdp.evaluate<boolean>("document.querySelector('#settings-panel-appearance')?.hidden === false"), 'settings: appearance panel actually visible after tab click')
-    check(settings.tabs === 5 && settings.tabbed, 'settings: five-section tabbed layout (incl. appearance)')
-    await cdp.evaluate("document.querySelector('[data-settings-tab=voice]').click()")
-    await sleep(200)
-    check(await cdp.evaluate<boolean>("!document.querySelector('#settings-panel-voice').hidden && document.querySelector('#settings-panel-model').hidden"), 'settings: voice tab switches panel')
+    check(settings.tabs === 9 && settings.tabbed, 'settings: nine independent settings pages')
+    for (const kind of ['tts', 'asr']) {
+      await cdp.evaluate(`document.querySelector('[data-settings-tab=${kind}]').click()`)
+      await sleep(200)
+      check(await cdp.evaluate<boolean>(`!document.querySelector('#settings-panel-${kind}').hidden && document.querySelector('#settings-panel-model').hidden`), `settings: ${kind} tab switches panel`)
+    }
     await cdp.evaluate("document.querySelector('[data-settings-tab=system]').click()")
     await sleep(200)
     check(await cdp.evaluate<boolean>("document.querySelector('#settings-panel-system').offsetParent !== null && document.querySelector('#settings-panel-system').getBoundingClientRect().height > 0"), 'settings: system panel visible')
@@ -260,6 +268,7 @@ async function main(): Promise<void> {
       }
 
       // Scenario editor saves through the API and reports success.
+      await cdp.evaluate("document.querySelector('[data-settings-tab=scenario]').click()")
       if (await cdp.evaluate<boolean>("Boolean(document.querySelector('[data-scenario=coding]'))")) {
         await cdp.evaluate("document.querySelector('[data-scenario=coding]').open = true")
         await cdp.evaluate("document.querySelector('#scenario-result').textContent = ''")
@@ -377,18 +386,19 @@ async function main(): Promise<void> {
       await cdp.evaluate("(() => { const el = document.querySelector('[data-voice-use=\"openai-whisper\"]'); setTimeout(() => el && el.click(), 0); return true })()")
       await sleep(3800)
       check(await cdp.evaluate<boolean>("location.pathname === '/' && !location.search"), 'providers: voice handoff cleans the query string')
-      check(await cdp.evaluate<boolean>("!document.querySelector('#modal').hidden && document.querySelector('#settings-panel-voice')?.hidden === false"), 'providers: voice handoff opens the voice panel')
+      check(await cdp.evaluate<boolean>("!document.querySelector('#modal').hidden && document.querySelector('#settings-panel-asr')?.hidden === false"), 'providers: voice handoff opens the voice panel')
       check(await cdp.evaluate<number>("document.querySelectorAll('#voice-chain-asr li').length") === 2, 'providers: handoff appends a second ASR provider to the chain')
       check(await cdp.evaluate<boolean>("(document.querySelector('#voice-chain-asr li')?.textContent || '').includes('OpenAI')"), 'providers: new provider becomes the preferred entry')
       check(await cdp.evaluate<string>("document.querySelector('#asr-base')?.value || ''") === 'https://api.openai.com/v1', 'providers: voice handoff fills the endpoint')
       check(await cdp.evaluate<string>("document.querySelector('#asr-model')?.value || ''") === 'whisper-1', 'providers: voice handoff fills the model')
       check(await cdp.evaluate<string>("document.querySelector('#asr-adapter')?.value || ''") === 'openai', 'providers: voice handoff selects the adapter')
-      check(await cdp.evaluate<boolean>("document.querySelector('#voice-dirty')?.hidden === false"), 'providers: voice prefill marks the form unsaved')
+      check(await cdp.evaluate<boolean>("document.querySelector('#asr-dirty')?.hidden === false"), 'providers: voice prefill marks the form unsaved')
       check(await cdp.evaluate<number>("document.querySelectorAll('#asr-model-list option').length") >= 3, 'providers: ASR model field suggests alternatives')
       check(await cdp.evaluate<boolean>("document.querySelector('#asr-model')?.hasAttribute('list')"), 'providers: ASR model input is wired to the suggestions')
 
       // Add-from-catalogue inside the settings sheet: TTS gets a remote entry,
       // then the existing local engine is reused instead of duplicated.
+      await cdp.evaluate("document.querySelector('[data-settings-tab=tts]').click()")
       await cdp.evaluate("document.querySelector('[data-voice-add=\"tts\"]').click()")
       await sleep(900)
       check(await cdp.evaluate<number>("document.querySelectorAll('[data-voice-preset-id]').length") >= 5, 'settings: add panel lists catalogue presets')
@@ -402,7 +412,7 @@ async function main(): Promise<void> {
       await cdp.evaluate("document.querySelector('[data-voice-preset-id=\"local-piper\"]').click()")
       await sleep(400)
       check(await cdp.evaluate<boolean>("document.querySelectorAll('#voice-chain-tts li').length === 2"), 'settings: picking an existing local engine does not duplicate it')
-      check(await cdp.evaluate<boolean>("(document.querySelector('#voice-result')?.textContent || '').includes('本地引擎')"), 'settings: local preset explains that no key is needed')
+      check(await cdp.evaluate<boolean>("(document.querySelector('#tts-result')?.textContent || '').includes('本地引擎')"), 'settings: local preset explains that no key is needed')
 
       await cdp.evaluate("(() => { const el = document.querySelector('#modal-close'); setTimeout(() => el && el.click(), 0); return true })()")
       await sleep(800)
@@ -463,7 +473,7 @@ async function main(): Promise<void> {
       tabs: document.querySelectorAll('[data-settings-tab]').length,
       overflow: document.querySelector('.modal-body').scrollWidth > document.querySelector('.modal-body').clientWidth + 1
     })`)
-    check(mobileSettings.fits && mobileSettings.full && mobileSettings.tabs === 5 && !mobileSettings.overflow, 'mobile: settings sheet fits viewport')
+    check(mobileSettings.fits && mobileSettings.full && mobileSettings.tabs === 9 && !mobileSettings.overflow, 'mobile: settings sheet fits viewport')
 
     // Contrast and overflow at both themes and a phone width. This is the check
     // that caught "light theme text at 4.2:1" after a palette change.
