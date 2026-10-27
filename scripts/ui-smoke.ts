@@ -142,6 +142,7 @@ async function main(): Promise<void> {
     await cdp.evaluate("document.querySelector('[data-settings-tab=\"appearance\"]').click()")
     await sleep(400)
     check(await cdp.evaluate<boolean>("Boolean(document.querySelector('#appearance-card') && document.querySelectorAll('.appearance-swatch').length === 5 && document.querySelectorAll('.appearance-preset').length >= 4)"), 'settings: appearance tab with swatches and presets')
+    check(await cdp.evaluate<boolean>("document.querySelector('#settings-panel-appearance')?.hidden === false"), 'settings: appearance panel actually visible after tab click')
     check(settings.tabs === 5 && settings.tabbed, 'settings: five-section tabbed layout (incl. appearance)')
     await cdp.evaluate("document.querySelector('[data-settings-tab=voice]').click()")
     await sleep(200)

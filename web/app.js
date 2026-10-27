@@ -1584,7 +1584,7 @@ function updateSettingsTabs() {
 }
 
 function activateSettingsTab(name, options = {}) {
-  const valid = ['model', 'voice', 'access', 'system']
+  const valid = ['model', 'voice', 'appearance', 'access', 'system']
   state.settingsTab = valid.includes(name) ? name : 'model'
   $$('[data-settings-panel]').forEach(panel => { panel.hidden = panel.dataset.settingsPanel !== state.settingsTab })
   if (options.resetScroll !== false) {
