@@ -140,6 +140,18 @@ test('server enforces proxy auth, CSRF and serves the shell', async () => {
     assert.ok(catalogBody.providers.some(item => item.region === 'cn'))
     assert.ok(catalogBody.providers.some(item => item.region === 'local'))
 
+    // Voice presets are public for the same reason: the guide must be readable
+    // before a key exists.
+    const voiceCatalog = await fetch(`${url}/api/voice/catalog`)
+    assert.equal(voiceCatalog.status, 200)
+    const voiceText = await voiceCatalog.text()
+    assert.doesNotMatch(voiceText, /"apiKey"\s*:/)
+    const voiceBody = JSON.parse(voiceText) as { voices: Array<{ id: string, kind: string, baseUrl: string }>, platform: { os: string } }
+    assert.ok(voiceBody.voices.length >= 15)
+    assert.ok(voiceBody.voices.some(item => item.kind === 'asr'))
+    assert.ok(voiceBody.voices.some(item => item.kind === 'tts'))
+    assert.equal(voiceBody.platform.os, process.platform)
+
     const model = await fetch(`${url}/api/model`)
     assert.equal(model.status, 200)
     assert.doesNotMatch(await model.text(), /apiKey|sk-secret/)

@@ -237,6 +237,18 @@ async function main(): Promise<void> {
     check('目录不包含任何密钥字段', !JSON.stringify(catalogJson).includes('"apiKey":'))
     check('目录带平台信息', Boolean(catalogJson.platform?.os))
     const platformHealth = await req(base, '/api/health')
+    const voiceCatalog = await req(base, '/api/voice/catalog', { headers: PROXIED })
+    equal('语音目录无需登录', voiceCatalog.status, 200)
+    const voiceJson = voiceCatalog.json as { voices?: any[], platform?: { os?: string } }
+    const voiceCount = (voiceJson.voices ?? []).length
+    check('语音目录条目足够多', voiceCount >= 15, `${voiceCount} 条`)
+    check('语音目录含 ASR', (voiceJson.voices ?? []).some((item: any) => item.kind === 'asr'))
+    check('语音目录含 TTS', (voiceJson.voices ?? []).some((item: any) => item.kind === 'tts'))
+    check('语音目录含国内直连', (voiceJson.voices ?? []).some((item: any) => item.region === 'cn' && item.chinaDirect === true))
+    check('语音目录不含密钥字段', !JSON.stringify(voiceJson).includes('"apiKey":'))
+    includes('指南页含语音分区', providersPage.text, '语音识别与合成')
+    includes('指南页锚点', providersPage.text, 'id="voice"')
+
     check('health 暴露平台能力', Boolean((platformHealth.json as any)?.platform?.os))
     check('health 给出不可用原因', typeof (platformHealth.json as any)?.platform?.reasons === 'object')
 

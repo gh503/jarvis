@@ -31,7 +31,8 @@
       <p class="pv-lead">
         Jarvis 本身不带模型额度：它连接你选的供应商。国内供应商大多可以直连，
         国际供应商需要自备网络。填错也不会把已有配置弄坏——新供应商保存后才生效，
-        而且可以随时切换或删除。
+        而且可以随时切换或删除。语音识别与合成也有独立的供应商指南，
+        <a class="pv-inline-link" href="#voice">跳到语音服务 ↓</a>
       </p>
       <ol class="pv-steps">
         <li><b>1</b><span>在供应商官网注册，创建 API Key</span></li>
@@ -54,6 +55,29 @@
     </section>
 
     <section class="pv-grid" id="pv-grid" aria-label="供应商列表"></section>
+
+    <section class="pv-voice" id="voice" aria-labelledby="pv-voice-title">
+      <div class="pv-section-head">
+        <div>
+          <p class="eyebrow">SPEECH PROVIDERS</p>
+          <h2 id="pv-voice-title">语音识别与合成</h2>
+          <p class="pv-lead">ASR 和 TTS 是两个独立开关：可以“识别走云端、合成走本机”。本地引擎免费且不出网，云端服务更快或音色更好。</p>
+        </div>
+      </div>
+      <div class="pv-toolbar">
+        <div class="pv-filters" role="tablist" aria-label="按语音类型筛选">
+          <button type="button" class="pv-chip active" data-voice-filter="all" role="tab" aria-selected="true">全部</button>
+          <button type="button" class="pv-chip" data-voice-filter="asr" role="tab" aria-selected="false">语音识别 ASR</button>
+          <button type="button" class="pv-chip" data-voice-filter="tts" role="tab" aria-selected="false">语音合成 TTS</button>
+        </div>
+        <label class="pv-search">
+          <span class="sr-only">搜索语音服务</span>
+          <input id="pv-voice-search" type="search" placeholder="搜索名字、标签或音色…" autocomplete="off">
+        </label>
+      </div>
+      <p class="pv-count" id="pv-voice-count" role="status" aria-live="polite">正在读取语音服务…</p>
+      <div class="pv-grid" id="pv-voice-grid" aria-label="语音服务列表"></div>
+    </section>
 
     <section class="pv-help">
       <h2>还是拿不定主意？</h2>

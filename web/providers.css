@@ -202,6 +202,7 @@ body.pv-body {
 
 .pv-badge.cn { color: var(--cyan); border-color: rgb(var(--accent-rgb) / 0.35); background: var(--cyan-dim); }
 .pv-badge.global { color: var(--amber); border-color: rgba(243, 179, 106, 0.32); background: var(--amber-dim); }
+:root[data-theme="light"] .pv-badge.global { color: #6d4708; border-color: rgba(109, 71, 8, 0.3); }
 
 .pv-card-summary { margin: 0; color: var(--muted); font-size: 12.5px; line-height: 1.72; }
 
@@ -235,6 +236,9 @@ body.pv-body {
 }
 
 .pv-primary { background: var(--cyan); color: #04120f; border: 1px solid transparent; font-weight: 560; }
+/* The light theme swaps --cyan to a dark green, so the dark text would be
+   unreadable (2.5:1). Flip it there; the audit in ui:smoke guards this. */
+:root[data-theme="light"] .pv-primary { color: #f4fffb; }
 .pv-primary:hover { filter: brightness(1.06); }
 .pv-secondary { border: 1px solid var(--line); color: var(--text); background: transparent; }
 .pv-secondary:hover { border-color: var(--line-strong); background: rgb(var(--ink-rgb) / 0.04); }
@@ -360,4 +364,19 @@ body.pv-body {
   .pv-card-actions { flex-direction: column; }
   .pv-sheet { width: 100vw; max-height: 92dvh; border-radius: 18px 18px 0 0; margin: auto auto 0; }
   .pv-sheet-body { max-height: calc(92dvh - 200px); }
+}
+
+/* ---- voice section ---- */
+.pv-voice { margin-top: 48px; border-top: 1px solid var(--line); padding-top: 32px; }
+.pv-section-head { display: flex; justify-content: space-between; align-items: flex-end; gap: 16px; margin-bottom: 18px; }
+.pv-section-head h2 { margin: 4px 0 6px; font-size: 26px; letter-spacing: -.01em; }
+.pv-section-head .pv-lead { margin: 0; max-width: 62ch; }
+.pv-inline-link { color: var(--cyan); text-decoration: none; }
+.pv-inline-link:hover { text-decoration: underline; }
+.pv-voice-fields { margin: 10px 0 0; padding-left: 18px; color: var(--muted); font-size: 13px; display: grid; gap: 4px; }
+.pv-voice-fields code { color: var(--text); }
+.pv-badge.asr, .pv-badge.tts { border-color: rgb(var(--accent-rgb) / .45); color: var(--cyan); background: var(--cyan-dim); }
+@media (max-width: 640px) {
+  .pv-section-head { flex-direction: column; align-items: stretch; }
+  .pv-voice { margin-top: 32px; padding-top: 24px; }
 }

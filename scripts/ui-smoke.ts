@@ -293,11 +293,11 @@ async function main(): Promise<void> {
       const origin = new URL(APP).origin
       await cdp.send('Page.navigate', { url: `${origin}/providers` })
       await sleep(1800)
-      const cardCount = await cdp.evaluate<number>("document.querySelectorAll('.pv-card').length")
+      const cardCount = await cdp.evaluate<number>("document.querySelectorAll('#pv-grid .pv-card').length")
       check(cardCount >= 15, `providers: renders every catalogue entry (${cardCount})`)
       await cdp.evaluate("[...document.querySelectorAll('.pv-chip')].find(el => el.dataset.filter === 'cn').click()")
       await sleep(300)
-      const cnOnly = await cdp.evaluate<boolean>("[...document.querySelectorAll('.pv-card')].every(card => card.querySelector('.pv-badge')?.classList.contains('cn'))")
+      const cnOnly = await cdp.evaluate<boolean>("[...document.querySelectorAll('#pv-grid .pv-card')].every(card => card.querySelector('.pv-badge')?.classList.contains('cn'))")
       check(cnOnly, 'providers: region filter keeps only mainland entries')
       await cdp.evaluate("[...document.querySelectorAll('.pv-chip')].find(el => el.dataset.filter === 'all').click()")
       await cdp.evaluate(`(() => {
@@ -306,7 +306,7 @@ async function main(): Promise<void> {
         input.dispatchEvent(new Event('input', { bubbles: true }))
       })()`)
       await sleep(300)
-      check(await cdp.evaluate<number>("document.querySelectorAll('.pv-card').length") === 1, 'providers: search narrows to one entry')
+      check(await cdp.evaluate<number>("document.querySelectorAll('#pv-grid .pv-card').length") === 1, 'providers: search narrows to one entry')
       await cdp.evaluate("[...document.querySelectorAll('.pv-chip')].find(el => el.dataset.filter === 'all').click(); document.querySelector('#pv-search').value = ''; document.querySelector('#pv-search').dispatchEvent(new Event('input', { bubbles: true }))")
       await sleep(300)
 
@@ -317,6 +317,34 @@ async function main(): Promise<void> {
       await cdp.evaluate("document.querySelector('#pv-sheet-close').click()")
       await sleep(250)
       check(await cdp.evaluate<boolean>("document.querySelector('#pv-sheet').open === false"), 'providers: detail sheet closes')
+
+      // ---- voice section: ASR and TTS presets share the guide page ----
+      const voiceCards = await cdp.evaluate<number>("document.querySelectorAll('#pv-voice-grid .pv-card').length")
+      check(voiceCards >= 15, `providers: voice section renders presets (${voiceCards})`)
+      await cdp.evaluate("[...document.querySelectorAll('[data-voice-filter]')].find(el => el.dataset.voiceFilter === 'asr').click()")
+      await sleep(300)
+      check(await cdp.evaluate<boolean>("[...document.querySelectorAll('#pv-voice-grid .pv-card')].every(card => card.querySelector('.pv-badge')?.textContent.trim() === 'ASR')"), 'providers: ASR filter keeps only recognition presets')
+      check(await cdp.evaluate<number>("document.querySelectorAll('#pv-voice-grid .pv-card').length") === 9, 'providers: ASR filter keeps every recognition preset')
+      await cdp.evaluate("[...document.querySelectorAll('[data-voice-filter]')].find(el => el.dataset.voiceFilter === 'all').click()")
+      await sleep(200)
+      await cdp.evaluate("document.querySelector('[data-voice-detail=\"siliconflow-cosyvoice\"]').click()")
+      await sleep(400)
+      check(await cdp.evaluate<boolean>("document.querySelector('#pv-sheet').open === true"), 'providers: voice detail sheet opens')
+      check(await cdp.evaluate<boolean>("(document.querySelector('#pv-sheet-body')?.innerText || '').includes('FunAudioLLM/CosyVoice2-0.5B:alex')"), 'providers: voice detail shows the exact voice id')
+      await cdp.evaluate("document.querySelector('#pv-sheet-close').click()")
+      await sleep(250)
+
+      // The guide page has its own CSS; audit it here, while we are still on it.
+      for (const [theme, width] of [['dark', 1440], ['light', 1440], ['light', 390]] as const) {
+        await cdp.send('Emulation.setDeviceMetricsOverride', { width, height: 900, deviceScaleFactor: 1, mobile: width < 500 })
+        await cdp.evaluate("(() => { document.documentElement.dataset.theme = '" + theme + "'; const s = document.createElement('style'); s.id = 'smoke-freeze'; s.textContent = '*,*::before,*::after{transition:none !important;animation:none !important}'; document.head.append(s) })()")
+        await sleep(220)
+        const audit = await cdp.evaluate<{ bad: string[], count: number, overflow: number }>(CONTRAST_AUDIT)
+        check(audit.count === 0, `providers contrast: ${theme} @${width}px (${audit.bad.join(' | ')})`)
+        check(audit.overflow <= 1, `providers layout: ${theme} @${width}px no overflow (${audit.overflow}px)`)
+        await cdp.evaluate("document.getElementById('smoke-freeze')?.remove()")
+      }
+      await cdp.send('Emulation.setDeviceMetricsOverride', { width: 1440, height: 960, deviceScaleFactor: 1, mobile: false })
 
       // Handoff: /?provider=siliconflow must land in 设置 → 模型 with the form filled.
       // Click from a timer: the handler navigates, and a navigating context
@@ -336,17 +364,27 @@ async function main(): Promise<void> {
       check(cdp.dialogs.some(message => message.includes('未保存')), 'providers: unsaved prefill warns before closing')
       check(await cdp.evaluate<boolean>("document.querySelector('#modal').hidden"), 'providers: confirming closes the sheet')
 
-      // The guide and install pages have their own CSS; audit them the same way.
-      for (const [theme, width] of [['dark', 1440], ['light', 1440], ['light', 390]] as const) {
-        await cdp.send('Emulation.setDeviceMetricsOverride', { width, height: 900, deviceScaleFactor: 1, mobile: width < 500 })
-        await cdp.evaluate("(() => { document.documentElement.dataset.theme = '" + theme + "'; const s = document.createElement('style'); s.id = 'smoke-freeze'; s.textContent = '*,*::before,*::after{transition:none !important;animation:none !important}'; document.head.append(s) })()")
-        await sleep(220)
-        const audit = await cdp.evaluate<{ bad: string[], count: number, overflow: number }>(CONTRAST_AUDIT)
-        check(audit.count === 0, `providers contrast: ${theme} @${width}px (${audit.bad.join(' | ')})`)
-        check(audit.overflow <= 1, `providers layout: ${theme} @${width}px no overflow (${audit.overflow}px)`)
-        await cdp.evaluate("document.getElementById('smoke-freeze')?.remove()")
-      }
-      await cdp.send('Emulation.setDeviceMetricsOverride', { width: 1440, height: 960, deviceScaleFactor: 1, mobile: false })
+      // Voice handoff, same pattern, back on the guide page.
+      await cdp.send('Page.navigate', { url: `${origin}/providers` })
+      await sleep(1800)
+      await cdp.evaluate("(() => { const el = document.querySelector('[data-voice-use=\"openai-whisper\"]'); setTimeout(() => el && el.click(), 0); return true })()")
+      await sleep(3800)
+      check(await cdp.evaluate<boolean>("location.pathname === '/' && !location.search"), 'providers: voice handoff cleans the query string')
+      check(await cdp.evaluate<boolean>("!document.querySelector('#modal').hidden && document.querySelector('#settings-panel-voice')?.hidden === false"), 'providers: voice handoff opens the voice panel')
+      check(await cdp.evaluate<string>("document.querySelector('#asr-source')?.value || ''") === 'remote', 'providers: voice handoff switches ASR to remote')
+      check(await cdp.evaluate<string>("document.querySelector('#asr-base')?.value || ''") === 'https://api.openai.com/v1', 'providers: voice handoff fills the endpoint')
+      check(await cdp.evaluate<string>("document.querySelector('#asr-model')?.value || ''") === 'whisper-1', 'providers: voice handoff fills the model')
+      check(await cdp.evaluate<string>("document.querySelector('#asr-adapter')?.value || ''") === 'openai', 'providers: voice handoff selects the adapter')
+      check(await cdp.evaluate<boolean>("document.querySelector('#voice-dirty')?.hidden === false"), 'providers: voice prefill marks the form unsaved')
+
+      // The inline presets inside the settings sheet must work without the guide.
+      await cdp.evaluate("[...document.querySelectorAll('[data-voice-preset]')].find(el => el.dataset.voicePreset === 'local-piper').click()")
+      await sleep(500)
+      check(await cdp.evaluate<string>("document.querySelector('#tts-source')?.value || ''") === 'local', 'settings: local TTS preset switches back to the local engine')
+      check(await cdp.evaluate<boolean>("(document.querySelector('#voice-result')?.textContent || '').includes('本地引擎')"), 'settings: local preset explains that no key is needed')
+
+      await cdp.evaluate("(() => { const el = document.querySelector('#modal-close'); setTimeout(() => el && el.click(), 0); return true })()")
+      await sleep(800)
 
       await cdp.send('Page.navigate', { url: `${origin}/install` })
       await sleep(1500)

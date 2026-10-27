@@ -9,6 +9,8 @@ const state = {
   capabilities: null,
   catalog: null,
   pendingProvider: null,
+  pendingVoice: null,
+  voices: null,
   ws: null,
   wsReady: false,
   reconnect: 0,
@@ -1424,6 +1426,14 @@ function voiceSettingsHtml(settings) {
             </select>
           </label>
         </div>
+        <div class="voice-presets" role="group" aria-label="语音识别快速预设">
+          <span class="voice-presets-label">快速预设</span>
+          <button class="voice-preset" type="button" data-voice-preset="local-faster-whisper">本机</button>
+          <button class="voice-preset" type="button" data-voice-preset="siliconflow-sensevoice">硅基流动</button>
+          <button class="voice-preset" type="button" data-voice-preset="groq-whisper">Groq</button>
+          <button class="voice-preset" type="button" data-voice-preset="openai-whisper">OpenAI</button>
+          <a class="voice-presets-more" href="/providers#voice" target="_blank" rel="noopener">全部语音服务 ↗</a>
+        </div>
         <div class="voice-local-summary">${settingsDot(true)}<span>本地 <b>${escapeHtml(asr.local?.model || '—')}</b> <small>${escapeHtml(asr.local?.label || '')}</small></span></div>
         <div class="voice-remote" data-voice-remote="asr" ${asrActive ? '' : 'hidden'}>
           <label class="settings-field"><span>服务商</span>
@@ -1460,6 +1470,14 @@ function voiceSettingsHtml(settings) {
               <option value="remote" ${ttsActive ? 'selected' : ''}>远端 / Edge TTS</option>
             </select>
           </label>
+        </div>
+        <div class="voice-presets" role="group" aria-label="语音合成快速预设">
+          <span class="voice-presets-label">快速预设</span>
+          <button class="voice-preset" type="button" data-voice-preset="local-piper">本机 Piper</button>
+          <button class="voice-preset" type="button" data-voice-preset="edge-tts">Edge</button>
+          <button class="voice-preset" type="button" data-voice-preset="siliconflow-cosyvoice">硅基流动</button>
+          <button class="voice-preset" type="button" data-voice-preset="openai-tts">OpenAI</button>
+          <a class="voice-presets-more" href="/providers#voice" target="_blank" rel="noopener">全部语音服务 ↗</a>
         </div>
         <div class="voice-local-summary">${settingsDot(true)}<span>本地 <b>${escapeHtml((tts.local?.voice || '').split('/').pop() || '—')}</b> <small>${escapeHtml(tts.local?.label || '')}</small></span></div>
         <div class="voice-remote" data-voice-remote="tts" ${ttsActive ? '' : 'hidden'}>
@@ -2180,7 +2198,11 @@ function bindVoiceSettings() {
           : 'OpenAI 兼容使用 /audio/* 路径；Groq、硅基流动、OpenRouter 等按各自模型与音频能力选择。'
     }
   }
+  $$('[data-voice-preset]').forEach(button => {
+    button.addEventListener('click', () => { void applyVoiceGuide(button.dataset.voicePreset) })
+  })
   for (const kind of ['asr', 'tts']) {
+    $(`#${kind}-key`)?.addEventListener('input', () => { state.pendingVoice = null }, { once: true })
     const source = $(`#${kind}-source`)
     source?.addEventListener('change', () => {
       sync(kind)
@@ -2195,6 +2217,7 @@ function bindVoiceSettings() {
     syncAdapter(kind)
   }
   $('#voice-save')?.addEventListener('click', async event => {
+    state.pendingVoice = null
     const button = event.currentTarget
     const result = $('#voice-result')
     const original = button.textContent
@@ -2265,6 +2288,7 @@ function renderSettings(options = {}) {
     const body = $('.settings-modal .modal-body')
     if (body) body.scrollTop = scrollTop
     applyPendingProvider()
+    applyPendingVoice()
   })
 }
 
@@ -2499,6 +2523,87 @@ async function loadCatalog() {
     state.catalog = []
   }
   return state.catalog
+}
+
+async function loadVoiceCatalog() {
+  if (Array.isArray(state.voices) && state.voices.length) return state.voices
+  try {
+    const data = await api('/api/voice/catalog', { timeoutMs: 15_000 })
+    state.voices = Array.isArray(data.voices) ? data.voices : []
+  } catch {
+    state.voices = []
+  }
+  return state.voices
+}
+
+const VOICE_REGION_LABEL = { cn: '国内直连', global: '国际', local: '本机 / 自建' }
+
+async function applyVoiceGuide(id, options = {}) {
+  const catalog = await loadVoiceCatalog()
+  const entry = catalog.find(item => item.id === id)
+  if (!entry) {
+    appendMessage('system', '没有找到这个语音服务，请到「语音服务」页面重新选择。')
+    return
+  }
+  if ($('#modal').hidden) await showSettings({ tab: 'voice' })
+  else activateSettingsTab('voice')
+  // Self-hosted presets are "local" in the catalogue but still need the remote
+  // source switch: they talk HTTP to a server that happens to be on loopback.
+  const remote = Boolean(entry.baseUrl)
+  if (!remote) {
+    const source = $(`#${entry.kind}-source`)
+    if (source) {
+      source.value = 'local'
+      source.dispatchEvent(new Event('change', { bubbles: true }))
+    }
+    const feedback = $('#voice-result')
+    if (feedback) {
+      feedback.textContent = `「${entry.name}」是本地引擎：保持“本地引擎”即可，保存后生效`
+      feedback.className = 'settings-feedback ok'
+    }
+    if (options.focus !== false) $('#voice-save')?.focus({ preventScroll: true })
+    return
+  }
+  state.pendingVoice = entry
+  applyPendingVoice()
+}
+
+function applyPendingVoice() {
+  const entry = state.pendingVoice
+  if (!entry) return
+  const source = $(`#${entry.kind}-source`)
+  if (!source) return
+  const setValue = (selector, value, event = 'input') => {
+    const element = $(selector)
+    if (!element) return
+    element.value = value
+    element.dispatchEvent(new Event(event, { bubbles: true }))
+  }
+  source.value = 'remote'
+  source.dispatchEvent(new Event('change', { bubbles: true }))
+  setValue(`#${entry.kind}-adapter`, entry.adapter || 'auto', 'change')
+  if (entry.kind === 'asr') {
+    setValue('#asr-transport', entry.transport || 'http', 'change')
+    setValue('#asr-language', entry.language || 'zh')
+  }
+  setValue(`#${entry.kind}-base`, entry.baseUrl)
+  setValue(`#${entry.kind}-model`, entry.model)
+  if (entry.kind === 'tts') setValue('#tts-voice', entry.voice || '')
+  markSettingsDirty('voice')
+  const card = document.querySelector(`[data-voice-card="${entry.kind}"]`)
+  card?.scrollIntoView({ block: 'center', behavior: 'smooth' })
+  card?.classList.add('flash')
+  setTimeout(() => card?.classList.remove('flash'), 1800)
+  const key = $(`#${entry.kind}-key`)
+  if (entry.adapter === 'edge' || !entry.keyUrl) key?.focus({ preventScroll: true })
+  else key?.focus({ preventScroll: true })
+  const result = $('#voice-result')
+  if (result) {
+    result.textContent = `已填入「${entry.name}」（${VOICE_REGION_LABEL[entry.region] || entry.region}）：粘贴 API Key 后点“保存语音设置”`
+    result.className = 'settings-feedback ok'
+  }
+  // Typing a key or saving ends the pending prefill; a re-render would
+  // otherwise blank the fields before the user gets there.
 }
 
 function capabilityListHtml() {
@@ -3018,6 +3123,11 @@ async function main() {
   // Capabilities decide which quick actions exist; fetch them once immediately
   // so a macOS/Windows user never sees a button that cannot work.
   void refreshStatus()
+  const pendingVoice = new URLSearchParams(location.search).get('voice')
+  if (pendingVoice) {
+    history.replaceState(null, '', location.pathname)
+    setTimeout(() => { void applyVoiceGuide(pendingVoice) }, 500)
+  }
   const pendingProvider = new URLSearchParams(location.search).get('provider')
   if (pendingProvider) {
     // The guide hands off with ?provider=<id>; drop it from the URL so a refresh

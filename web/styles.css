@@ -783,6 +783,17 @@ kbd { font-family: var(--mono); font-size: 9px; border: 1px solid var(--line); b
 .voice-local-summary { display: flex; gap: 7px; align-items: baseline; color: var(--muted); font-size: 11px; margin-bottom: 4px; }
 .voice-local-summary b { color: var(--text); font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .voice-remote[hidden] { display: none; }
+.voice-presets { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin: 4px 0 8px; }
+.voice-presets-label { font-size: 10px; letter-spacing: .08em; text-transform: uppercase; color: var(--faint); }
+.voice-preset {
+  border: 1px solid var(--line); background: transparent; color: var(--muted);
+  border-radius: 999px; padding: 3px 9px; font: inherit; font-size: 11px; cursor: pointer;
+}
+.voice-preset:hover { color: var(--text); border-color: rgb(var(--accent-rgb) / .4); }
+.voice-preset:focus-visible { outline: 2px solid var(--cyan); outline-offset: 1px; }
+.voice-presets-more { font-size: 11px; color: var(--cyan); text-decoration: none; margin-left: auto; }
+.voice-presets-more:hover { text-decoration: underline; }
+.voice-card.flash { animation: provider-flash 1.6s ease; }
 .voice-remote label { margin-top: 6px; }
 .voice-remote .model-form-note { margin-top: 6px; }
 @media (max-width: 720px) { .voice-grid { grid-template-columns: 1fr; } }

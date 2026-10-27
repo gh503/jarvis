@@ -9,6 +9,7 @@ import { mkdir, readFile, rm, stat } from 'node:fs/promises'
 import { extname, join, resolve, sep } from 'node:path'
 import { capabilities, type Capabilities } from './platform.ts'
 import { providerCatalog } from './model/catalog.ts'
+import { voiceCatalog } from './voice/catalog.ts'
 import { WebSocket, WebSocketServer } from 'ws'
 import type { ActionManager } from './actions.ts'
 import type { ModelRouter } from './model/router.ts'
@@ -472,6 +473,11 @@ export class JarvisServer {
     // It contains no user data — only provider names, public URLs and steps.
     if (request.method === 'GET' && path === '/api/providers/catalog') {
       sendJson(response, 200, { providers: providerCatalog(), platform: this.caps })
+      return
+    }
+
+    if (request.method === 'GET' && path === '/api/voice/catalog') {
+      sendJson(response, 200, { voices: voiceCatalog(), platform: this.caps })
       return
     }
 

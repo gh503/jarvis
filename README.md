@@ -30,6 +30,10 @@ npm run doctor
 npm run app          # starts the server and opens it as a desktop window
 ```
 
+The same guide covers speech: `/providers#voice` lists nine ASR and eight TTS
+presets (local, mainland, international) and hands any of them into
+设置 → 语音 with the adapter, endpoint, model and voice already filled.
+
 `npm run app` uses the Chromium `--app=` mode, so there is no Electron and no
 installer; `npm start` alone still serves <http://127.0.0.1:3081>. First-run
 users who do not want to configure anything by hand should open
@@ -65,7 +69,8 @@ bash scripts/gen-tls.sh 100.x.y.z            # optional self-signed LAN cert
 See [operations.md](docs/operations.md) for privacy, remote/TLS, failure
 modes and the actual latency measurements on this machine, and
 [providers-guide.md](docs/providers-guide.md) for per-provider setup
-(domestic and international, with key links and pricing notes).
+(domestic and international, with key links and pricing notes), and
+[voice-providers.md](docs/voice-providers.md) for ASR/TTS providers.
 See [implementation-status.md](docs/implementation-status.md) for what is
 implemented vs. deliberately deferred. Model protocols are documented in
 [models.md](docs/models.md); voice transports and the WebSocket contract
