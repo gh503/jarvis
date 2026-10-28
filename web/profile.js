@@ -18,13 +18,13 @@ const dialog = el('dialog', 'profile-dialog'); dialog.id = 'profile-dialog'; dia
 const rail = el('aside', 'profile-rail')
 const brand = el('div', 'profile-brand'); const brandCopy = el('div'); brandCopy.append(el('strong', '', 'JARVIS'), el('span', '', 'PROFILE')); brand.append(el('span', 'profile-mark', 'J'), brandCopy)
 const nav = el('nav', 'profile-nav'); nav.setAttribute('aria-label', '资料分区导航')
-const railFoot = el('div', 'profile-rail-foot'); railFoot.append(el('p', '', '由你确认 · 随时纠正'), button('关闭资料', () => closeProfile(), 'profile-close-link'))
+const railFoot = el('div', 'profile-rail-foot'); const profileShortcut = el('p', 'profile-shortcut'); profileShortcut.append('按 ', el('kbd', '', 'Esc'), ' 关闭资料'); railFoot.append(el('p', '', '由你确认 · 随时纠正'), profileShortcut, button('关闭资料', () => closeProfile(), 'profile-close-link'))
 rail.append(brand, nav, railFoot)
 const main = el('div', 'profile-main')
 const header = el('header', 'profile-header')
 const heading = el('div'); heading.append(el('p', 'profile-eyebrow', 'PROFILE / UNDERSTANDING'))
 const title = el('h2', '', '对我的了解'); title.id = 'profile-title'; heading.append(title, el('p', 'profile-subtitle', '查看 Jarvis 记住的资料，决定如何使用，也可以随时纠正。'))
-const closeButton = button('关闭', () => closeProfile(), 'profile-close'); closeButton.setAttribute('aria-label', '关闭对我的了解'); closeButton.title = '关闭（Esc）'
+const closeButton = button('关闭', () => closeProfile(), 'profile-close'); closeButton.setAttribute('aria-label', '关闭对我的了解'); closeButton.title = '关闭当前面板（Esc）'
 header.append(heading, closeButton)
 const status = el('p', 'profile-status'); status.setAttribute('role', 'status'); status.setAttribute('aria-live', 'polite')
 const body = el('div', 'profile-body')

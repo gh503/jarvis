@@ -202,7 +202,7 @@ Shell 依赖 Linux `/usr/bin/bwrap` 和可用的隔离能力；探测失败时�
 ## 4. PWA 与离线
 
 `web/sw.js` 是 network-first 的 shell 缓存，版本号在 `CACHE` 常量（当前
-`jarvis-shell-v34`）：
+`jarvis-shell-v36`）：
 
 - 只缓存 GET 同源请求；`/api/*`、`/ws`、带 `token` 参数的 URL 一律不缓存。
 - 导航请求离线时回退到 `/`；脚本/样式等非导航请求离线返回 503，不会把 HTML 当 JS。
@@ -238,8 +238,9 @@ Shell 依赖 Linux `/usr/bin/bwrap` 和可用的隔离能力；探测失败时�
 
 ## 6. 键盘
 
-- `Enter` 发送，`Shift+Enter` 换行；输入框聚焦时麦克风按钮可用 `Space` 切换录音。
+- 发送快捷键可在设置 → 外观中选择：`Enter` 发送、`Shift+Enter` 换行，或 `Ctrl+Enter` 发送、`Enter` 换行；输入框聚焦时麦克风按钮可用 `Space` 切换录音。
 - `#orb`（状态球）同样可聚焦，`Enter` / `Space` 切换录音。
-- `Esc` 关闭最上层弹层（动作确认 → 设置 → 大图预览）。
+- `Esc` 是固定快捷键，不可修改，用于关闭当前最上层面板（动作确认 → 设置 / 对我的了解 / 观察台 → 大图预览）。
+- 设置页和观察台的页签支持方向键、`Home`、`End` 导航；这些是键盘导航，不属于可配置快捷键。
 - 所有弹层都有 Tab 焦点陷阱，关闭后焦点回到打开它的控件；
   观察台打开时主界面 `inert`。
