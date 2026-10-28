@@ -16,7 +16,8 @@ jobs:
           $root = Join-Path $env:RUNNER_TEMP ('jarvis-probe-' + [Guid]::NewGuid())
           New-Item -ItemType Directory -Path $root | Out-Null
           $node = (Get-Command node.exe).Source
-          $names = @('plain', 'with spaces', '中文', "package ' & `$ folder")
+          $unicode = [string][char]0x4E2D + [char]0x6587
+          $names = @('plain', 'with spaces', $unicode, "package ' & `$ folder", ($unicode + " package ' & `$ folder"))
           foreach ($name in $names) {
             $dir = Join-Path $root $name
             New-Item -ItemType Directory -Path $dir | Out-Null
