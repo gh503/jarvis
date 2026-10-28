@@ -92,7 +92,11 @@ export async function acquireRuntimeLifecycle(dataDir: string): Promise<RuntimeL
   let shutdown: (() => void | Promise<void>) | undefined
   try {
     if (process.platform !== 'win32') {
-      socketDir = mkdtempSync(join(tmpdir(), 'jarvis-'))
+      // sockaddr_un is limited to 104 bytes on macOS (108 on Linux). Keep
+      // normal process temp configuration; only IPC falls back to a short root.
+      let socketRoot = tmpdir()
+      if (Buffer.byteLength(join(socketRoot, 'jarvis-XXXXXX', 'control.sock')) >= 100) socketRoot = realpathSync('/tmp')
+      socketDir = mkdtempSync(join(socketRoot, 'jarvis-'))
       chmodSync(socketDir, 0o700)
     }
     const endpoint = process.platform === 'win32' ? `\\\\.\\pipe\\jarvis-${instanceId}` : join(socketDir!, 'control.sock')

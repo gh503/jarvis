@@ -3,6 +3,13 @@
 # ~/.local/share/jarvis or the user Python / npm prefixes.
 set -euo pipefail
 
+# This optional legacy local-model installer selects Linux x86_64 binaries.
+# Refuse other hosts before creating directories, installing packages or downloading.
+if [ "$(uname -s)" != "Linux" ] || [ "$(uname -m)" != "x86_64" ]; then
+  printf '%s\n' 'This optional installer supports Linux x86_64 only. Use the native Jarvis package and configure model/voice providers in Settings.' >&2
+  exit 1
+fi
+
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 DATA="${JARVIS_DATA_DIR:-$HOME/.local/share/jarvis}"
 MODELS="$DATA/models"

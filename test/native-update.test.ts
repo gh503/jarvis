@@ -47,7 +47,10 @@ test('real packaged candidate starts with separate home and data and shuts down'
   }
   await inventory(next)
   const text = JSON.stringify(manifest); await writeFile(join(next, 'manifest.json'), text)
-  const transaction = join(root, 'real-transaction')
+  // POSIX IPC must work even when the transaction exceeds sockaddr_un's path budget.
+  const deep = process.platform === 'win32' ? root : join(root, 'deep-transaction-parent-'.repeat(5))
+  if (deep !== root) await mkdir(deep)
+  const transaction = join(deep, 'real-transaction')
   await stage(transaction, old, oldHash, next, digest(text))
   assert.equal((await health(transaction)).status, 'healthy')
   assert.equal((await rollback(transaction)).status, 'rolled-back')

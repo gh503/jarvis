@@ -128,13 +128,18 @@ async function probeCandidate(identity: Identity, data: string): Promise<void> {
   await new Promise<void>((ok, fail) => server.close(error => error ? fail(error) : ok()))
   // Port reservation has a race: a collision must fail readiness, never reuse another instance.
   const env: NodeJS.ProcessEnv = { PATH: process.env.PATH, SystemRoot: process.env.SystemRoot, WINDIR: process.env.WINDIR, HOME: home, USERPROFILE: home, APPDATA: home, LOCALAPPDATA: home, TMPDIR: temporary, TMP: temporary, TEMP: temporary, JARVIS_DATA_DIR: data, JARVIS_HOST: '127.0.0.1', JARVIS_PORT: String(port), JARVIS_AUTH_TOKEN: randomBytes(32).toString('hex'), JARVIS_WEB_DIR: join(identity.root, 'web'), JARVIS_APP: '1', JARVIS_PYTHON: join(data, 'disabled-python'), JARVIS_WHISPER_BIN: join(data, 'disabled-whisper'), JARVIS_PIPER_BIN: join(data, 'disabled-piper'), JARVIS_OLLAMA_URL: 'http://127.0.0.1:1' }
-  const child = spawn(join(identity.root, 'runtime', identity.platform === 'win32' ? 'node.exe' : 'node'), ['--experimental-transform-types', join(identity.root, 'src/main.ts')], { cwd: data, env, stdio: 'ignore' })
-  let failure: Error | undefined, exited = false
-  const done = new Promise<void>(ok => { child.once('error', error => { failure = error; exited = true; ok() }); child.once('exit', () => { exited = true; ok() }) })
+  const child = spawn(join(identity.root, 'runtime', identity.platform === 'win32' ? 'node.exe' : 'node'), ['--experimental-transform-types', join(identity.root, 'src/main.ts')], { cwd: data, env, stdio: ['ignore', 'ignore', 'pipe'] })
+  let failure: Error | undefined, exited = false, exitDetail = 'unknown', diagnostic = ''
+  // Keep bounded stderr only in memory; expose allowlisted error codes, never child text/secrets.
+  child.stderr.on('data', (chunk: Buffer) => { diagnostic = (diagnostic + chunk.toString()).slice(-8192) })
+  const done = new Promise<void>(ok => { child.once('error', error => { failure = error; exited = true; ok() }); child.once('exit', (code, signal) => { exitDetail = `code=${code}, signal=${signal}`; exited = true; ok() }) })
   try {
     const deadline = Date.now() + 45_000
     while (Date.now() < deadline) {
-      if (exited) throw failure ?? new Error('Candidate exited before readiness')
+      if (exited) {
+        const codes = [...new Set(diagnostic.match(/\b(?:EACCES|EPERM|EADDRINUSE|ENAMETOOLONG|ENOENT|EINVAL|ERR_[A-Z_]+)\b/g) ?? [])].slice(0, 8)
+        throw failure ?? new Error(`Candidate exited before readiness (${exitDetail}; error codes: ${codes.join(', ') || 'none'})`)
+      }
       const status = await requestRuntime(data)
       if (status?.state === 'ready') {
         if (status.url !== `http://127.0.0.1:${port}/`) throw new Error('Candidate health URL mismatch')
