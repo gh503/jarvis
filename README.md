@@ -1,5 +1,9 @@
 # Jarvis v2 runtime
 
+**产品官网：[Jarvis — 让日常工作少一点重复](https://gh503.github.io/jarvis/)** · 面向开发者、办公用户与一人公司，包含场景介绍与安装入门。官网通过 GitHub Pages 发布，仅展示公开产品信息，不连接用户运行实例。
+
+官网源码位于 `site/`；修改该目录并推送到 `main` 后，`Product website` 工作流会自动发布。也可在 GitHub Actions 中手动运行该工作流。
+
 Install it as an app and hand it to someone who has never opened a terminal:
 [getting-started.md](docs/getting-started.md) is the five-minute path, and
 [distribution.md](docs/distribution.md) explains the three delivery forms
