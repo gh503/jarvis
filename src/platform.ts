@@ -4,9 +4,8 @@
  * Jarvis started as a Linux-only desktop assistant: screen capture goes through
  * the GNOME portal helper, the camera is read from /dev/video0, notifications
  * use notify-send and autostart is a systemd user unit. On macOS and Windows the
- * server still runs — chat, memory, reminders, files and remote providers all
- * work — but those four features are unavailable, and the UI must say so
- * instead of failing silently.
+ * core server runs natively. Scoped external filesystem and sandbox capabilities
+ * must be reported separately; an OS label is never proof of feature readiness.
  */
 import { existsSync } from 'node:fs'
 import { join } from 'node:path'
@@ -73,8 +72,8 @@ export function capabilities(rootDir: string): Capabilities {
   const localTts = piper || edgeTts
   if (!localTts) reasons.localTts = '需要 piper 或 edge-tts'
 
-  const notify = os === 'linux' && commandExists('notify-send')
-  if (!notify) reasons.notify = os === 'linux' ? '缺少 notify-send' : '桌面通知目前只支持 Linux'
+  const notify = os === 'linux' ? commandExists('notify-send') : os === 'darwin' && existsSync('/usr/bin/osascript')
+  if (!notify) reasons.notify = os === 'linux' ? '缺少 notify-send' : os === 'win32' ? 'Windows 桌面通知需要已注册的应用通知通道；当前请在 Jarvis 内查看提醒' : '缺少系统通知支持'
 
   const autostart = os === 'linux' && commandExists('systemctl')
   if (!autostart) reasons.autostart = '开机自启目前只支持 Linux（systemd --user）'

@@ -47,7 +47,7 @@ export class ScreenCapture {
     const output = join(outputDir, `screen-${Date.now()}.png`)
 
     try {
-      await runProcess('python3', [this.helper, '--output', output, '--timeout', String(Math.floor(timeoutMs / 1000))], {
+      await runProcess(this.config.voice.pythonBin, [this.helper, '--output', output, '--timeout', String(Math.floor(timeoutMs / 1000))], {
         timeoutMs: timeoutMs + 5000,
         maxOutputBytes: 500_000,
       })

@@ -72,6 +72,10 @@
     advanced.append(node('p', 'Shell 的文件工作区仅限上方输出目录，用于生成文件；文件工具的只读、可写授权目录不会挂载到 Shell。沙箱禁用网络。取消任务不会撤销已完成的写入。', 'lt-help'))
     if (!capabilities.shellAvailable) { advanced.open = true; advanced.append(node('p', `Shell 不可用：${text(capabilities.reason || '当前环境未提供沙箱能力')}`, 'lt-warning')) }
     const skills = field(advanced, '技能目录（可选，绝对路径）', settings.skillsDir)
+    if (capabilities.filesystem?.supported === false) {
+      reads.disabled = true; writes.disabled = true; skills.disabled = true
+      controls.prepend(node('p', text(capabilities.filesystem.reason || '此平台暂未提供安全的本地文件与技能访问。'), 'lt-warning'))
+    }
     const actions = node('div', undefined, 'lt-actions'), save = node('button', '保存授权', 'lt-button'); save.type = 'submit'; save.disabled = conflict
     actions.append(save, button('丢弃草稿并重新加载', () => { if (!saving) void load(true) })); controls.append(actions)
     form.addEventListener('input', () => { dirty = true }); form.addEventListener('change', () => { dirty = true })

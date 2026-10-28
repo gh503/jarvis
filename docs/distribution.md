@@ -68,21 +68,27 @@ npm run package                          # 为当前系统/架构打包
 npm run package -- --target=win32        # 会明确拒绝：不能跨系统打包
 ```
 
-产物：`dist/jarvis-<os>-<arch>.tar.gz`（有 `zip` 命令时用 `.zip`），包含：
+产物：`dist/jarvis-<version>-<os>-<arch>.tar.gz`（Linux/macOS 使用系统 tar；Windows 使用系统 PowerShell Compress-Archive 生成 `.zip`），以及归档的 `.sha256` 校验文件。每次在全新临时目录生成归档，再替换同名旧版本，不保留旧 ZIP 条目。包含：
 
 ```
-jarvis-<os>-<arch>/
-├── jarvis            # 或 Jarvis.cmd（Windows）
-├── 双击这里.txt
-├── runtime/node      # 当前系统的 Node 运行时副本
-├── node_modules/     # 只有 ws 一个依赖
-├── src/  web/  scripts/  docs/
-└── package.json  README.md
+jarvis-<version>-<os>-<arch>/
+├── jarvis            # macOS 另有 Jarvis.command；Windows 有 Jarvis.cmd / Jarvis.ps1
+├── PORTABLE.txt
+├── runtime/node      # Windows 为 node.exe；附完整 Node LICENSE
+├── node_modules/     # 全新 npm ci --omit=dev --ignore-scripts 安装的锁定生产依赖
+├── src/  web/  scripts/  docs/  # 仅 Git 跟踪的公开文件白名单
+├── manifest.json     # 源 SHA/tag、运行时身份、每个其他文件的 SHA256/大小
+├── THIRD-PARTY-LICENSES.json
+└── package.json  package-lock.json  README.md  LICENSE
 ```
 
 要点：
 
-- **必须逐系统打包**：Node 运行时与目标 OS 绑定，不能在 Linux 上产出 Windows 包。
+- **必须逐系统打包**：使用当前 Node 24 运行时，支持 Linux/macOS/Windows 的 x64/arm64，目标 OS 与架构必须匹配构建机。不能在 Linux 上产出 Windows 包。
+- 打包不启动服务器或浏览器，只执行运行时身份、生产依赖导入和内存 SQLite 检查。无需本地 `node_modules`；必须能访问 npm registry 和精确 Node 版本的官方 LICENSE。
+- 环境变量 `JARVIS_RELEASE_VERSION` 指定产物版本；`JARVIS_SOURCE_SHA` 必须等于当前 HEAD；`JARVIS_RELEASE_TAG` 必须为 `v<version>` 且已有本地标签指向 HEAD。提供 SHA 或 tag 时要求已跟踪文件无修改，供发布 CI 精确绑定来源。不提供时使用 package 版本、当前 HEAD，并在清单标记 dirty。
+- 新增运行时源文件必须先纳入 Git 跟踪。`.env`、私有数据目录、未跟踪文件、符号链接、开发依赖和环境中的 npm 配置不会进入应用包；依赖中的开发用点文件统一移除，避免 Windows 压缩工具遗漏后造成清单不一致。
+- 归档仍是**未签名便携包**。签名安装器需要平台工具链、证书与凭据；本命令不声称生成签名安装器。
 - 体积以 Node 二进制为主（约 100 MB 量级），解压即用，不写注册表。
 - 数据目录默认在用户主目录（`~/.local/share/jarvis`），不污染便携目录，
   所以升级只需替换程序文件。

@@ -5,6 +5,7 @@ import { homedir } from 'node:os'
 import { dirname } from 'node:path'
 import type { EventBus } from './events.ts'
 import type { Logger } from './logger.ts'
+import { commandExists, runProcess } from './util/process.ts'
 
 export type ActionKind = 'open-url' | 'open-app'
 export type ActionStatus = 'proposed' | 'approved' | 'executed' | 'denied' | 'expired' | 'failed'
@@ -38,6 +39,32 @@ const APPS: Record<string, AppTarget> = {
   browser: { command: 'google-chrome', args: ['--new-window'], label: '浏览器' },
 }
 
+export interface ActionExecution {
+  command: string
+  args: string[]
+  env?: NodeJS.ProcessEnv
+}
+
+/** Targets remain data; neither URL text nor logical app names become shell code. */
+export function actionExecution(kind: ActionKind, target: string, platform: NodeJS.Platform = process.platform): ActionExecution {
+  if (kind === 'open-url' && !isAllowedUrl(target)) throw new Error('只允许打开无凭据的 http/https 网页。')
+  if (kind === 'open-app' && !Object.hasOwn(APPS, target)) throw new Error(`不在允许打开的应用列表里：${target}`)
+  if (kind !== 'open-url' && kind !== 'open-app') throw new Error('不支持的动作类型')
+  if (platform === 'linux') return kind === 'open-url' ? { command: 'xdg-open', args: [target] } : APPS[target]!
+  if (platform === 'darwin') {
+    return { command: '/usr/bin/open', args: kind === 'open-url' ? [target] : target === 'files' ? [homedir()] : ['-a', 'Safari'] }
+  }
+  if (platform === 'win32') {
+    const script = "$ErrorActionPreference = 'Stop'; $info = New-Object System.Diagnostics.ProcessStartInfo; $info.FileName = $env:JARVIS_OPEN_TARGET; $info.UseShellExecute = $true; [System.Diagnostics.Process]::Start($info) | Out-Null"
+    return {
+      command: 'powershell.exe',
+      args: ['-NoLogo', '-NoProfile', '-NonInteractive', '-EncodedCommand', Buffer.from(script, 'utf16le').toString('base64')],
+      env: { ...process.env, JARVIS_OPEN_TARGET: kind === 'open-url' ? target : target === 'files' ? homedir() : 'https://www.google.com/' },
+    }
+  }
+  throw new Error(`当前平台不支持打开应用或网页：${platform}`)
+}
+
 const APP_ALIASES: Array<[RegExp, string]> = [
   [/文件管理器|文件管理|我的文件|文件夹/, 'files'],
   [/浏览器|chrome|谷歌浏览器/, 'browser'],
@@ -56,7 +83,7 @@ export class ActionManager {
   private readonly actions = new Map<string, ActionRequest>()
   private readonly now: () => Date
   private readonly ttlMs: number
-  private readonly runner: (command: string, args: string[]) => Promise<void>
+  private readonly runner: (command: string, args: string[], env?: NodeJS.ProcessEnv) => Promise<void>
 
   constructor(
     private readonly options: {
@@ -65,12 +92,18 @@ export class ActionManager {
       auditFile: string
       ttlMs?: number
       now?: () => Date
-      runner?: (command: string, args: string[]) => Promise<void>
+      platform?: NodeJS.Platform
+      runner?: (command: string, args: string[], env?: NodeJS.ProcessEnv) => Promise<void>
+      commandAvailable?: (command: string) => Promise<boolean>
     },
   ) {
     this.now = options.now ?? (() => new Date())
     this.ttlMs = options.ttlMs ?? 60_000
-    this.runner = options.runner ?? (async (command, args) => {
+    this.runner = options.runner ?? (async (command, args, env) => {
+      if (command === 'powershell.exe' || command === '/usr/bin/open') {
+        await runProcess(command, args, { env, timeoutMs: 15_000 })
+        return
+      }
       await new Promise<void>((resolve, reject) => {
         const child = spawn(command, args, { detached: true, stdio: 'ignore' })
         child.once('spawn', () => {
@@ -90,7 +123,7 @@ export class ActionManager {
     }
     let label = input.label?.trim() ?? ''
     if (input.kind === 'open-app') {
-      const app = APPS[target]
+      const app = Object.hasOwn(APPS, target) ? APPS[target] : undefined
       if (!app) throw new Error(`不在允许打开的应用列表里：${target}`)
       label = label || app.label
     } else {
@@ -155,12 +188,11 @@ export class ActionManager {
     action.status = 'approved'
     this.options.bus?.emit('action.approved', { action })
     try {
-      if (action.kind === 'open-url') await this.runner('xdg-open', [action.target])
-      else {
-        const app = APPS[action.target]
-        if (!app) throw new Error(`不在允许打开的应用列表里：${action.target}`)
-        await this.runner(app.command, app.args)
-      }
+      const execution = actionExecution(action.kind, action.target, this.options.platform)
+      // An injected runner owns availability, unless the caller supplies a probe.
+      const available = this.options.commandAvailable ?? (this.options.runner ? undefined : commandExists)
+      if (available && !(await available(execution.command))) throw new Error(`打开动作不可用：缺少 ${execution.command}`)
+      await this.runner(execution.command, execution.args, execution.env)
       action.status = 'executed'
       action.executedAt = this.now().toISOString()
       this.options.bus?.emit('action.executed', { action })

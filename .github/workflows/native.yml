@@ -21,4 +21,11 @@ jobs:
       - run: npm ci
       - run: npm run typecheck
       - name: Native lifecycle and configuration acceptance
-        run: node --experimental-transform-types --test test/config.test.ts test/runtime-lifecycle.test.ts
+        run: node --experimental-transform-types --test test/config.test.ts test/runtime-lifecycle.test.ts test/native-actions.test.ts test/worker-utf8.test.ts test/packaging.test.ts
+      - name: Build self-contained native distribution
+        run: npm run package
+      - uses: actions/upload-artifact@v4
+        with:
+          name: jarvis-native-${{ runner.os }}-${{ runner.arch }}
+          path: dist/*
+          if-no-files-found: error

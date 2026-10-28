@@ -646,7 +646,7 @@ export class JarvisServer {
     if (path === '/api/local-tools' || path.startsWith('/api/local-tools/')) {
       const { localSettings, taskTools, fileTools, sessions } = this.deps
       if (!localSettings || !taskTools || !fileTools || !sessions) throw new HttpError(503, '本地工具未启用')
-      const snapshot = () => ({ settings: localSettings.snapshot(), capabilities: taskTools.status(), questions: taskTools.pendingQuestions() })
+      const snapshot = () => ({ settings: localSettings.snapshot(), capabilities: { ...taskTools.status(), filesystem: fileTools.capabilities?.() }, questions: taskTools.pendingQuestions() })
       const requireSession = (id: string | undefined): string => {
         if (!id) throw new HttpError(400, 'sessionId 必填')
         if (!sessions.get(id)) throw new HttpError(404, '会话不存在或已删除')

@@ -45,7 +45,7 @@ export class OcrClient {
     this.ready = new Promise<void>((resolve, reject) => {
       const child = spawn(this.options.pythonBin, [this.options.script], {
         stdio: ['pipe', 'pipe', 'pipe'],
-        env: { ...process.env, PYTHONUNBUFFERED: '1' },
+        env: { ...process.env, PYTHONUNBUFFERED: '1', PYTHONUTF8: '1', PYTHONIOENCODING: 'utf-8' },
       })
       this.child = child
       let settled = false
