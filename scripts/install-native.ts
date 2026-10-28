@@ -2,7 +2,8 @@
 /** Per-user integrations only: the verified portable package stays in place. */
 import { createHash } from 'node:crypto'
 import { execFileSync } from 'node:child_process'
-import { lstat, mkdir, readFile, realpath, rmdir, unlink, writeFile } from 'node:fs/promises'
+import { constants } from 'node:fs'
+import { copyFile, lstat, mkdir, mkdtemp, readFile, realpath, rmdir, unlink, writeFile } from 'node:fs/promises'
 import { homedir } from 'node:os'
 import { dirname, isAbsolute, join, resolve } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
@@ -56,9 +57,14 @@ export async function validatePackage(root: string, platform: Platform, arch: st
 }
 
 // Fixed code only. Paths and argv are passed as environment data, never interpolated.
-export const POWERSHELL_LINK = `$ErrorActionPreference = 'Stop'\n$shell = New-Object -ComObject WScript.Shell\n$link = $shell.CreateShortcut($env:JARVIS_LINK_PATH)\n$link.TargetPath = $env:JARVIS_LINK_TARGET\n$link.Arguments = $env:JARVIS_LINK_ARGS\n$link.WorkingDirectory = $env:JARVIS_LINK_CWD\n$link.Description = 'Jarvis portable per-user launcher'\n$link.Save()\n`
+export const POWERSHELL_LINK = `$ErrorActionPreference = 'Stop'\n$ProgressPreference = 'SilentlyContinue'\n$stage = 'create COM object'\ntry {\n$shell = New-Object -ComObject WScript.Shell\n$stage = 'create shortcut'\n$link = $shell.CreateShortcut($env:JARVIS_LINK_PATH)\n$stage = 'set target'\n$link.TargetPath = $env:JARVIS_LINK_TARGET\n$stage = 'set arguments'\n$link.Arguments = $env:JARVIS_LINK_ARGS\n$stage = 'set working directory'\n$link.WorkingDirectory = $env:JARVIS_LINK_CWD\n$link.Description = 'Jarvis portable per-user launcher'\n$stage = 'save shortcut'\n$link.Save()\n} catch {\n[Console]::Error.WriteLine(('Shortcut stage {0}: {1} (HRESULT {2})' -f $stage, $_.Exception.Message, $_.Exception.HResult))\nexit 1\n}\n`
 function runPowerShell(script: string, env: NodeJS.ProcessEnv): void {
-  execFileSync('powershell.exe', ['-NoLogo', '-NoProfile', '-NonInteractive', '-EncodedCommand', Buffer.from(script, 'utf16le').toString('base64')], { env: { ...process.env, ...env }, stdio: 'inherit' })
+  try {
+    execFileSync('powershell.exe', ['-NoLogo', '-NoProfile', '-NonInteractive', '-EncodedCommand', Buffer.from(script, 'utf16le').toString('base64')], { env: { ...process.env, ...env }, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] })
+  } catch (error) {
+    const failure = error as { status?: number; code?: string; stderr?: string }
+    throw new Error(`Windows shortcut creation failed (${failure.code ?? failure.status ?? 'unknown'}): ${failure.stderr?.trim() || 'PowerShell returned no diagnostic'}`)
+  }
 }
 function locations(options: InstallOptions) {
   for (const value of [options.home, options.root, ...(options.platform === 'win32' ? [options.appData, options.localAppData] : [])]) {
@@ -132,11 +138,20 @@ export async function nativeIntegration(options: InstallOptions, args: string[])
       for (const [index, path] of files.entries()) {
         if (index === 1 && !autostart) continue
         await mkdir(dirname(path), { recursive: true })
-        // Reserve exclusively before COM writes, so ordinary existing links are never replaced.
-        await writeFile(path, '', { flag: 'wx' })
-        created.push(path)
-        ;(options.runPowerShell ?? runPowerShell)(POWERSHELL_LINK, { JARVIS_LINK_PATH: path, JARVIS_LINK_TARGET: runtime, JARVIS_LINK_ARGS: [...argv, ...(index === 1 ? ['--no-open'] : [])].map(windowsQuote).join(' '), JARVIS_LINK_CWD: root })
-        if (!(await lstat(path)).size) throw new Error('PowerShell did not create a shortcut')
+        // COM must see a nonexistent path: a zero-byte reservation is not a valid .lnk.
+        // Publish exclusively after generation, so existing final links are never replaced.
+        const staging = await mkdtemp(join(dirname(path), '.jarvis-link-'))
+        const temporaryLink = join(staging, 'Jarvis.lnk')
+        try {
+          ;(options.runPowerShell ?? runPowerShell)(POWERSHELL_LINK, { JARVIS_LINK_PATH: temporaryLink, JARVIS_LINK_TARGET: runtime, JARVIS_LINK_ARGS: [...argv, ...(index === 1 ? ['--no-open'] : [])].map(windowsQuote).join(' '), JARVIS_LINK_CWD: root })
+          if (!(await lstat(temporaryLink)).size) throw new Error('PowerShell did not create a shortcut')
+          await copyFile(temporaryLink, path, constants.COPYFILE_EXCL)
+          created.push(path)
+        } finally {
+          if (dirname(staging) !== dirname(path) || dirname(temporaryLink) !== staging) throw new Error('Unsafe shortcut staging cleanup')
+          try { await unlink(temporaryLink) } catch (cleanup) { if ((cleanup as NodeJS.ErrnoException).code !== 'ENOENT') throw cleanup }
+          await rmdir(staging)
+        }
       }
     }
     const records = []

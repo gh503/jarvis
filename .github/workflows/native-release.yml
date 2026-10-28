@@ -1,0 +1,113 @@
+name: Native release artifacts
+
+on:
+  # GITHUB_TOKEN-created releases do not emit another workflow-triggering release event.
+  workflow_run:
+    workflows: [ci]
+    types: [completed]
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Exact published stable tag (vX.Y.Z); unsigned preview only'
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  resolve:
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (github.event.workflow_run.conclusion == 'success' &&
+       github.event.workflow_run.head_branch == 'main' &&
+       github.event.workflow_run.head_repository.full_name == github.repository &&
+       (github.event.workflow_run.event == 'push' || github.event.workflow_run.event == 'workflow_dispatch'))
+    runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.release.outputs.tag }}
+      version: ${{ steps.release.outputs.version }}
+      sha: ${{ steps.release.outputs.sha }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - name: Resolve published release and exact remote tag commit
+        id: release
+        run: node scripts/native-release.mjs resolve
+        env:
+          GH_TOKEN: ${{ github.token }}
+
+  build:
+    needs: resolve
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    env:
+      JARVIS_RELEASE_VERSION: ${{ needs.resolve.outputs.version }}
+      JARVIS_SOURCE_SHA: ${{ needs.resolve.outputs.sha }}
+      JARVIS_RELEASE_TAG: ${{ needs.resolve.outputs.tag }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.resolve.outputs.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: npm
+      - run: npm ci
+      - run: npm run typecheck
+      - name: Native and release acceptance
+        run: node --experimental-transform-types --test test/config.test.ts test/version.test.ts test/native-release.test.mjs test/runtime-lifecycle.test.ts test/native-actions.test.ts test/worker-utf8.test.ts test/packaging.test.ts test/private-directory.test.ts test/backup-portability.test.ts test/native-install.test.ts test/doctor.test.ts
+      - name: Package exact clean tagged source
+        run: npm run package
+      - name: Verify extracted package with bundled runtime
+        run: node --experimental-transform-types --test test/packaged-runtime.test.ts
+        env:
+          JARVIS_PACKAGE_ARCHIVE: auto
+      - name: Label unsigned assets with source SHA and checksums
+        run: node scripts/native-release.mjs prepare
+      - uses: actions/upload-artifact@v4
+        with:
+          name: unsigned-preview-${{ needs.resolve.outputs.tag }}-${{ runner.os }}-${{ runner.arch }}-${{ needs.resolve.outputs.sha }}
+          path: release-assets/*
+          if-no-files-found: error
+
+  publish:
+    needs: [resolve, build]
+    # Code review and explicit repository-variable opt-in are required to enable attachment.
+    # Manual runs always remain unsigned previews in Actions artifacts.
+    if: github.event_name == 'workflow_run' && vars.JARVIS_NATIVE_RELEASE_PUBLISH == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    concurrency:
+      group: native-release-${{ needs.resolve.outputs.tag }}
+      cancel-in-progress: false
+    env:
+      JARVIS_RELEASE_TAG: ${{ needs.resolve.outputs.tag }}
+      JARVIS_SOURCE_SHA: ${{ needs.resolve.outputs.sha }}
+      JARVIS_NATIVE_RELEASE_PUBLISH: ${{ vars.JARVIS_NATIVE_RELEASE_PUBLISH }}
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: unsigned-preview-${{ needs.resolve.outputs.tag }}-*-${{ needs.resolve.outputs.sha }}
+          path: release-assets
+          merge-multiple: true
+      - name: Revalidate provenance and attach without overwriting
+        run: node scripts/native-release.mjs publish

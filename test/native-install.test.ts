@@ -79,6 +79,7 @@ test('Windows links use fixed PowerShell with data env and startup opt-in', asyn
   options.runPowerShell = (script, env) => {
     assert.equal(script, POWERSHELL_LINK)
     assert.ok(!script.includes(options.root))
+    assert.equal(existsSync(env.JARVIS_LINK_PATH!), false, 'COM requires a nonexistent shortcut path')
     calls.push(env)
     writeFileSync(env.JARVIS_LINK_PATH!, JSON.stringify(env))
   }
@@ -97,7 +98,7 @@ test('Windows links use fixed PowerShell with data env and startup opt-in', asyn
 test('Windows native COM generates inspectable temporary shortcuts only', { skip: process.platform !== 'win32' }, async () => fixture('win32', async options => {
   await nativeIntegration(options, ['--install', '--autostart'])
   const path = join(options.appData!, 'Microsoft', 'Windows', 'Start Menu', 'Programs', 'Startup', 'Jarvis.lnk')
-  const inspect = "$s = (New-Object -ComObject WScript.Shell).CreateShortcut($env:JARVIS_TEST_LINK); @{target=$s.TargetPath; args=$s.Arguments; cwd=$s.WorkingDirectory} | ConvertTo-Json -Compress"
+  const inspect = "[Console]::OutputEncoding = New-Object System.Text.UTF8Encoding($false); $s = (New-Object -ComObject WScript.Shell).CreateShortcut($env:JARVIS_TEST_LINK); @{target=$s.TargetPath; args=$s.Arguments; cwd=$s.WorkingDirectory} | ConvertTo-Json -Compress"
   const result = JSON.parse(execFileSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-EncodedCommand', Buffer.from(inspect, 'utf16le').toString('base64')], { encoding: 'utf8', env: { ...process.env, JARVIS_TEST_LINK: path } }))
   assert.equal(result.target, join(options.root, 'runtime', 'node.exe'))
   assert.equal(result.cwd, options.root)

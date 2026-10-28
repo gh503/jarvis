@@ -15,6 +15,9 @@ async function fixture(t: { after(fn: () => Promise<void>): void }) {
   return dir
 }
 async function powershell(script: string, dir: string): Promise<string> {
+  script = String.raw`$env:PSModulePath = "$PSHOME\Modules"
+Import-Module "$PSHOME\Modules\Microsoft.PowerShell.Security\Microsoft.PowerShell.Security.psd1" -ErrorAction Stop
+` + script
   const { stdout } = await promisify(execFile)(join(process.env.SystemRoot!, 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe'), [
     '-NoLogo', '-NoProfile', '-NonInteractive', '-EncodedCommand', Buffer.from(script, 'utf16le').toString('base64'),
   ], { env: { ...process.env, JARVIS_TEST_DIRECTORY: dir }, windowsHide: true })

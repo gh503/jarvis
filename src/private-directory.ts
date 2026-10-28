@@ -10,6 +10,14 @@ const execute = promisify(execFile)
 // interpolated into PowerShell syntax, a shell command, or a diagnostic.
 const windowsScript = String.raw`
 $ErrorActionPreference = 'Stop'
+$ProgressPreference = 'SilentlyContinue'
+$stage = 41
+trap { exit $stage }
+# pwsh 7 parents export their incompatible module path to Windows PowerShell.
+# Load only the bundled Windows PowerShell modules, never user module overrides.
+$env:PSModulePath = "$PSHOME\Modules"
+Import-Module "$PSHOME\Modules\Microsoft.PowerShell.Security\Microsoft.PowerShell.Security.psd1" -ErrorAction Stop
+$stage = 42
 $p = $env:JARVIS_PRIVATE_DIRECTORY
 $user = [System.Security.Principal.WindowsIdentity]::GetCurrent().User
 $system = [System.Security.Principal.SecurityIdentifier]::new('S-1-5-18')
@@ -51,7 +59,9 @@ function Check-Descendants {
   }
 }
 Check-Boundaries
+$stage = 43
 Check-Descendants
+$stage = 44
 if (Test-Path -LiteralPath $p) {
   $old = Get-Acl -LiteralPath $p
   $owner = $old.GetOwner([System.Security.Principal.SecurityIdentifier]).Value
@@ -62,6 +72,7 @@ if (Test-Path -LiteralPath $p) {
     }
   }
 }
+$stage = 45
 [IO.Directory]::CreateDirectory($p) | Out-Null
 Check-Boundaries
 $acl = [System.Security.AccessControl.DirectorySecurity]::new()
@@ -72,7 +83,9 @@ foreach ($sid in @($user, $system)) {
   $rule = [System.Security.AccessControl.FileSystemAccessRule]::new($sid, [System.Security.AccessControl.FileSystemRights]::FullControl, $inherit, [System.Security.AccessControl.PropagationFlags]::None, [System.Security.AccessControl.AccessControlType]::Allow)
   $acl.AddAccessRule($rule)
 }
+$stage = 46
 Set-Acl -LiteralPath $p -AclObject $acl
+$stage = 47
 Check-Boundaries
 Check-Descendants
 $verified = Get-Acl -LiteralPath $p
@@ -133,10 +146,12 @@ export async function ensurePrivateDataDirectory(dir: string): Promise<void> {
       await execute(join(systemRoot, 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe'), [
         '-NoLogo', '-NoProfile', '-NonInteractive', '-EncodedCommand', Buffer.from(windowsScript, 'utf16le').toString('base64'),
       ], { env: { ...process.env, JARVIS_PRIVATE_DIRECTORY: root }, windowsHide: true, timeout: 30_000, maxBuffer: 64 * 1024 })
-    } catch {
-      // execFile errors include command/environment-dependent output. Keep them
-      // out of logs, which may be collected alongside sensitive account state.
-      throw new Error('Cannot establish private Windows data permissions: use a dedicated current-account-owned local directory without links or explicit shared ACLs')
+    } catch (error) {
+      // Report only our allowlisted stage codes, never stderr or exception text.
+      const stages: Record<number, string> = { 41: 'native-module', 42: 'path-boundary', 43: 'descendant-preflight', 44: 'root-preflight', 45: 'create-root', 46: 'apply-acl', 47: 'verify-acl' }
+      const code = (error as { code?: unknown }).code
+      const stage = typeof code === 'number' ? stages[code] ?? 'native-process' : 'native-process'
+      throw new Error(`Cannot establish private Windows data permissions [${stage}]: use a dedicated current-account-owned local directory without links or explicit shared ACLs`)
     }
     return
   }

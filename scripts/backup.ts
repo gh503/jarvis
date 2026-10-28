@@ -5,6 +5,7 @@ import { existsSync } from 'node:fs'
 import { basename, dirname, join, resolve, relative, isAbsolute, sep } from 'node:path'
 import { homedir, tmpdir } from 'node:os'
 import { defaultDataDir } from '../src/config.ts'
+import { runtimeVersion } from '../src/version.ts'
 import { acquireLifecycleLock } from '../src/runtime-lifecycle.ts'
 import { createBackup } from './backup-archive.ts'
 
@@ -72,7 +73,7 @@ try {
   }
   const manifest = {
     product: 'jarvis-v2',
-    version: '2.0.0',
+    version: runtimeVersion(),
     createdAt: new Date().toISOString(),
     dataDir,
     files,

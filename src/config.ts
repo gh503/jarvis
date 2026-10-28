@@ -2,6 +2,7 @@ import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from 'n
 import { homedir } from 'node:os'
 import { dirname, isAbsolute, join, resolve, win32, posix } from 'node:path'
 import { randomBytes } from 'node:crypto'
+import { runtimeVersion } from './version.ts'
 
 export interface JarvisConfig {
   version: string
@@ -141,7 +142,7 @@ export function loadConfig(): JarvisConfig {
   const webDir = absolute(env('JARVIS_WEB_DIR', join(import.meta.dirname, '..', 'web')), join(import.meta.dirname, '..', 'web'))
 
   return {
-    version: '2.0.0',
+    version: runtimeVersion(),
     host,
     port: parsePort(env('JARVIS_PORT', String(DEFAULTS.port))),
     dataDir,
