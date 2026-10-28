@@ -1,17 +1,27 @@
 # 分发与安装：把 Jarvis 变成 App
 
-三种交付形态，按“用户要做什么”选，而不是按技术栈选：
+## 原生便携预览包已发布
 
-| 形态 | 覆盖平台 | 用户要做什么 | 需要签名/商店 |
-|---|---|---|---|
-| **A. PWA 安装**（推荐默认） | Windows / macOS / Linux / Android / iOS | 打开一次网页，点“安装”或“添加到主屏幕” | 不需要 |
-| **B. 桌面窗口**（`npm run app`） | 三桌面平台 | 双击一个脚本 / 启动器 | 不需要 |
-| **C. 便携包**（`npm run package`） | 同系统之间拷贝 | 解压，双击 `jarvis` / `Jarvis.cmd` | 不需要 |
+[v2.0.20](https://github.com/gh503/jarvis/releases/tag/v2.0.20) 提供 Linux x64、Windows x64、macOS arm64 的未签名便携包，每个平台包含归档、SHA256 与 provenance，共九个资产文件。包内自带 Node 24；源码运行要求 Node.js >=24。
 
-> 明确不做：`.msi` / `.dmg` / `.AppImage` / 应用商店上架。这些需要各平台签名证书
-> 与打包工具链，本仓库无法“顺手”产出可信的安装包；硬做一个未签名安装包只会让
-> 用户看到 SmartScreen / Gatekeeper 拦截。便携包 + PWA 覆盖同样的需求，且没有
-> 证书依赖。
+三平台自动化发布门槛已通过，覆盖运行时生命周期、便携包以及打包后隐私、备份与更新检查，Windows 还验证 Unicode 快捷方式实际启动。这是预览交付与自动化证据，不是稳定生产保证、签名安装器或所有平台功能对齐。
+
+| 形态 | 覆盖平台 | 当前入口 |
+|---|---|---|
+| PWA 客户端 | 桌面浏览器 / Android / iOS | 先启动主机，再安装网页应用 |
+| 源码桌面窗口 | Windows / macOS / Linux | Git、Node >=24，`npm ci` 后 `npm run app` |
+| Node 24 便携预览包 | 与构建机相同的系统 / CPU | 从 v2.0.20 获取上述三种目标；无需另装 Node |
+| 原生桌面集成 | macOS `.app` / Windows 开始菜单 | 包内 `scripts/install-native.ts` 创建入口，仍需浏览器 |
+
+便携包与生成的 macOS wrapper 未签名、未公证；当前不提供已完成签名的 `.msi` / `.dmg` 安装器。首次启动按操作系统的受支持流程批准。
+
+## 获取预览与正式发布门槛
+
+从上述固定版本 Release 下载匹配系统和 CPU 的归档、SHA256 和 provenance，核对 tag 与完整 source SHA，校验归档后解压到独立固定目录。SHA256 用于校验内容，不等于发行者签名。其他构建可在 [GitHub Actions](https://github.com/gh503/jarvis/actions) 的 `Native release artifacts` 成功运行中查找；没有匹配产物时使用 [源码上手步骤](getting-started.md)。
+
+发布开关 `JARVIS_NATIVE_RELEASE_PUBLISH` 已启用，自动附加资产仍要求三平台构建门槛全部通过。手动 dispatch 必须指定已有的稳定发布 tag，且永远只生成 unsigned preview artifacts，不附加 Release 资产；旧 tag 如果缺少所需脚本不能重建。详见 [原生发布流水线](native-release-pipeline.md)。CI 覆盖 hosted runner 的架构，不表示所有 x64/arm64 组合均已实机验证。
+
+面向普通用户的生产分发目标尚未完成：代表性机器上的 Finder / 开始菜单 / 登录启动与浏览器人工验收、签名／公证仍需完成。跨平台外部文件／技能／Shell、完整功能对齐和事务式更新激活也尚未实现。
 
 ---
 
@@ -30,7 +40,7 @@
 | 能力 | 说明 |
 |---|---|
 | 独立窗口 | `display: standalone` + `display_override: window-controls-overlay` |
-| 离线外壳 | Service Worker 缓存 shell（`jarvis-shell-v20`）；对话仍需模型 |
+| 离线外壳 | Service Worker 缓存 shell；对话仍需模型 |
 | 快捷方式 | 长按图标：新对话 / 模型服务 / 安装 |
 | 身份 | 同源 Cookie（HttpOnly），或首次 `/?token=` 引导 |
 
@@ -52,7 +62,7 @@ npm run app -- --browser=/usr/bin/chromium
 （`<数据目录>/app-profile`），所以它和日常浏览器互不干扰，也不需要 Electron。
 
 - 找不到 Chromium 系浏览器时退回默认浏览器打开同一地址。
-- 进程以 detached 方式运行，关掉窗口服务仍在；日志在数据目录的 `jarvis.log`。
+- 关掉窗口服务仍在；通过运行时身份与控制通道管理启停，日志在数据目录的 `jarvis.log`。
 - macOS/Windows 上同样可用，只要装了 Chrome/Edge。
 
 **为什么不用 Electron/Tauri？** 需要引入构建链与数百 MB 运行时，而 `--app=`
@@ -90,9 +100,8 @@ jarvis-<version>-<os>-<arch>/
 - 新增运行时源文件必须先纳入 Git 跟踪。`.env`、私有数据目录、未跟踪文件、符号链接、开发依赖和环境中的 npm 配置不会进入应用包；依赖中的开发用点文件统一移除，避免 Windows 压缩工具遗漏后造成清单不一致。
 - 归档仍是**未签名便携包**。签名安装器需要平台工具链、证书与凭据；本命令不声称生成签名安装器。
 - 体积以 Node 二进制为主（约 100 MB 量级），解压即用，不写注册表。
-- 数据目录默认在用户主目录（`~/.local/share/jarvis`），不污染便携目录，
-  所以升级只需替换程序文件。
-- 想真正做到“双击安装”，需要平台签名证书；见上面的说明。
+- 默认数据目录：Linux `~/.local/share/jarvis/data`；macOS `~/Library/Application Support/Jarvis/data`；Windows `%LOCALAPPDATA%\Jarvis\data`。
+- 升级不要覆盖运行中的包。见下面的安装与更新边界。
 
 ---
 
@@ -104,7 +113,13 @@ systemctl --user status jarvis
 journalctl --user -u jarvis -f
 ```
 
-Windows 用“启动”文件夹放快捷方式，macOS 用“登录项”，都能达到同样效果。
+macOS / Windows 使用包内 `scripts/install-native.ts --install --autostart`（通过包内 Node 24 执行），创建下次登录启动入口；不是受监督重启的常驻服务。完整平台命令见 [原生集成](native-install.md)。安装器只创建引用固定包目录的快捷方式／app wrapper，不复制程序、不启动服务；已有集成需先卸载再安装。卸载保留应用数据与包目录。
+
+## 安装与更新边界
+
+解压后从包目录运行 Linux `./jarvis`、macOS `./Jarvis.command` 或 Windows `.\Jarvis.cmd`。macOS / Windows 可通过上述原生安装脚本创建桌面入口。便携包不包含模型，也不保证具备全部语音组件。
+
+更新脚本提供 verify、stage、隔离 health 和 rollback，**不会自动激活、替换快捷方式、停止生产服务或迁移数据库**。rollback 只放弃暂存事务，不是恢复一个已切换的生产版本。手动升级应停止旧服务、保留旧包与备份，在另一个固定目录解压并验证新包，再显式卸载旧集成和安装新集成。健康检查仅证明隔离启动可用，不证明旧数据迁移兼容；详见 [更新暂存与恢复](native-update.md)。
 
 ---
 
@@ -114,17 +129,19 @@ Windows 用“启动”文件夹放快捷方式，macOS 用“登录项”，都
 
 | 能力 | Linux | macOS | Windows | 备注 |
 |---|---|---|---|---|
-| 对话 / 记忆 / 提醒 / 文件 | ✅ | ✅ | ✅ | 纯 Node，无平台依赖 |
-| 本机模型（Ollama/LM Studio） | ✅ | ✅ | ✅ | 需要用户自己装 |
-| 屏幕捕获 | ✅ | ❌ | ❌ | 依赖 xdg-desktop-portal 辅助脚本 |
-| 摄像头单帧 | ✅ | ❌ | ❌ | 依赖 `/dev/video0` + ffmpeg |
-| 本地 ASR | ✅ | 取决于是否装了 Python + faster-whisper | 同 macOS | 浏览器录音，服务端转写 |
-| 本地 TTS | ✅ | 取决于 `piper` / `edge-tts` | 同 macOS | 也可用远端 TTS |
-| 桌面通知 | ✅ | ❌ | ❌ | 目前只有 `notify-send` |
-| 开机自启 | ✅ | 手动 | 手动 | Linux 用 systemd |
+| 对话 / 记忆 / 提醒 / 远端模型 | 可用 | 可用 | 可用 | 核心功能无需 Python |
+| 本机模型 | 可用 | 可用 | 可用 | 自行安装 Ollama / LM Studio 等 |
+| 浏览器屏幕／摄像头单帧预览 | 可用 | 可用 | 可用 | 需浏览器支持、安全上下文、显式授权；视觉分析 local-only，需本地视觉模型 |
+| OS 服务端屏幕捕获 | 可用 | 不提供 | 不提供 | Linux portal helper |
+| OS 服务端摄像头单帧 | 可用 | 不提供 | 不提供 | Linux ffmpeg / 视频设备 |
+| 外部授权文件与外部 Markdown 技能 | 按权限开启 | fail-closed | fail-closed | 非 Linux 保持拒绝执行 |
+| Shell | Bubblewrap + 逐次批准 | fail-closed | fail-closed | 默认关闭、无网络 |
+| 本地 ASR | 可选 | 可选 | 可选 | 自行安装 Python + faster-whisper，不随 Node 包提供 |
+| 本地 TTS | 依赖引擎与音色 | 依赖引擎与音色 | 依赖引擎与音色 | 云端 ASR / TTS 均须配置供应商 |
+| 桌面通知 | notify-send | 不提供 | 不提供 | 按系统能力启用 |
+| 登录自启 | systemd 用户服务 | 原生脚本 LaunchAgent | 原生脚本 Startup 快捷方式 | 交互登录行为仍需人工验收 |
 
-这张表是**实现现状**，不是路线图。加一个平台支持 = 实现对应 helper 并让
-`capabilities()` 检测到它；UI 不需要改。
+可选的旧版 `npm run setup` 安装脚本仅支持 Linux x64；源码基础对话无需运行它。浏览器单帧入口与服务端系统捕获不同，不代表持续录屏或录像。此表描述实现边界，不等于每个环境和设备都已通过人工验收。
 
 ---
 

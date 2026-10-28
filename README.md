@@ -4,14 +4,15 @@
 
 官网源码位于 `site/`；修改该目录并推送到 `main` 后，`Product website` 工作流会自动发布。也可在 GitHub Actions 中手动运行该工作流。
 
-Install it as an app and hand it to someone who has never opened a terminal:
-[getting-started.md](docs/getting-started.md) is the five-minute path, and
-[distribution.md](docs/distribution.md) explains the three delivery forms
-(PWA install on every platform including phones, `npm run app` desktop window,
-`npm run package` portable bundle). The in-app pages `/providers` and `/install`
-do the same job without reading any docs.
+Start with [上手指南](docs/getting-started.md) for **native preview or source** instructions,
+and [分发说明](docs/distribution.md) for platform limits and release gates.
+Windows, macOS and Linux have native runtime lifecycle support and Node 24 portable
+package matrices. **Unsigned native portable previews are published** for Linux x64, Windows x64
+and macOS arm64 at [v2.0.20](https://github.com/gh503/jarvis/releases/tag/v2.0.20). They are
+not signed installers or a guarantee of stable production readiness or full feature parity.
+The in-app `/providers` and `/install` pages help configure models and browser clients.
 
-Local-first ambient assistant for Linux: text/voice conversation with barge-in,
+Local-first assistant with text/voice conversation with barge-in,
 on-demand screen OCR, single-frame camera, SQLite memory with consolidation and
 a regression eval, reminders/daily brief, optional read-only ICS calendar,
 confirmation-gated actions, revocable device pairing, backup/restore, and a
@@ -44,6 +45,32 @@ release notes and source archive downloads. This does not publish to npm or
 create platform installers. The workflow uses GitHub's built-in token, with
 repository write permission limited to the release job.
 
+## Native preview status
+
+The three-platform automated release gates passed for runtime lifecycle and
+bundled Node 24 packages, including packaged privacy, backup and updater checks
+and Windows Unicode shortcut activation. This covers the hosted runner targets,
+not every OS/CPU pair or interactive desktop environment.
+
+Download the archive matching your OS/CPU, its SHA256 and provenance from
+[v2.0.20](https://github.com/gh503/jarvis/releases/tag/v2.0.20), verify the archive,
+and extract into a stable writable folder. Each of the three targets has these
+three files. Other builds may be available as conditional unsigned CI previews in
+[Actions](https://github.com/gh503/jarvis/actions); source instructions remain below.
+Publication is enabled but requires all three build gates; see the
+[release pipeline](docs/native-release-pipeline.md).
+
+Portable packages include `scripts/install-native.ts` for a macOS `.app` wrapper
+or Windows Start menu shortcuts, with optional next-login startup. They point to
+the extracted folder and are **unsigned, not notarized**. See [native installation](docs/native-install.md).
+The updater only verifies/stages candidates, runs isolated health checks and
+abandons a stage on rollback: **there is no automatic activation**. Explicit
+reinstallation into a separate folder is required; isolated readiness does not
+prove existing-data migration compatibility. See [native updates](docs/native-update.md).
+Production readiness still needs representative interactive native validation
+and signing/notarization; full platform
+parity and transactional update activation remain unfinished.
+
 ## Native tools and local work
 
 Enable native tool calling explicitly for a supported model in 设置 → 模型.
@@ -61,6 +88,8 @@ confirmation. Questions collect information and do not grant tool permissions.
 See [本地工具与权限说明](docs/ui.md#本地工具任务与目录授权) for the exact names,
 API routes, privacy boundaries and recurrence behavior.
 
+External scoped files, external Markdown skills and Shell remain fail-closed on
+macOS/Windows; core chat, memory, reminders and remote models work there.
 External file grants are empty by default; web and Shell are disabled, and no
 skill directory or external account is configured. File replacement requires
 the version returned by a prior read and creates private recovery history.
@@ -137,10 +166,10 @@ check is not a claim of live credential-backed integration testing.
 ## Quick start
 
 ```bash
-npm install
-npm run setup        # user-local models/binaries; downloads are the slow part
-npm run doctor
-npm run app          # starts the server and opens it as a desktop window
+git clone https://github.com/gh503/jarvis.git
+cd jarvis
+npm ci
+npm run app          # starts the server and opens its browser UI
 ```
 
 Every preset also carries a short, curated list of model ids — chat, vision and
@@ -162,9 +191,16 @@ installer; `npm start` alone still serves <http://127.0.0.1:3081>. First-run
 users who do not want to configure anything by hand should open
 <http://127.0.0.1:3081/providers>, pick a provider, and paste one API key.
 
-Requires Node 24, Python 3.10, Ollama, ffmpeg, `arecord`, and (for screen)
-`python3-gi` + an XDG Desktop Portal. The setup script installs Ollama, Piper,
-faster-whisper and RapidOCR into the user's home; it does not use sudo.
+Source requires **Node.js >=24** and Git. Core chat with a configured remote
+model needs neither Python nor Ollama. Local models are optional; local ASR
+requires Python/faster-whisper, and local TTS requires an installed engine/voice.
+Cloud ASR and TTS each require provider configuration. The optional legacy
+`npm run setup` installer supports Linux x64 only and downloads local components.
+
+Browser screen/camera capture is an explicit single-frame preview on supported
+browsers; image analysis requires a local vision model and stays local-only.
+OS/server screen and camera capture remain Linux-only, with portal/ffmpeg and
+other relevant dependencies. Browser support and permissions still apply.
 
 ## Commands
 
@@ -179,7 +215,7 @@ npm run memory:eval  # 11-case recall/abstention/privacy regression suite
 JARVIS_CDP_URL=http://127.0.0.1:9223 npm run ui:smoke  # browser smoke, Chrome CDP
 JARVIS_SMOKE_UI=1 npm run acceptance:full  # also drives the real UI (needs Chrome on :9223)
 npm run backup -- ~/jarvis-backup.tar.gz
-npm run restore -- ~/jarvis-backup.tar.gz --yes   # stop Jarvis first; --force skips the pgrep guard
+npm run restore -- ~/jarvis-backup.tar.gz --yes   # stop Jarvis first
 npm run memory -- list
 npm run migrate-v1 -- /path/to/v1-memory.json
 bash scripts/install-desktop.sh
@@ -230,7 +266,8 @@ scripts/              setup, workers, desktop/systemd installers, acceptance
 ## Privacy defaults
 
 - Loopback only; remote requires both a ≥24-char token and TLS.
-- Screen capture only through the portal; no framebuffer/recording fallback on
+- Browser screen/camera preview is explicit, single-frame and local-only for vision.
+  Linux OS screen capture uses the portal; no framebuffer/recording fallback on
   native Wayland.
 - Camera single frame only; no video retention.
 - `sensitive` memories are excluded from normal model recall; `secret` too.
