@@ -457,7 +457,7 @@ async function main(): Promise<void> {
     await cdp.evaluate("document.querySelector('[data-studio-tab=config]').click()")
     await sleep(1100)
     check(await cdp.evaluate<boolean>("Boolean(document.querySelector('#config-raw'))"), 'studio: config renders')
-    await cdp.evaluate("document.querySelector('#studio-close').click()")
+    await cdp.evaluate("document.querySelector('#studio-close-top').click()")
     await sleep(300)
 
     await cdp.send('Emulation.setDeviceMetricsOverride', { width: 390, height: 844, deviceScaleFactor: 2, mobile: true })

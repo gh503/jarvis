@@ -2189,7 +2189,7 @@ function settingsRailHtml(loading = false) {
   return `<aside class="settings-rail" aria-label="设置导航">
     <div class="settings-brand"><span class="settings-mark" aria-hidden="true">J</span><div><strong>JARVIS</strong><span>SETTINGS</span></div></div>
     ${loading ? '<p class="settings-rail-loading">正在读取设置…</p>' : `<div class="settings-tabs-wrap">${settingsTabsHtml()}</div>`}
-    <div class="settings-rail-foot"><span>你的 Jarvis，由你设定。</span><span><kbd>Esc</kbd> 关闭当前面板</span></div>
+
   </aside>`
 }
 

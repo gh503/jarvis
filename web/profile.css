@@ -15,11 +15,7 @@
 .profile-nav-item:hover { color: var(--text); background: rgb(var(--ink-rgb) / .035); }
 .profile-nav-item.active { color: var(--text); border-color: rgb(var(--accent-rgb) / .16); background: linear-gradient(90deg, rgb(var(--accent-rgb) / .1), rgb(var(--accent-rgb) / .02)); }
 .profile-nav-glyph { flex: none; color: var(--cyan); font: 10px var(--mono); opacity: .75; }
-.profile-rail-foot { margin-top: auto; padding: 18px 8px 0; color: var(--faint); font-size: 10px; }
-.profile-rail-foot p { margin: 0 0 10px; }
-.profile-rail-foot .profile-shortcut { color: var(--muted); margin-bottom: 10px; }
-.profile-rail-foot kbd { font-size: 12px; }
-.profile-rail-foot .profile-close-link { padding: 4px 0; border: 0; color: var(--muted); min-height: 28px; }
+
 .profile-main { display: flex; flex-direction: column; min-width: 0; min-height: 0; overflow: hidden; }
 .profile-header { display: flex; justify-content: space-between; align-items: flex-start; gap: 20px; padding: 34px clamp(20px, 3.6vw, 58px) 20px; flex: none; }
 .profile-header > div { min-width: 0; }
