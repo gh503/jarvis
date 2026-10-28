@@ -7,6 +7,7 @@ import { createServer } from 'node:net'
 import { dirname, isAbsolute, join, relative, resolve } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import { acquireLifecycleLock, requestRuntime } from '../src/runtime-lifecycle.ts'
+import { ensurePrivateDataDirectory } from '../src/private-directory.ts'
 
 const hash = (bytes: Buffer) => createHash('sha256').update(bytes).digest('hex')
 const sha256 = /^[a-f0-9]{64}$/
@@ -81,6 +82,7 @@ export async function stage(transaction: string, baselineRoot: string, baselineH
   transaction = resolve(transaction)
   if (overlaps(baseline.root, candidate.root) || overlaps(transaction, baseline.root) || overlaps(transaction, candidate.root)) throw new Error('Baseline, candidate and transaction must be separate directories')
   await mkdir(transaction, { mode: 0o700 }) // exclusive ownership; never reuse somebody else's transaction
+  await ensurePrivateDataDirectory(transaction) // establish Windows owner/ACL before writing journal descendants
   const journal: Journal = { schemaVersion: 1, baseline, candidate, status: 'staged', note: 'No activation or production data changes. Run health explicitly before manual handoff.' }
   await save(transaction, journal)
   return journal
@@ -109,6 +111,7 @@ export async function health(transaction: string, probe = probeCandidate): Promi
     if (j.status !== 'staged') throw new Error('Health requires a newly staged transaction; interrupted attempts require rollback and restaging')
     const data = join(transaction, 'health-data')
     await mkdir(data, { mode: 0o700 })
+    await ensurePrivateDataDirectory(data)
     j.status = 'checking'; j.note = 'Candidate health may be running in health-data; production untouched.'; await save(transaction, j)
     try { await probe(j.candidate, data); j.status = 'healthy'; j.note = 'Isolated readiness passed and candidate stopped. No migration compatibility or activation has been asserted.' }
     catch (error) { j.status = 'failed'; j.note = `Health failed; production untouched: ${String(error)}`; await save(transaction, j); throw error }
@@ -116,12 +119,15 @@ export async function health(transaction: string, probe = probeCandidate): Promi
   } finally { release() }
 }
 async function probeCandidate(identity: Identity, data: string): Promise<void> {
+  // Data must not equal home, temp, or Windows account roots: private-directory rejects those.
+  const home = join(dirname(data), 'health-home'), temporary = join(dirname(data), 'health-temp')
+  await mkdir(home, { mode: 0o700 }); await mkdir(temporary, { mode: 0o700 })
   const server = createServer()
   await new Promise<void>((ok, fail) => { server.once('error', fail); server.listen(0, '127.0.0.1', ok) })
   const port = (server.address() as { port: number }).port
   await new Promise<void>((ok, fail) => server.close(error => error ? fail(error) : ok()))
   // Port reservation has a race: a collision must fail readiness, never reuse another instance.
-  const env: NodeJS.ProcessEnv = { PATH: process.env.PATH, SystemRoot: process.env.SystemRoot, WINDIR: process.env.WINDIR, HOME: data, USERPROFILE: data, APPDATA: data, LOCALAPPDATA: data, TMPDIR: data, TMP: data, TEMP: data, JARVIS_DATA_DIR: data, JARVIS_HOST: '127.0.0.1', JARVIS_PORT: String(port), JARVIS_AUTH_TOKEN: randomBytes(32).toString('hex'), JARVIS_WEB_DIR: join(identity.root, 'web'), JARVIS_APP: '1', JARVIS_PYTHON: join(data, 'disabled-python'), JARVIS_WHISPER_BIN: join(data, 'disabled-whisper'), JARVIS_PIPER_BIN: join(data, 'disabled-piper'), JARVIS_OLLAMA_URL: 'http://127.0.0.1:1' }
+  const env: NodeJS.ProcessEnv = { PATH: process.env.PATH, SystemRoot: process.env.SystemRoot, WINDIR: process.env.WINDIR, HOME: home, USERPROFILE: home, APPDATA: home, LOCALAPPDATA: home, TMPDIR: temporary, TMP: temporary, TEMP: temporary, JARVIS_DATA_DIR: data, JARVIS_HOST: '127.0.0.1', JARVIS_PORT: String(port), JARVIS_AUTH_TOKEN: randomBytes(32).toString('hex'), JARVIS_WEB_DIR: join(identity.root, 'web'), JARVIS_APP: '1', JARVIS_PYTHON: join(data, 'disabled-python'), JARVIS_WHISPER_BIN: join(data, 'disabled-whisper'), JARVIS_PIPER_BIN: join(data, 'disabled-piper'), JARVIS_OLLAMA_URL: 'http://127.0.0.1:1' }
   const child = spawn(join(identity.root, 'runtime', identity.platform === 'win32' ? 'node.exe' : 'node'), ['--experimental-transform-types', join(identity.root, 'src/main.ts')], { cwd: data, env, stdio: 'ignore' })
   let failure: Error | undefined, exited = false
   const done = new Promise<void>(ok => { child.once('error', error => { failure = error; exited = true; ok() }); child.once('exit', () => { exited = true; ok() }) })

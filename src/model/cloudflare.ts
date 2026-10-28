@@ -31,6 +31,7 @@ export function cloudflareModelsUrl(baseUrl: string): string {
 export async function listCloudflareModels(baseUrl: string, apiKey: string, timeoutMs = 8000): Promise<ModelHealth> {
   try {
     const response = await fetch(cloudflareModelsUrl(baseUrl), {
+      redirect: 'error',
       headers: { authorization: `Bearer ${apiKey}` },
       signal: AbortSignal.timeout(timeoutMs),
     })

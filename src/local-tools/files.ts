@@ -44,8 +44,28 @@ export class FileTools {
   private storagePath():string {return absolute(this.deps.storageFile??join(dirname(this.deps.settings.file),'local-files.json'))}
   private privatePath(_name:string):string {return join(dirname(this.storagePath()),'file-history')}
   async readArtifact(id:string,sessionId:string):Promise<{name:string;mime:string;bytes:Buffer}>{const item=await this.artifact(id,sessionId);return {name:item.name,mime:item.mime,bytes:item.buffer}}
+  /** Portable cleanup can certify an empty private workspace without deleting
+   * anything. Populated workspaces need the scoped native backend. These paths
+   * share private-storage's trusted application-directory/OS-account boundary. */
+  private assertPortableCleanupEmpty():void {
+    const unavailable=(detail:string)=>Object.assign(new Error(`Cannot safely clear local files on ${process.platform}: ${detail}. A native scoped filesystem cleanup backend is required; no files were removed.`),{code:'SCOPED_FILESYSTEM_UNAVAILABLE'})
+    // Re-read disk even if the catalog was previously cached as empty.
+    const catalog=readPrivateJson(this.storagePath(),4*MAX)
+    if(catalog!==undefined&&!Array.isArray(catalog))throw new Error('Invalid artifact catalog')
+    if((catalog as unknown[]|undefined)?.length||this.catalog.length)throw unavailable('the artifact catalog is not empty')
+    for(const directory of [this.privatePath('history'),absolute(this.deps.settings.snapshot().outputDir)]) {
+      let before:ReturnType<typeof lstatSync>
+      try{before=lstatSync(directory)}catch(error){if((error as NodeJS.ErrnoException).code==='ENOENT')continue;throw error}
+      if(before.isSymbolicLink()||!before.isDirectory())throw unavailable('a private workspace path is not a real directory')
+      // Only inspect emptiness; never follow entries or remove any path.
+      const entries=opendirSync(directory)
+      try{if(entries.readSync()!==null)throw unavailable('private output or recovery history is not empty')}finally{entries.closeSync()}
+      const after=lstatSync(directory)
+      if(after.isSymbolicLink()||!after.isDirectory()||before.dev!==after.dev||before.ino!==after.ino||before.mtimeMs!==after.mtimeMs||before.ctimeMs!==after.ctimeMs)throw unavailable('a private workspace directory changed during inspection')
+    }
+  }
   private clear(sessionId?:string):void {
-    requireScopedFilesystem()
+    if(!this.capabilities().supported){this.assertPortableCleanupEmpty();return}
     this.loadCatalog()
     for(const item of this.catalog.filter(a=>(sessionId===undefined||a.sessionId===sessionId)&&a.managed)) {
       // Only app-created output artifacts are owned; imported sources are never removed.
@@ -65,7 +85,7 @@ export class FileTools {
   }
   clearSession(sessionId:string):void {this.clear(sessionId)}
   clearAll():void {
-    requireScopedFilesystem()
+    if(!this.capabilities().supported){this.assertPortableCleanupEmpty();return}
     const output=absolute(this.deps.settings.snapshot().outputDir)
     if(output.split('/').filter(Boolean).length<3||[dirname(this.deps.settings.file),dirname(this.storagePath())].some(p=>within(output,p)))throw new Error('Unsafe generated workspace for erase')
     const erase=(fd:number)=>{const base=`/proc/self/fd/${fd}`;for(const name of readdirSync(base)){const target=join(base,name),st=lstatSync(target);if(st.isDirectory()){const child=openSync(target,C.O_RDONLY|C.O_DIRECTORY|C.O_NOFOLLOW);try{erase(child)}finally{closeSync(child)}rmdirSync(target)}else unlinkSync(target)}fsyncSync(fd)}

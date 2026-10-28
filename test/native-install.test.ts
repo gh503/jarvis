@@ -20,7 +20,7 @@ async function fixture(platform: Platform, run: (options: InstallOptions) => Pro
     const paths = [`runtime/${platform === 'win32' ? 'node.exe' : 'node'}`, 'scripts/app.ts', 'scripts/install-native.ts', 'src/main.ts']
     const files = []
     for (const path of paths) {
-      const content = realRuntime && path.startsWith('runtime/') ? await readFile(process.execPath) : Buffer.from('fixture')
+      const content = realRuntime && path.startsWith('runtime/') ? await readFile(process.execPath) : Buffer.from(realRuntime && path === 'scripts/app.ts' ? "import { writeFileSync } from 'node:fs'; writeFileSync('shortcut-sentinel.json', JSON.stringify({ args: process.argv.slice(2), cwd: process.cwd() }));" : 'fixture')
       await writeFile(join(root, path), content)
       files.push({ path, bytes: content.length, sha256: createHash('sha256').update(content).digest('hex') })
     }
@@ -99,11 +99,47 @@ test('Windows links use fixed PowerShell with data env and startup opt-in', asyn
 test('Windows native COM generates inspectable temporary shortcuts only', { skip: process.platform !== 'win32' }, async () => fixture('win32', async options => {
   await nativeIntegration(options, ['--install', '--autostart'])
   const path = join(options.appData!, 'Microsoft', 'Windows', 'Start Menu', 'Programs', 'Startup', 'Jarvis.lnk')
-  const inspect = "[Console]::OutputEncoding = New-Object System.Text.UTF8Encoding($false); $s = (New-Object -ComObject WScript.Shell).CreateShortcut($env:JARVIS_TEST_LINK); @{target=$s.TargetPath; args=$s.Arguments; cwd=$s.WorkingDirectory} | ConvertTo-Json -Compress"
-  const result = JSON.parse(execFileSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-EncodedCommand', Buffer.from(inspect, 'utf16le').toString('base64')], { encoding: 'utf8', env: { ...process.env, JARVIS_TEST_LINK: path } }))
+  // Reuse only the COM type declarations; inspection never invokes the production writer.
+  const declarations = POWERSHELL_LINK.split("Add-Type -TypeDefinition @'\n")[1]!.split("\n'@")[0]!
+  const inspect = `[Console]::OutputEncoding = New-Object System.Text.UTF8Encoding($false)
+$ErrorActionPreference = 'Stop'
+Add-Type -TypeDefinition @'
+${declarations}
+public static class InspectShortcut {
+  public static string[] Read(string path) {
+    object instance = new JarvisShellLink();
+    try {
+      ((System.Runtime.InteropServices.ComTypes.IPersistFile)instance).Load(path, 0);
+      var link = (JarvisShellLinkW)instance;
+      var target = new System.Text.StringBuilder(32768);
+      var args = new System.Text.StringBuilder(32768);
+      var cwd = new System.Text.StringBuilder(32768);
+      link.GetPath(target, target.Capacity, System.IntPtr.Zero, 4);
+      link.GetArguments(args, args.Capacity);
+      link.GetWorkingDirectory(cwd, cwd.Capacity);
+      return new string[] { target.ToString(), args.ToString(), cwd.ToString() };
+    } finally { System.Runtime.InteropServices.Marshal.FinalReleaseComObject(instance); }
+  }
+}
+'@
+$values = [InspectShortcut]::Read($env:JARVIS_TEST_LINK)
+@{target=$values[0]; args=$values[1]; cwd=$values[2]} | ConvertTo-Json -Compress
+# Independently activate the .lnk through Windows ShellExecute. The target script
+# only writes a sentinel and exits: no Jarvis imports, browser or server.
+$start = New-Object System.Diagnostics.ProcessStartInfo
+$start.FileName = $env:JARVIS_TEST_LINK
+$start.UseShellExecute = $true
+$process = [System.Diagnostics.Process]::Start($start)
+if ($null -ne $process) { if (!$process.WaitForExit(15000)) { throw 'Fixture shortcut activation timeout' }; if ($process.ExitCode -ne 0) { throw 'Fixture shortcut failed' } }
+`
+  const result = JSON.parse(execFileSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-EncodedCommand', Buffer.from(inspect, 'utf16le').toString('base64')], { encoding: 'utf8', env: { ...process.env, JARVIS_TEST_LINK: path, PSModulePath: join(process.env.SystemRoot ?? 'C:\\Windows', 'System32', 'WindowsPowerShell', 'v1.0', 'Modules') }, timeout: 30000 }))
   assert.equal(result.target, join(options.root, 'runtime', 'node.exe'))
   assert.equal(result.cwd, options.root)
   assert.equal(result.args, ['--experimental-transform-types', join(options.root, 'scripts', 'app.ts'), '--no-open'].map(windowsQuote).join(' '))
+  const sentinel = join(options.root, 'shortcut-sentinel.json')
+  const deadline = Date.now() + 15000
+  while (!existsSync(sentinel) && Date.now() < deadline) await new Promise(resolve => setTimeout(resolve, 100))
+  assert.deepEqual(JSON.parse(await readFile(sentinel, 'utf8')), { args: ['--no-open'], cwd: options.root })
   await nativeIntegration(options, ['--uninstall'])
 }, true))
 

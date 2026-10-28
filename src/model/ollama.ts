@@ -49,7 +49,7 @@ export class OllamaClient implements ModelClient, Embedder {
     try { host = new URL(baseUrl).hostname } catch { /* validated by the caller */ }
     // "Local" means the socket never leaves this machine, not merely that the
     // provider is an Ollama instance.
-    this.isLocal = host === '127.0.0.1' || host === 'localhost' || host === '::1' || host === '0.0.0.0'
+    this.isLocal = host === '127.0.0.1' || host === 'localhost' || host === '[::1]' || host === '0.0.0.0'
   }
 
   async contextLimits(options: ChatOptions = {}): Promise<{ contextWindow: number; maxOutputTokens: number }> {
@@ -63,6 +63,7 @@ export class OllamaClient implements ModelClient, Embedder {
   async health(timeoutMs = 3000): Promise<ModelHealth> {
     try {
       const response = await fetch(`${this.baseUrl}/api/tags`, {
+        redirect: 'error',
         signal: AbortSignal.timeout(timeoutMs),
       })
       if (!response.ok) {
@@ -109,7 +110,7 @@ export class OllamaClient implements ModelClient, Embedder {
     let count = 0
     try {
       signal.throwIfAborted()
-      const response = await fetch(`${this.baseUrl}/api/chat`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: this.body(messages, options, options.model ?? this.model, true), signal })
+      const response = await fetch(`${this.baseUrl}/api/chat`, { redirect: 'error', method: 'POST', headers: { 'content-type': 'application/json' }, body: this.body(messages, options, options.model ?? this.model, true), signal })
       if (!response.ok) throw new OllamaError(`Ollama chat failed: HTTP ${response.status} ${(await response.text()).slice(0, 300)}`, response.status)
       for await (const chunk of modelWire(response, signal, true)) {
         if (!chunk || typeof chunk !== 'object') throw new Error('Malformed Ollama response')
@@ -140,6 +141,7 @@ export class OllamaClient implements ModelClient, Embedder {
 
     try {
       const response = await fetch(`${this.baseUrl}/api/chat`, {
+        redirect: 'error',
         method: 'POST',
         headers: { 'content-type': 'application/json' },
         body: this.body(messages, options, model, true),
@@ -217,6 +219,7 @@ export class OllamaClient implements ModelClient, Embedder {
     const timeout = setTimeout(() => controller.abort(), 20_000)
     try {
       const response = await fetch(`${this.baseUrl}/api/embed`, {
+        redirect: 'error',
         method: 'POST',
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify({ model: this.embedModel, input: text, keep_alive: this.keepAlive }),
@@ -229,6 +232,7 @@ export class OllamaClient implements ModelClient, Embedder {
       }
       // Older Ollama versions expose /api/embeddings instead.
       const fallback = await fetch(`${this.baseUrl}/api/embeddings`, {
+        redirect: 'error',
         method: 'POST',
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify({ model: this.embedModel, prompt: text, keep_alive: this.keepAlive }),

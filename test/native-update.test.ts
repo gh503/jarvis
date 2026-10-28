@@ -1,14 +1,18 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { createHash } from 'node:crypto'
-import { mkdtemp, mkdir, writeFile, readFile, rm, symlink } from 'node:fs/promises'
+import { mkdtemp, mkdir, writeFile, readFile, rm, symlink, cp, copyFile, readdir, stat, realpath } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
+import { fileURLToPath } from 'node:url'
 import { health, rollback, stage, verifyBundle } from '../scripts/update-native.ts'
 import { acquireRuntimeLifecycle } from '../src/runtime-lifecycle.ts'
-const digest = (text: string) => createHash('sha256').update(text).digest('hex')
+import { ensurePrivateDataDirectory } from '../src/private-directory.ts'
+const digest = (text: string | Buffer) => createHash('sha256').update(text).digest('hex')
 async function fixture(run: (root: string, old: string, next: string, oldHash: string, nextHash: string) => Promise<void>) {
-  const root = await mkdtemp(join(tmpdir(), 'jarvis-update-test-'))
+  const temporaryRoot = await realpath(tmpdir())
+  const root = await mkdtemp(join(temporaryRoot, 'jarvis-update-test-'))
+  await ensurePrivateDataDirectory(root)
   const bundle = async (name: string, version: string) => {
     const path = join(root, name); await mkdir(path)
     const files = []
@@ -22,9 +26,34 @@ async function fixture(run: (root: string, old: string, next: string, oldHash: s
   }
   try { const old = await bundle('old', '1.0.0'), next = await bundle('new', '1.0.1'); await run(root, old.path, next.path, old.hash, next.hash) }
   finally { // root is exclusively created by mkdtemp above; no production paths enter cleanup.
-    assert.equal(dirname(root), tmpdir()); await rm(root, { recursive: true, force: true })
+    assert.equal(dirname(root), temporaryRoot); await rm(root, { recursive: true, force: true })
   }
 }
+test('real packaged candidate starts with separate home and data and shuts down', { timeout: 120_000 }, async () => fixture(async (root, old, next, oldHash) => {
+  const source = dirname(dirname(fileURLToPath(import.meta.url)))
+  // Real application and runtime, copied into a fully hashed portable layout. No symlink to the checkout.
+  for (const directory of ['src', 'web', 'node_modules']) await cp(join(source, directory), join(next, directory), { recursive: true, dereference: true })
+  await copyFile(join(source, 'package.json'), join(next, 'package.json'))
+  await copyFile(process.execPath, join(next, 'runtime', process.platform === 'win32' ? 'node.exe' : 'node'))
+  const manifest = JSON.parse(await readFile(join(next, 'manifest.json'), 'utf8'))
+  manifest.files = []
+  async function inventory(directory: string, prefix = ''): Promise<void> {
+    for (const name of await readdir(directory)) {
+      const path = join(directory, name), relative = prefix + name
+      if (relative === 'manifest.json') continue
+      if ((await stat(path)).isDirectory()) await inventory(path, relative + '/')
+      else { const bytes = await readFile(path); manifest.files.push({ path: relative, bytes: bytes.length, sha256: digest(bytes) }) }
+    }
+  }
+  await inventory(next)
+  const text = JSON.stringify(manifest); await writeFile(join(next, 'manifest.json'), text)
+  const transaction = join(root, 'real-transaction')
+  await stage(transaction, old, oldHash, next, digest(text))
+  assert.equal((await health(transaction)).status, 'healthy')
+  assert.equal((await rollback(transaction)).status, 'rolled-back')
+  assert.ok((await stat(join(transaction, 'health-home'))).isDirectory())
+  assert.ok((await stat(join(transaction, 'health-data'))).isDirectory())
+}))
 test('staging pins exact baseline/candidate and failed health rolls back without modifying bundles', async () => fixture(async (root, old, next, oldHash, nextHash) => {
   const transaction = join(root, 'transaction')
   const original = await readFile(join(old, 'manifest.json'))
@@ -53,8 +82,8 @@ test('unlisted files including dotenv are rejected before execution', async () =
   await writeFile(join(next, '.env'), 'JARVIS_DATA_DIR=/production')
   await assert.rejects(verifyBundle(next, nextHash), /unlisted/)
 }))
-test('symlinked payload is rejected', { skip: process.platform === 'win32' }, async () => fixture(async (_root, _old, next, _oldHash, nextHash) => {
-  await symlink('src/main.ts', join(next, 'link'))
+test('symlinked payload is rejected', async () => fixture(async (_root, _old, next, _oldHash, nextHash) => {
+  await symlink(join(next, 'src'), join(next, 'link'), process.platform === 'win32' ? 'junction' : 'dir')
   await assert.rejects(verifyBundle(next, nextHash), /Unsafe filesystem/)
 }))
 test('downgrades and overlapping transaction paths are rejected', async () => fixture(async (root, old, next, oldHash, nextHash) => {

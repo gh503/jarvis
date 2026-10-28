@@ -29,7 +29,7 @@ test('portable private settings initialize, reload, update and reset; scoped too
       assert.deepEqual(files.definitions(),[]);assert.deepEqual(files.artifacts('session'),[])
       assert.deepEqual(skillTools({settings:{snapshot:()=>({revision:0,skillsDir:f.out})}}),[])
       await assert.rejects(reopened.update({expectedRevision:1,readRoots:[f.out]}),{code:'SCOPED_FILESYSTEM_UNAVAILABLE'})
-      assert.throws(()=>files.clearAll(),{code:'SCOPED_FILESYSTEM_UNAVAILABLE'})
+      assert.doesNotThrow(()=>files.clearSession('session'));assert.doesNotThrow(()=>files.clearAll())
       await reopened.reset();assert.equal(reopened.snapshot().revision,2)
     }finally{Object.defineProperty(process,'platform',descriptor)}
   }

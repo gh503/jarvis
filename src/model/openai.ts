@@ -103,6 +103,7 @@ export class OpenAICompatibleClient implements ModelClient, Embedder {
     }
     try {
       const response = await fetch(this.endpoint('/models'), {
+        redirect: 'error',
         headers: this.headers(),
         signal: AbortSignal.timeout(timeoutMs),
       })
@@ -188,6 +189,7 @@ export class OpenAICompatibleClient implements ModelClient, Embedder {
     try {
       signal.throwIfAborted()
       const response = await fetch(this.endpoint(responses ? '/responses' : '/chat/completions'), {
+        redirect: 'error',
         method: 'POST', headers: { ...this.headers(), accept: 'text/event-stream' }, signal,
         body: responses ? this.responsesBody(messages, options, true) : this.chatBody(messages, options, true),
       })
@@ -275,6 +277,7 @@ export class OpenAICompatibleClient implements ModelClient, Embedder {
     const signal = options.signal ? AbortSignal.any([options.signal, controller.signal]) : controller.signal
     try {
       const response = await fetch(this.endpoint('/chat/completions'), {
+        redirect: 'error',
         method: 'POST',
         headers: { ...this.headers(), accept: 'text/event-stream' },
         body: this.chatBody(messages, options, true),
@@ -331,6 +334,7 @@ export class OpenAICompatibleClient implements ModelClient, Embedder {
     const signal = options.signal ? AbortSignal.any([options.signal, controller.signal]) : controller.signal
     try {
       const response = await fetch(this.endpoint('/responses'), {
+        redirect: 'error',
         method: 'POST',
         headers: { ...this.headers(), accept: 'text/event-stream' },
         body: this.responsesBody(messages, options, true),
@@ -424,6 +428,7 @@ export class OpenAICompatibleClient implements ModelClient, Embedder {
     const timeout = setTimeout(() => controller.abort(), 20_000)
     try {
       const response = await fetch(this.endpoint('/embeddings'), {
+        redirect: 'error',
         method: 'POST',
         headers: this.headers(),
         body: JSON.stringify({ model: this.embedModel, input: text }),

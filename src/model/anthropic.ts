@@ -129,6 +129,7 @@ export class AnthropicClient implements ModelClient {
   async health(timeoutMs = 5000): Promise<ModelHealth> {
     try {
       const response = await fetch(this.endpoint('/models'), {
+        redirect: 'error',
         headers: this.headers(),
         signal: AbortSignal.timeout(timeoutMs),
       })
@@ -193,7 +194,7 @@ export class AnthropicClient implements ModelClient {
     let finish: string | undefined
     try {
       signal.throwIfAborted()
-      const response = await fetch(this.endpoint('/messages'), { method: 'POST', headers: { ...this.headers(), accept: 'text/event-stream' }, body: this.body(messages, options, true), signal })
+      const response = await fetch(this.endpoint('/messages'), { redirect: 'error', method: 'POST', headers: { ...this.headers(), accept: 'text/event-stream' }, body: this.body(messages, options, true), signal })
       if (!response.ok) throw new AnthropicError(`Anthropic request failed: HTTP ${response.status} ${(await response.text()).slice(0, 300)}`, response.status)
       const isSse = (response.headers.get('content-type') ?? '').includes('text/event-stream')
       for await (const event of modelWire(response, signal)) {
@@ -257,6 +258,7 @@ export class AnthropicClient implements ModelClient {
     const signal = options.signal ? AbortSignal.any([options.signal, controller.signal]) : controller.signal
     try {
       const response = await fetch(this.endpoint('/messages'), {
+        redirect: 'error',
         method: 'POST',
         headers: { ...this.headers(), accept: 'text/event-stream' },
         body: this.body(messages, options, true),
