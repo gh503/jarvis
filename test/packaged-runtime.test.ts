@@ -20,7 +20,8 @@ test('native artifact verifies and starts/stops using only its bundled Node', { 
   const temporary = await mkdtemp(join(tempRoot, 'Jarvis artifact 中文 '))
   const extracted = join(temporary, 'extracted app 空间')
   const data = join(temporary, 'private data 数据')
-  await mkdir(extracted); await mkdir(data, { mode: 0o700 })
+  await mkdir(extracted)
+  // Let the shipped runtime create and secure its own fresh data root.
   let launch: ((args: string[]) => ReturnType<typeof spawnSync>) | undefined
   try {
     if (process.platform === 'win32') execFileSync('powershell.exe', ['-NoProfile', '-Command', 'Expand-Archive -LiteralPath $env:ARCHIVE -DestinationPath $env:DEST -ErrorAction Stop'], { env: { ...process.env, ARCHIVE: archive, DEST: extracted } })

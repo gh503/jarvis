@@ -164,7 +164,7 @@ export function loadConfig(): JarvisConfig {
       fasterWhisperScript: absolute(env('JARVIS_ASR_SCRIPT', join(import.meta.dirname, '..', 'scripts', 'asr_worker.py')), join(import.meta.dirname, '..', 'scripts', 'asr_worker.py')),
       fasterWhisperModel: env('JARVIS_ASR_MODEL', DEFAULTS.fasterWhisperModel),
       ocrScript: absolute(env('JARVIS_OCR_SCRIPT', join(import.meta.dirname, '..', 'scripts', 'ocr_worker.py')), join(import.meta.dirname, '..', 'scripts', 'ocr_worker.py')),
-      pythonBin: env('JARVIS_PYTHON', DEFAULTS.pythonBin),
+      pythonBin: env('JARVIS_PYTHON', process.platform === 'win32' ? 'python' : DEFAULTS.pythonBin),
       piperBin: absolute(env('JARVIS_PIPER_BIN', DEFAULTS.piperBin), DEFAULTS.piperBin),
       piperVoice: absolute(env('JARVIS_PIPER_VOICE', DEFAULTS.piperVoice), DEFAULTS.piperVoice),
       ffmpeg: env('JARVIS_FFMPEG', 'ffmpeg'),

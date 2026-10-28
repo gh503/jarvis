@@ -57,10 +57,62 @@ export async function validatePackage(root: string, platform: Platform, arch: st
 }
 
 // Fixed code only. Paths and argv are passed as environment data, never interpolated.
-export const POWERSHELL_LINK = `$ErrorActionPreference = 'Stop'\n$ProgressPreference = 'SilentlyContinue'\n$stage = 'create COM object'\ntry {\n$shell = New-Object -ComObject WScript.Shell\n$stage = 'create shortcut'\n$link = $shell.CreateShortcut($env:JARVIS_LINK_PATH)\n$stage = 'set target'\n$link.TargetPath = $env:JARVIS_LINK_TARGET\n$stage = 'set arguments'\n$link.Arguments = $env:JARVIS_LINK_ARGS\n$stage = 'set working directory'\n$link.WorkingDirectory = $env:JARVIS_LINK_CWD\n$link.Description = 'Jarvis portable per-user launcher'\n$stage = 'save shortcut'\n$link.Save()\n} catch {\n[Console]::Error.WriteLine(('Shortcut stage {0}: {1} (HRESULT {2})' -f $stage, $_.Exception.Message, $_.Exception.HResult))\nexit 1\n}\n`
+export const POWERSHELL_LINK = `$ErrorActionPreference = 'Stop'
+$ProgressPreference = 'SilentlyContinue'
+$stage = 'load Unicode shell-link API'
+try {
+Add-Type -TypeDefinition @'
+using System;
+using System.Text;
+using System.Runtime.InteropServices;
+using System.Runtime.InteropServices.ComTypes;
+[ComImport, Guid("00021401-0000-0000-C000-000000000046")]
+class JarvisShellLink {}
+[ComImport, Guid("000214F9-0000-0000-C000-000000000046"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+interface JarvisShellLinkW {
+  void GetPath([Out, MarshalAs(UnmanagedType.LPWStr)] StringBuilder path, int count, IntPtr data, uint flags);
+  void GetIDList(out IntPtr id);
+  void SetIDList(IntPtr id);
+  void GetDescription([Out, MarshalAs(UnmanagedType.LPWStr)] StringBuilder text, int count);
+  void SetDescription([MarshalAs(UnmanagedType.LPWStr)] string text);
+  void GetWorkingDirectory([Out, MarshalAs(UnmanagedType.LPWStr)] StringBuilder path, int count);
+  void SetWorkingDirectory([MarshalAs(UnmanagedType.LPWStr)] string path);
+  void GetArguments([Out, MarshalAs(UnmanagedType.LPWStr)] StringBuilder text, int count);
+  void SetArguments([MarshalAs(UnmanagedType.LPWStr)] string text);
+  void GetHotkey(out short key);
+  void SetHotkey(short key);
+  void GetShowCmd(out int command);
+  void SetShowCmd(int command);
+  void GetIconLocation([Out, MarshalAs(UnmanagedType.LPWStr)] StringBuilder path, int count, out int index);
+  void SetIconLocation([MarshalAs(UnmanagedType.LPWStr)] string path, int index);
+  void SetRelativePath([MarshalAs(UnmanagedType.LPWStr)] string path, uint reserved);
+  void Resolve(IntPtr window, uint flags);
+  void SetPath([MarshalAs(UnmanagedType.LPWStr)] string path);
+}
+public static class JarvisShortcut {
+  public static void Save(string destination, string target, string arguments, string directory) {
+    object instance = new JarvisShellLink();
+    try {
+      var link = (JarvisShellLinkW)instance;
+      link.SetPath(target);
+      link.SetArguments(arguments);
+      link.SetWorkingDirectory(directory);
+      link.SetDescription("Jarvis portable per-user launcher");
+      ((IPersistFile)instance).Save(destination, true);
+    } finally { Marshal.FinalReleaseComObject(instance); }
+  }
+}
+'@
+$stage = 'save Unicode shortcut'
+[JarvisShortcut]::Save($env:JARVIS_LINK_PATH, $env:JARVIS_LINK_TARGET, $env:JARVIS_LINK_ARGS, $env:JARVIS_LINK_CWD)
+} catch {
+[Console]::Error.WriteLine(('Shortcut stage {0}: {1} (HRESULT {2})' -f $stage, $_.Exception.Message, $_.Exception.HResult))
+exit 1
+}
+`
 function runPowerShell(script: string, env: NodeJS.ProcessEnv): void {
   try {
-    execFileSync('powershell.exe', ['-NoLogo', '-NoProfile', '-NonInteractive', '-EncodedCommand', Buffer.from(script, 'utf16le').toString('base64')], { env: { ...process.env, ...env }, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] })
+    execFileSync('powershell.exe', ['-NoLogo', '-NoProfile', '-NonInteractive', '-EncodedCommand', Buffer.from(script, 'utf16le').toString('base64')], { env: { ...process.env, ...env, PSModulePath: join(process.env.SystemRoot ?? 'C:\\Windows', 'System32', 'WindowsPowerShell', 'v1.0', 'Modules') }, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] })
   } catch (error) {
     const failure = error as { status?: number; code?: string; stderr?: string }
     throw new Error(`Windows shortcut creation failed (${failure.code ?? failure.status ?? 'unknown'}): ${failure.stderr?.trim() || 'PowerShell returned no diagnostic'}`)
