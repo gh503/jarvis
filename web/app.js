@@ -3252,7 +3252,7 @@ function applyCapabilities(platform) {
     if (!button) continue
     button.disabled = !ok
     if (!ok) {
-      const reason = platform.reasons?.[action] || '当前平台不支持'
+      const reason = platform.reasons?.[action === 'screen' ? 'screenCapture' : action] || '当前平台不支持'
       button.title = reason
       button.setAttribute('aria-description', reason)
     } else {

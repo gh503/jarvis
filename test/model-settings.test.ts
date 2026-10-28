@@ -46,6 +46,19 @@ test('model settings keep local defaults, hide keys, and preserve saved secrets'
   }
 })
 
+test('custom active remote provider survives a fresh process store', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'jarvis-custom-model-'))
+  const file = join(dir, 'model-config.json')
+  try {
+    const store = new ModelSettingsStore(file, defaults)
+    await store.addProfile({ id: 'office-cloud', label: 'Office cloud', kind: 'openai', baseUrl: 'https://api.example.com/v1', model: 'example', apiKey: 'test-only', embedModel: '', visionModel: '', keepAlive: '' })
+    await store.activate('office-cloud')
+    const restarted = await new ModelSettingsStore(file, defaults).load()
+    assert.equal(restarted.active, 'office-cloud')
+    assert.equal(restarted.priority[0], 'office-cloud')
+  } finally { await rm(dir, { recursive: true, force: true }) }
+})
+
 test('remote profile URLs require TLS except on loopback', () => {
   const base = {
     id: 'remote', label: '远端', kind: 'openai' as const, protocol: 'chat-completions' as const, model: 'm', apiKey: 'k',

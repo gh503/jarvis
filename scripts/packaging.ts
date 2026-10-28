@@ -11,8 +11,8 @@ export function nativeTarget(platform: string, arch: string, version: string): N
   return platform as NativePlatform
 }
 
-const runtimeScripts = new Set(['app.ts', 'runtime-lifecycle.ts', 'asr_worker.py', 'ocr_worker.py', 'screen_capture.py', 'backup.ts', 'restore.ts', 'backup-archive.ts', 'gen-tls.sh', 'install-service.sh'])
-const publicDocs = new Set(['getting-started.md', 'distribution.md', 'security.md', 'providers-guide.md', 'voice-providers.md', 'operations.md', 'models.md', 'voice.md', 'providers.md'])
+const runtimeScripts = new Set(['app.ts', 'install-native.ts', 'runtime-lifecycle.ts', 'asr_worker.py', 'ocr_worker.py', 'screen_capture.py', 'backup.ts', 'restore.ts', 'backup-archive.ts', 'gen-tls.sh', 'install-service.sh'])
+const publicDocs = new Set(['getting-started.md', 'native-install.md', 'distribution.md', 'security.md', 'providers-guide.md', 'voice-providers.md', 'operations.md', 'models.md', 'voice.md', 'providers.md'])
 /** An allowlist of tracked public source; never recursively copy a working tree. */
 export function isPublicFile(path: string): boolean {
   const parts = path.split('/')
@@ -64,7 +64,7 @@ export function launchers(platform: NativePlatform): Record<string, string> {
     'Jarvis.cmd': '@echo off\r\nsetlocal DisableDelayedExpansion\r\n"%~dp0runtime\\node.exe" --experimental-transform-types "%~dp0scripts\\app.ts" %*\r\nexit /b %errorlevel%\r\n',
     'Jarvis.ps1': '& "$PSScriptRoot\\runtime\\node.exe" --experimental-transform-types "$PSScriptRoot\\scripts\\app.ts" @args\r\nexit $LASTEXITCODE\r\n',
   }
-  const sh = '#!/bin/sh\nset -eu\nHERE=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)\nexec "$HERE/runtime/node" --experimental-transform-types "$HERE/scripts/app.ts" "$@"\n'
+  const sh = '#!/bin/sh\nset -eu\ncase "$0" in */*) BASE=${0%/*} ;; *) BASE=. ;; esac\nHERE=$(CDPATH= cd -- "$BASE" && pwd)\nexec "$HERE/runtime/node" --experimental-transform-types "$HERE/scripts/app.ts" "$@"\n'
   return platform === 'darwin' ? { jarvis: sh, 'Jarvis.command': sh } : { jarvis: sh }
 }
 

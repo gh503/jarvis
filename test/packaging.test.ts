@@ -16,7 +16,7 @@ async function temporary(run: (dir: string) => Promise<void>) {
 
 test('public allowlist excludes private state, environment files and unrelated scripts', () => {
   for (const path of ['.env', 'src/.env', 'web/.env.local', 'src/private/key.ts', 'data/state.json', 'node_modules/ws/index.js', 'scripts/__pycache__/worker.pyc', 'scripts/package-app.ts', 'docs/customer-notes.md', 'src/secrets/token.ts', 'web/key.pem']) assert.equal(isPublicFile(path), false, path)
-  for (const path of ['src/main.ts', 'src/local-tools/scoped-filesystem.ts', 'web/index.html', 'web/icons/jarvis.svg', 'scripts/app.ts', 'scripts/runtime-lifecycle.ts', 'LICENSE', 'package-lock.json']) assert.equal(isPublicFile(path), true, path)
+  for (const path of ['src/main.ts', 'src/local-tools/scoped-filesystem.ts', 'web/index.html', 'web/icons/jarvis.svg', 'scripts/app.ts', 'scripts/runtime-lifecycle.ts', 'scripts/backup-archive.ts', 'scripts/install-native.ts', 'docs/native-install.md', 'LICENSE', 'package-lock.json']) assert.equal(isPublicFile(path), true, path)
 })
 
 test('public copy ignores untracked secrets and rejects tracked symlinks', async () => temporary(async dir => {

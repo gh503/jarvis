@@ -33,7 +33,7 @@ function fixture(t: test.TestContext) {
   t.after(() => rmSync(dir, { recursive: true, force: true }))
   const source = join(dir, 'source')
   const target = join(dir, 'target')
-  mkdirSync(source); mkdirSync(target)
+  mkdirSync(source, { mode: 0o700 }); mkdirSync(target, { mode: 0o700 })
   const db = new DatabaseSync(join(source, 'jarvis.db'))
   db.exec("CREATE TABLE marker(value TEXT); INSERT INTO marker VALUES('backup')")
   db.close()
@@ -47,7 +47,8 @@ function sidecars(target: string) {
   }
 }
 function bytes(target: string) {
-  return Object.fromEntries(readdirSync(target).sort().map(name => [name, readFileSync(join(target, name))]))
+  // Lifecycle coordination metadata is persistent and is deliberately never restored.
+  return Object.fromEntries(readdirSync(target).filter(name => name !== 'runtime.lock.sqlite').sort().map(name => [name, readFileSync(join(target, name))]))
 }
 
 test('backup snapshots WAL sessions, includes manifest, restores transcripts and saves old DB sidecars', t => {

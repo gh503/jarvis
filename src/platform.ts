@@ -7,8 +7,9 @@
  * core server runs natively. Scoped external filesystem and sandbox capabilities
  * must be reported separately; an OS label is never proof of feature readiness.
  */
-import { existsSync } from 'node:fs'
-import { join } from 'node:path'
+import { accessSync, constants, existsSync, statSync } from 'node:fs'
+import { delimiter, isAbsolute, join } from 'node:path'
+import { scopedFilesystemCapability } from './local-tools/scoped-filesystem.ts'
 
 export type PlatformOs = 'linux' | 'darwin' | 'win32' | 'other'
 
@@ -22,18 +23,22 @@ export interface Capabilities {
   localTts: boolean
   notify: boolean
   autostart: boolean
-  /** Reasons keyed by capability name, shown in tooltips. */
+  /** Reasons distinguish support, discovery and unverified readiness/permissions.
+   * False may mean unverified, not unsupported; runtime health can refine it.
+   */
   reasons: Record<string, string>
 }
 
 function commandExists(name: string): boolean {
-  const path = process.env.PATH ?? ''
-  const exts = process.platform === 'win32' ? ['.exe', '.cmd', '.bat', ''] : ['']
-  for (const dir of path.split(process.platform === 'win32' ? ';' : ':')) {
-    if (!dir) continue
+  const paths = isAbsolute(name) || /[\\/]/.test(name) ? [name]
+    : (process.env.PATH ?? '').split(delimiter).filter(Boolean).map(dir => join(dir.replace(/^"|"$/g, ''), name))
+  const exts = process.platform === 'win32' ? ['', '.exe', '.com'] : ['']
+  for (const path of paths) {
     for (const ext of exts) {
       try {
-        if (existsSync(join(dir, `${name}${ext}`))) return true
+        if (!statSync(path + ext).isFile()) continue
+        accessSync(path + ext, process.platform === 'win32' ? constants.F_OK : constants.X_OK)
+        return true
       } catch {
         // An unreadable PATH entry is simply not a match.
       }
@@ -54,29 +59,30 @@ export function capabilities(rootDir: string): Capabilities {
   const label = os === 'linux' ? 'Linux' : os === 'darwin' ? 'macOS' : os === 'win32' ? 'Windows' : os
   const screenHelper = existsSync(join(rootDir, 'scripts', 'screen_capture.py'))
   const cameraDevice = existsSync('/dev/video0')
-  const python = commandExists('python3') || commandExists('python')
-  const asrWorker = existsSync(join(rootDir, 'scripts', 'asr_worker.py'))
-  const piper = commandExists('piper')
-  const edgeTts = commandExists('edge-tts')
+  // No model loads, capture requests, or permission prompts during discovery.
 
   const reasons: Record<string, string> = {}
+  // UI availability hints permit explicit user-triggered probes; reasons never
+  // claim that discovery establishes permission or runtime readiness.
   const screenCapture = os === 'linux' && screenHelper && commandExists('python3')
-  if (!screenCapture) reasons.screenCapture = os === 'linux' ? '缺少屏幕捕获辅助脚本或 Python' : '屏幕捕获目前只支持 Linux（需要 xdg-desktop-portal）'
+  reasons.screenCapture = `supported=${os === 'linux'}; installed=${os === 'linux' && screenHelper && commandExists('python3')}; configured=unknown; readiness=unknown; permission=unknown (portal/session not probed)`
 
   const camera = os === 'linux' && cameraDevice
-  if (!camera) reasons.camera = os === 'linux' ? '没有找到 /dev/video0' : '摄像头捕获目前只支持 Linux'
+  reasons.camera = `supported=${os === 'linux'}; installed=${os === 'linux' && cameraDevice}; configured=unknown; readiness=unknown; permission=unknown (device not opened)`
 
-  const localAsr = python && asrWorker
-  if (!localAsr) reasons.localAsr = python ? '缺少 scripts/asr_worker.py' : '需要 Python 3 与 faster-whisper'
+  const localAsr = false
+  reasons.localAsr = 'supported=true; installed=unknown; configured=unknown; readiness=unknown (Python and worker presence do not verify ASR dependencies or model); permission=unknown'
 
-  const localTts = piper || edgeTts
-  if (!localTts) reasons.localTts = '需要 piper 或 edge-tts'
+  const localTts = false
+  reasons.localTts = 'supported=true; installed=unknown; configured=unknown; readiness=unknown (configured engine and voice not probed); permission=unknown'
 
-  const notify = os === 'linux' ? commandExists('notify-send') : os === 'darwin' && existsSync('/usr/bin/osascript')
-  if (!notify) reasons.notify = os === 'linux' ? '缺少 notify-send' : os === 'win32' ? 'Windows 桌面通知需要已注册的应用通知通道；当前请在 Jarvis 内查看提醒' : '缺少系统通知支持'
+  const notify = os === 'linux' ? commandExists('notify-send') : os === 'darwin' && commandExists('/usr/bin/osascript')
+  reasons.notify = `supported=${os === 'linux' || os === 'darwin'}; installed=${notify}; configured=unknown; readiness=unknown; permission=unknown (notification not sent)`
 
   const autostart = os === 'linux' && commandExists('systemctl')
-  if (!autostart) reasons.autostart = '开机自启目前只支持 Linux（systemd --user）'
+  reasons.autostart = `supported=${os === 'linux'}; installed=${autostart}; configured=unknown; readiness=unknown; permission=unknown (user service not queried)`
+  const scoped = scopedFilesystemCapability()
+  reasons.scopedFilesystem = `supported=${scoped.supported}; readiness=unknown; permission=unknown; ${scoped.reason ?? 'Linux descriptor-relative backend; configured roots and /proc access not probed'}`
 
   return { os, label, screenCapture, camera, localAsr, localTts, notify, autostart, reasons }
 }

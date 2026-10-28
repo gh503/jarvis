@@ -179,13 +179,13 @@ export class ModelSettingsStore {
       const found = incoming.find(item => item && item.id === fallback.id)
       return profile(found ?? {}, fallback)
     })
-    const active = profiles.some(item => item.id === saved.active) ? String(saved.active) : 'local'
     // Extra remote profiles saved by a newer version are kept, not dropped.
     for (const item of incoming) {
       if (item && typeof item.id === 'string' && /^[a-z0-9-]{1,32}$/.test(item.id) && !profiles.some(kept => kept.id === item.id)) {
         profiles.push(profile(item as Partial<ModelProfile>, base.profiles[1]))
       }
     }
+    const active = profiles.some(item => item.id === saved.active) ? String(saved.active) : 'local'
     const known = new Set(profiles.map(item => item.id))
     const priorityRaw = Array.isArray(saved.priority) ? saved.priority.map(String).filter(id => known.has(id)) : []
     // Migration default: the previously active provider first, other remotes

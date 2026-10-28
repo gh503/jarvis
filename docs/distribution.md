@@ -133,7 +133,11 @@ Windows 用“启动”文件夹放快捷方式，macOS 用“登录项”，都
 ```bash
 npm run typecheck && npm test
 JARVIS_SMOKE_UI=1 npm run acceptance:full
+npm run package
+JARVIS_PACKAGE_ARCHIVE=auto node --experimental-transform-types --test test/packaged-runtime.test.ts
 ```
+
+Windows PowerShell 使用 `$env:JARVIS_PACKAGE_ARCHIVE='auto'` 设置变量后运行同一个 Node 测试命令。`auto` 选择当前版本/系统/架构归档，也可以提供明确归档路径。此显式验收会验证归档及所有文件校验值，在包含空格和中文的临时路径解压，清空子进程 PATH，仅用包内 Node 和启动器启动隔离数据目录的本地服务，检查健康状态后安全停止。普通 `npm test` 跳过这个需要归档的启动验收。
 
 `acceptance:full` 会检查 `/providers`、`/install`、`/api/providers/catalog`
 和 `/api/health` 的平台字段；`ui:smoke` 在真实浏览器里点开供应商指南、

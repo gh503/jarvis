@@ -12,7 +12,7 @@ function fixture(t:test.TestContext){
   assert.equal(resolve(dir),dir);assert.ok(dir.startsWith(join(tmpdir(),'jarvis-mcp-restore-')))
   t.after(()=>rmSync(dir,{recursive:true,force:true}))
   const source=join(dir,'source'),target=join(dir,'target'),archive=join(dir,'backup.tgz')
-  mkdirSync(source);mkdirSync(target)
+  mkdirSync(source,{mode:0o700});mkdirSync(target,{mode:0o700})
   const db=new DatabaseSync(join(source,'jarvis.db'));db.exec('CREATE TABLE marker(value TEXT)');db.close()
   const run=(script:string,...args:string[])=>spawnSync(process.execPath,['--experimental-transform-types',join(root,'scripts',script+'.ts'),...args],{encoding:'utf8',timeout:30000,env:{...process.env,JARVIS_DATA_DIR:script==='backup'?source:target}})
   const put=(directory:string,value:unknown)=>writeFileSync(join(directory,'mcp-config.json'),JSON.stringify(value))

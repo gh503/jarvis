@@ -4,6 +4,7 @@ import { randomBytes, timingSafeEqual } from 'node:crypto'
 import { chmodSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
+import { ensurePrivateDataDirectory } from './private-directory.ts'
 
 const delay = (ms: number) => new Promise(resolve => setTimeout(resolve, ms))
 export function canonicalDataDir(dataDir: string): string {
@@ -13,6 +14,7 @@ export function canonicalDataDir(dataDir: string): string {
 
 /** OS-managed SQLite locks are released on crashes; never infer ownership from a PID. */
 export async function acquireLifecycleLock(dataDir: string, name: 'runtime' | 'launcher', timeoutMs = 0): Promise<() => void> {
+  await ensurePrivateDataDirectory(dataDir)
   const file = join(canonicalDataDir(dataDir), `${name}.lock.sqlite`)
   const db = new DatabaseSync(file)
   if (process.platform !== 'win32') chmodSync(file, 0o600)
@@ -78,8 +80,8 @@ export async function requestRuntime(dataDir: string, command: 'status' | 'shutd
 }
 
 export async function acquireRuntimeLifecycle(dataDir: string): Promise<RuntimeLifecycle> {
-  dataDir = canonicalDataDir(dataDir)
   const release = await acquireLifecycleLock(dataDir, 'runtime')
+  dataDir = canonicalDataDir(dataDir)
   const instanceId = randomBytes(16).toString('hex')
   const token = randomBytes(32).toString('hex')
   let socketDir: string | undefined

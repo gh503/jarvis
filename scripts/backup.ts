@@ -1,11 +1,12 @@
 #!/usr/bin/env node
 import { DatabaseSync, backup } from 'node:sqlite'
-import { chmod, copyFile, lstat, mkdir, mkdtemp, readdir, rm, writeFile } from 'node:fs/promises'
+import { chmod, copyFile, lstat, mkdir, mkdtemp, readdir, realpath, rm, writeFile } from 'node:fs/promises'
 import { existsSync } from 'node:fs'
-import { join } from 'node:path'
+import { basename, dirname, join, resolve, relative, isAbsolute, sep } from 'node:path'
 import { homedir, tmpdir } from 'node:os'
 import { defaultDataDir } from '../src/config.ts'
-import { runProcess } from '../src/util/process.ts'
+import { acquireLifecycleLock } from '../src/runtime-lifecycle.ts'
+import { createBackup } from './backup-archive.ts'
 
 const args = process.argv.slice(2)
 const dataDir = process.env.JARVIS_DATA_DIR || defaultDataDir()
@@ -14,7 +15,11 @@ const output = args.find(arg => !arg.startsWith('--')) || join(homedir(), `jarvi
 const includeSecrets = args.includes('--include-secrets')
 
 const work = await mkdtemp(join(tmpdir(), 'jarvis-backup-'))
+let release: (() => void) | undefined
 try {
+  release = await acquireLifecycleLock(dataDir, 'runtime')
+  const outputRelative = relative(await realpath(dataDir), join(await realpath(dirname(resolve(output))), basename(output)))
+  if (!outputRelative || (!outputRelative.startsWith(`..${sep}`) && outputRelative !== '..' && !isAbsolute(outputRelative))) throw new Error('Backup output must be outside the data directory')
   const dbFile = join(dataDir, 'jarvis.db')
   if (!existsSync(dbFile)) throw new Error(`no database at ${dbFile}`)
   const files: string[] = []
@@ -76,10 +81,10 @@ try {
     note: 'Restore while Jarvis is stopped. Each database snapshot is consistent. Restored local tool permissions are disabled.',
   }
   await writeFile(join(work, 'manifest.json'), `${JSON.stringify(manifest, null, 2)}\n`, { mode: 0o600 })
-  await runProcess('tar', ['-czf', output, '-C', work, '.'], { timeoutMs: 120_000 })
+  await createBackup(work, output)
   await chmod(output, 0o600)
   const info = await (await import('node:fs/promises')).stat(output)
   console.log(JSON.stringify({ ok: true, output, bytes: info.size, files }, null, 2))
 } finally {
-  await rm(work, { recursive: true, force: true })
+  try { await rm(work, { recursive: true, force: true }) } finally { release?.() }
 }

@@ -21,9 +21,13 @@ jobs:
       - run: npm ci
       - run: npm run typecheck
       - name: Native lifecycle and configuration acceptance
-        run: node --experimental-transform-types --test test/config.test.ts test/runtime-lifecycle.test.ts test/native-actions.test.ts test/worker-utf8.test.ts test/packaging.test.ts
+        run: node --experimental-transform-types --test test/config.test.ts test/runtime-lifecycle.test.ts test/native-actions.test.ts test/worker-utf8.test.ts test/packaging.test.ts test/private-directory.test.ts test/backup-portability.test.ts test/native-install.test.ts test/doctor.test.ts
       - name: Build self-contained native distribution
         run: npm run package
+      - name: Verify extracted bundle without global Node
+        run: node --experimental-transform-types --test test/packaged-runtime.test.ts
+        env:
+          JARVIS_PACKAGE_ARCHIVE: auto
       - uses: actions/upload-artifact@v4
         with:
           name: jarvis-native-${{ runner.os }}-${{ runner.arch }}
