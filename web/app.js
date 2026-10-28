@@ -421,17 +421,18 @@ function applyStatus(status = {}) {
   const provider = state.status.provider === 'remote' ? '远端' : '本地'
   $('#model-pill').textContent = state.status.modelReady ? `${model} · ${provider}` : '模型未就绪'
   $('#model-pill').style.opacity = state.status.modelReady ? '1' : '0.6'
-  const asrStarting = state.voice.asrState === 'starting'
+  const asrStarting = state.voice.asrState === 'starting' && state.voice.asrCanAttempt !== true
+  const asrUnavailable = state.voice.asrCanAttempt === false || asrStarting
   const mic = $('#mic-btn')
   const orb = $('#orb')
   if (mic) {
-    mic.disabled = asrStarting || state.busy || state.snapshotLoading || state.snapshotFailed || !state.session || state.session.archived
-    mic.title = asrStarting ? '语音识别加载中…' : state.voice.asrState === 'error' ? '语音识别异常；仍可重试或直接打字' : '按住说话'
-    mic.setAttribute('aria-label', asrStarting ? '语音识别加载中' : state.voice.asrState === 'error' ? '语音识别异常' : '按下说话')
+    mic.disabled = asrUnavailable || state.busy || state.snapshotLoading || state.snapshotFailed || !state.session || state.session.archived
+    mic.title = asrStarting ? '语音识别加载中…' : asrUnavailable ? '语音识别暂不可用；请检查语音设置或直接打字' : state.voice.asrState === 'error' ? '语音识别异常；仍可重试或直接打字' : '按住说话'
+    mic.setAttribute('aria-label', asrStarting ? '语音识别加载中' : asrUnavailable ? '语音识别暂不可用' : state.voice.asrState === 'error' ? '语音识别异常' : '按下说话')
   }
   if (orb) {
-    orb.disabled = asrStarting || state.busy || state.snapshotLoading || state.snapshotFailed || !state.session || state.session.archived
-    orb.title = asrStarting ? '语音识别加载中…' : '按下说话'
+    orb.disabled = asrUnavailable || state.busy || state.snapshotLoading || state.snapshotFailed || !state.session || state.session.archived
+    orb.title = asrStarting ? '语音识别加载中…' : asrUnavailable ? '语音识别暂不可用；请检查语音设置或直接打字' : '按下说话'
   }
   const hint = $('#state-hint')
   if (hint) {
@@ -3247,14 +3248,15 @@ function capabilityListHtml() {
   const caps = state.capabilities
   if (!caps) return '<li class="capability"><span>平台能力</span><span>读取中…</span></li>'
   const rows = [
-    ['屏幕捕获', caps.screenCapture, caps.reasons?.screenCapture],
-    ['摄像头', caps.camera, caps.reasons?.camera],
-    ['本地语音识别', caps.localAsr, caps.reasons?.localAsr],
-    ['本地语音合成', caps.localTts, caps.reasons?.localTts],
-    ['桌面通知', caps.notify, caps.reasons?.notify],
-    ['开机自启', caps.autostart, caps.reasons?.autostart],
+    ['浏览器屏幕分享', !!navigator.mediaDevices?.getDisplayMedia, '浏览器未提供屏幕分享接口'],
+    ['浏览器摄像头', !!navigator.mediaDevices?.getUserMedia, '需要支持媒体采集的浏览器与安全连接'],
+    ['系统直接截图', caps.screenCapture, caps.reasons?.screenCapture],
+    ['本地语音识别', caps.localAsr, '未在平台检查中验证，请查看语音服务状态'],
+    ['本地语音合成', caps.localTts, '未在平台检查中验证，请查看语音服务状态'],
+    ['桌面通知', caps.notify, '尚未发现可用通知入口，请检查原生安装和系统通知设置'],
+    ['登录自启', caps.autostart, '尚未发现受支持的登录启动方式'],
   ]
-  return rows.map(([label, ok, reason]) => `<li class="capability ${ok ? 'ok' : 'off'}"><span>${label}</span><span>${ok ? '可用' : escapeHtml(reason || '不可用')}</span></li>`).join('')
+  return rows.map(([label, ok, reason]) => `<li class="capability ${ok ? 'ok' : 'off'}"><span>${label}</span><span>${ok ? (label.startsWith('浏览器') ? '接口可用，使用时需授权' : '支持，实际状态见对应设置') : escapeHtml(reason || '尚未就绪')}</span></li>`).join('')
 }
 
 /**

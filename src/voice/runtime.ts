@@ -42,6 +42,8 @@ export interface VoiceRuntimeStatus {
     baseUrl: string
     language: string
     state: string
+    /** Chain eligibility only; configured remote endpoints have not been health-checked. */
+    canAttempt: boolean
     error: string | null
     chain: VoiceChainEntry[]
   }
@@ -88,6 +90,24 @@ export class VoiceRuntime implements Transcriber, Synthesizer {
   private serving = { asr: '', tts: '' }
   private lastFailover: VoiceFailoverNotice | null = null
   private closed = false
+  private localAsrAvailable: boolean | undefined
+
+  private attemptOrder(kind: 'asr' | 'tts'): Array<AsrProfile | TtsProfile> {
+    const chain = this.chain(kind)
+    const now = Date.now()
+    const eligible = chain.filter(profile => !this.options.health?.isCooling(kind, profile.id, now))
+    // Preserve the existing retry policy when every provider is cooling.
+    return eligible.length ? eligible : chain
+  }
+
+  private asrCanAttempt(profile: AsrProfile): boolean {
+    if (profile.kind === 'remote') return Boolean(profile.baseUrl)
+    return this.localAsrAvailable !== false && this.options.localTranscriber.state?.().state !== 'starting'
+  }
+
+  canAttempt(): boolean {
+    return !this.closed && this.attemptOrder('asr').some(profile => this.asrCanAttempt(profile as AsrProfile))
+  }
 
   constructor(private readonly options: VoiceRuntimeOptions) {
     // The store is loaded by initialize(); local is a safe synchronous
@@ -206,15 +226,17 @@ export class VoiceRuntime implements Transcriber, Synthesizer {
     kind: 'asr' | 'tts',
     run: (instance: Transcriber | Synthesizer) => Promise<R>,
   ): Promise<R> {
-    const chain = this.chain(kind)
-    const now = Date.now()
-    const healthy = chain.filter(profile => !this.options.health?.isCooling(kind, profile.id, now))
-    // When every provider is parked we still try them in order: a cooldown may
-    // be stale (a free tier refilled, a key was fixed) and refusing outright
-    // would turn a recovered setup into a dead one.
-    const order = healthy.length ? healthy : chain
+    if (this.closed) throw new Error('语音运行时已经关闭')
+    const order = this.attemptOrder(kind)
     let lastError: unknown = null
     for (const [index, profile] of order.entries()) {
+      // The local worker's transcribe waits for its model to load. Do not
+      // enqueue audio behind that warm-up when a configured fallback can run.
+      // Starting is not a provider failure and must not incur a cooldown.
+      if (kind === 'asr' && profile.kind === 'local' && this.options.localTranscriber.state?.().state === 'starting') {
+        lastError = new Error('本地语音识别加载中，请稍后重试')
+        continue
+      }
       try {
         const instance = kind === 'asr'
           ? this.instanceFor('asr', profile as AsrProfile)
@@ -280,8 +302,17 @@ export class VoiceRuntime implements Transcriber, Synthesizer {
   }
 
   async available(): Promise<boolean> {
-    const first = this.settings.asr[0]
-    return await this.instanceFor('asr', first).available()
+    if (this.closed) return false
+    // Local availability checks inspect installation/configuration only; never
+    // probe a remote endpoint or send audio just to render status.
+    for (const profile of this.attemptOrder('asr')) {
+      if (profile.kind === 'local') {
+        if (this.options.localTranscriber.state?.().state === 'starting') continue
+        this.localAsrAvailable = await this.options.localTranscriber.available().catch(() => false)
+      }
+      if (this.asrCanAttempt(profile as AsrProfile)) return true
+    }
+    return false
   }
 
   async transcribe(input: string | Buffer, extension?: string): Promise<Transcription> {
@@ -340,6 +371,7 @@ export class VoiceRuntime implements Transcriber, Synthesizer {
         baseUrl: asrFirst?.baseUrl ?? '',
         language: asrFirst?.language ?? 'zh',
         state: asrState.state,
+        canAttempt: this.canAttempt(),
         error: asrState.error ?? null,
         chain: this.chainStatus('asr'),
       },

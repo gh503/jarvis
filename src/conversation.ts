@@ -216,6 +216,7 @@ export class Conversation {
       modelReady: this.modelReady,
       voice: {
         ...this.voiceReady,
+        asrCanAttempt: this.deps.voice?.status().asr.canAttempt ?? this.voiceReady.asr,
         asrState: this.deps.transcriber.state?.().state ?? (this.voiceReady.asr ? 'ready' : 'unavailable'),
         asrError: this.deps.transcriber.state?.().error ?? null,
       },
@@ -235,6 +236,7 @@ export class Conversation {
       models: this.lastHealth.models,
       voice: {
         ...this.voiceReady,
+        asrCanAttempt: voiceDetail?.asr.canAttempt ?? this.voiceReady.asr,
         asrState: voiceDetail?.asr.state ?? this.deps.transcriber.state?.().state ?? (this.voiceReady.asr ? 'ready' : 'unavailable'),
         asrError: voiceDetail?.asr.error ?? this.deps.transcriber.state?.().error ?? null,
         asrProvider: voiceDetail?.asr.kind ?? 'local',

@@ -8,6 +8,7 @@ import { join } from 'node:path'
 import { test } from 'node:test'
 import { nativeIntegration, parseArgs, POWERSHELL_LINK, shellQuote, validatePackage, windowsQuote, xml } from '../scripts/install-native.ts'
 import type { InstallOptions, Platform } from '../scripts/install-native.ts'
+import { WINDOWS_AUMID } from '../src/windows-notification.ts'
 
 async function fixture(platform: Platform, run: (options: InstallOptions) => Promise<void>, realRuntime = false) {
   const temporaryRoot = await realpath(tmpdir())
@@ -117,13 +118,13 @@ public static class InspectShortcut {
       link.GetPath(target, target.Capacity, System.IntPtr.Zero, 4);
       link.GetArguments(args, args.Capacity);
       link.GetWorkingDirectory(cwd, cwd.Capacity);
-      return new string[] { target.ToString(), args.ToString(), cwd.ToString() };
+      return new string[] { target.ToString(), args.ToString(), cwd.ToString(), JarvisIdentity.Read(instance) };
     } finally { System.Runtime.InteropServices.Marshal.FinalReleaseComObject(instance); }
   }
 }
 '@
 $values = [InspectShortcut]::Read($env:JARVIS_TEST_LINK)
-@{target=$values[0]; args=$values[1]; cwd=$values[2]} | ConvertTo-Json -Compress
+@{target=$values[0]; args=$values[1]; cwd=$values[2]; aumid=$values[3]} | ConvertTo-Json -Compress
 # Independently activate the .lnk through Windows ShellExecute. The target script
 # only writes a sentinel and exits: no Jarvis imports, browser or server.
 $start = New-Object System.Diagnostics.ProcessStartInfo
@@ -135,6 +136,7 @@ if ($null -ne $process) { if (!$process.WaitForExit(15000)) { throw 'Fixture sho
   const result = JSON.parse(execFileSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-EncodedCommand', Buffer.from(inspect, 'utf16le').toString('base64')], { encoding: 'utf8', env: { ...process.env, JARVIS_TEST_LINK: path, PSModulePath: join(process.env.SystemRoot ?? 'C:\\Windows', 'System32', 'WindowsPowerShell', 'v1.0', 'Modules') }, timeout: 30000 }))
   assert.equal(result.target, join(options.root, 'runtime', 'node.exe'))
   assert.equal(result.cwd, options.root)
+  assert.equal(result.aumid, WINDOWS_AUMID)
   assert.equal(result.args, ['--experimental-transform-types', join(options.root, 'scripts', 'app.ts'), '--no-open'].map(windowsQuote).join(' '))
   const sentinel = join(options.root, 'shortcut-sentinel.json')
   const deadline = Date.now() + 15000

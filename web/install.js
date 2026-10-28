@@ -168,14 +168,8 @@ async function boot() {
     const data = await response.json()
     const caps = data.platform
     if (!caps) return
-    const missing = []
-    if (!caps.screenCapture) missing.push('屏幕捕获')
-    if (!caps.camera) missing.push('摄像头')
-    if (!caps.localAsr) missing.push('本地语音识别')
-    if (!caps.localTts) missing.push('本地语音合成')
-    $('#install-platform-note').textContent = missing.length
-      ? `当前这台 ${caps.label} 上不可用：${missing.join('、')}（缺依赖或平台限制），设置页里会标出来。`
-      : `当前这台 ${caps.label} 支持全部功能。`
+    const browserCapture = !!navigator.mediaDevices?.getDisplayMedia
+    $('#install-platform-note').textContent = `服务运行于 ${caps.label}。${browserCapture ? '本浏览器支持主动选择屏幕并预览单帧，使用时仍需授权。' : '屏幕分享取决于浏览器与安全连接，当前浏览器未提供此接口。'} 摄像头需浏览器授权；语音是否可用请查看设置中的语音服务状态。本地依赖未验证不代表已配置的远端语音服务不可用。`
   } catch {
     /* 健康检查失败不影响安装引导 */
   }

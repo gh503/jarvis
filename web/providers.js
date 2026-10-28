@@ -349,7 +349,7 @@ async function boot() {
       const note = $('#pv-count')
       const caps = state.platform
       if (!caps.screenCapture) {
-        note.textContent += ` · 当前系统（${caps.label}）不支持屏幕捕获，其它功能正常`
+        note.textContent += ` · ${caps.label} 的系统直接截图未启用；可在对话中主动选择浏览器屏幕分享，预览确认后交给本地视觉模型`
       }
     }
   } catch (error) {

@@ -7,6 +7,7 @@ import { copyFile, lstat, mkdir, mkdtemp, readFile, realpath, rmdir, unlink, wri
 import { homedir } from 'node:os'
 import { dirname, isAbsolute, join, resolve } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
+import { PROPERTY_STORE_TYPES, WINDOWS_AUMID } from '../src/windows-notification.ts'
 
 export type Platform = 'darwin' | 'win32'
 export interface InstallOptions {
@@ -66,6 +67,7 @@ using System;
 using System.Text;
 using System.Runtime.InteropServices;
 using System.Runtime.InteropServices.ComTypes;
+${PROPERTY_STORE_TYPES}
 [ComImport, Guid("00021401-0000-0000-C000-000000000046")]
 class JarvisShellLink {}
 [ComImport, Guid("000214F9-0000-0000-C000-000000000046"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
@@ -98,6 +100,7 @@ public static class JarvisShortcut {
       link.SetArguments(arguments);
       link.SetWorkingDirectory(directory);
       link.SetDescription("Jarvis portable per-user launcher");
+      JarvisIdentity.Set(instance);
       ((IPersistFile)instance).Save(destination, true);
     } finally { Marshal.FinalReleaseComObject(instance); }
   }
@@ -112,7 +115,7 @@ exit 1
 `
 function runPowerShell(script: string, env: NodeJS.ProcessEnv): void {
   try {
-    execFileSync('powershell.exe', ['-NoLogo', '-NoProfile', '-NonInteractive', '-EncodedCommand', Buffer.from(script, 'utf16le').toString('base64')], { env: { ...process.env, ...env, PSModulePath: join(process.env.SystemRoot ?? 'C:\\Windows', 'System32', 'WindowsPowerShell', 'v1.0', 'Modules') }, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] })
+    execFileSync('powershell.exe', ['-NoLogo', '-NoProfile', '-NonInteractive', '-EncodedCommand', Buffer.from(script, 'utf16le').toString('base64')], { env: { ...process.env, ...env, PSModulePath: join(process.env.SystemRoot ?? 'C:\\Windows', 'System32', 'WindowsPowerShell', 'v1.0', 'Modules') }, encoding: 'utf8', timeout: 30000, windowsHide: true, shell: false, stdio: ['ignore', 'pipe', 'pipe'] })
   } catch (error) {
     const failure = error as { status?: number; code?: string; stderr?: string }
     throw new Error(`Windows shortcut creation failed (${failure.code ?? failure.status ?? 'unknown'}): ${failure.stderr?.trim() || 'PowerShell returned no diagnostic'}`)
@@ -208,7 +211,7 @@ export async function nativeIntegration(options: InstallOptions, args: string[])
     }
     const records = []
     for (const path of created) records.push({ path, sha256: digest(await readFile(path)) })
-    await output(state, JSON.stringify({ schemaVersion: 1, platform: options.platform, root, autostart, files: records }, null, 2) + '\n')
+    await output(state, JSON.stringify({ schemaVersion: 1, platform: options.platform, root, autostart, ...(options.platform === 'win32' ? { notificationAumid: WINDOWS_AUMID } : {}), files: records }, null, 2) + '\n')
     return created
   } catch (error) {
     // Only exact paths created by this invocation, never package or user data trees.

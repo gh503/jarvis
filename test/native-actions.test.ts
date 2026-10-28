@@ -86,10 +86,10 @@ test('macOS notification script receives hostile text only through argv', () => 
   assert.deepEqual(notificationExecution('--help', 'body', 'linux').args.slice(-3), ['--', '--help', 'body'])
 })
 
-test('Windows notifications explicitly report unsupported without spawning', () => {
+test('Windows notifications without installed identity fail without spawning', () => {
   const warnings: unknown[] = []
   const logger: Logger = { debug() {}, info() {}, error() {}, child() { return logger }, warn(_message, meta) { warnings.push(meta) } }
-  const notifier = new Notifier(logger, undefined, true, { platform: 'win32', spawn: (() => { throw new Error('must not spawn') }) as never })
+  const notifier = new Notifier(logger, undefined, true, { platform: 'win32', windowsIdentity: () => ({ available: false, reason: 'not installed' }), spawn: (() => { throw new Error('must not spawn') }) as never })
   notifier.send('Reminder', 'Hello')
   assert.match(JSON.stringify(warnings), /Windows.*toast/)
   assert.equal(JSON.stringify(warnings).includes('must not spawn'), false)

@@ -38,6 +38,14 @@ On Windows, `%APPDATA%\Microsoft\Windows\Start Menu\Programs\Jarvis.lnk` points 
 
 Both integrations use the package directory as their working directory, so a package-local `.env` is resolved there. No command-line environment overrides are persisted by this installer. Spaces, Unicode, shell metacharacters and apostrophes are supported. NUL and line breaks are rejected in integration paths.
 
+## Windows notifications
+
+Explicit Windows installation also registers Jarvis's own per-user toast identity, `org.jarvis.portable`, by setting `System.AppUserModel.ID` through `IPropertyStore` on the generated shortcuts. It never borrows the PowerShell application's identity. The existing ownership receipt records the identity and shortcut hashes; uninstall removes the owned shortcuts under the same hash checks. Older installations must be explicitly uninstalled and reinstalled to enable this feature.
+
+Sending requires system Windows PowerShell, the receipt, and an unchanged Start menu shortcut. PowerShell rechecks the actual shortcut AUMID before using WinRT. Discovery does not register anything or send a notification. Title/body are bounded Unicode text supplied only through environment variables and XML text nodes; notification content is not logged on failure. Toasts have no click actions. The process is hidden, shell-free and time-limited. `JARVIS_NOTIFY=0` disables delivery; the custom notification-command override remains available on Linux/macOS but does not replace Windows's fixed sender.
+
+Windows notification settings, Focus Assist, organization policies and desktop/session availability can suppress delivery. A discovered identity is not proof of a displayed banner. Native CI validates the production XML serializer, WinRT toast construction and shortcut AUMID without sending a toast; banner delivery and permission remain explicitly unverified. No local desktop notification is sent by the automated tests.
+
 ## Verification, updates and uninstall
 
 Before installation, the manifest must match the platform, CPU architecture and Node 24 runtime metadata. Every listed payload file is checked for size and SHA-256, paths must remain within the package, and symlink payloads are rejected. Runtime, launcher, native installer and server entry point must be listed. This catches corruption; it does **not** authenticate an attacker-modified manifest. Verify the downloaded release archive's published SHA-256 through a trusted channel before executing any included runtime or installer. Validation cannot protect the installer before it is first executed, nor protect a package modified after installation.

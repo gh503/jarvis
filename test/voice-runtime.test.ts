@@ -7,8 +7,11 @@ import { join } from 'node:path'
 import { VoiceHealthStore } from '../src/voice/health.ts'
 import { VoiceRuntime } from '../src/voice/runtime.ts'
 import { VoiceSettingsStore, mergeVoiceUpdate } from '../src/voice/settings.ts'
-import type { Transcriber } from '../src/voice/asr.ts'
+import type { Transcriber, TranscriberState } from '../src/voice/asr.ts'
 import type { Synthesizer } from '../src/voice/tts.ts'
+
+import { readFileSync } from 'node:fs'
+import vm from 'node:vm'
 
 const DEFAULTS = { asrModel: 'tiny', asrEngine: 'faster-whisper', asrLanguage: 'zh', ttsVoice: '/models/zh.onnx' }
 
@@ -196,4 +199,98 @@ test('a client-side 4xx is surfaced instead of silently switching engines', asyn
     server.close()
     await rm(dir, { recursive: true, force: true })
   }
+})
+
+
+test('starting local ASR yields immediately to configured fallback without probing or parking it', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'jarvis-voice-starting-'))
+  const speech = fakeSpeech()
+  let localState: TranscriberState = { state: 'starting' }
+  speech.localAsr.state = () => localState
+  speech.localAsr.transcribe = async () => { throw new Error('starting worker must never be called') }
+  const { server, base, hits } = await listeningServer((_request, response) => {
+    response.writeHead(200, { 'content-type': 'application/json' })
+    response.end(JSON.stringify({ text: 'fallback transcript' }))
+  })
+  const store = new VoiceSettingsStore(join(dir, 'voice.json'), DEFAULTS)
+  const health = new VoiceHealthStore(join(dir, 'health.json'))
+  const runtime = new VoiceRuntime({ store, health, localTranscriber: speech.localAsr, localSynthesizer: speech.localTts, ffmpeg: 'false' })
+  try {
+    await runtime.initialize()
+    assert.equal(await runtime.available(), false, 'local-only startup stays disabled')
+    assert.equal(runtime.status().asr.canAttempt, false)
+    await assert.rejects(runtime.transcribe(tinyWav(), 'wav'), /加载中/)
+    await runtime.apply(mergeVoiceUpdate(await store.load(), { asr: [
+      { id: 'local', label: 'Local', kind: 'local', model: 'tiny' },
+      { id: 'cloud', label: 'Remote', kind: 'remote', baseUrl: base, model: 'whisper-1', apiKey: 'fake' },
+    ] }))
+    assert.equal(await runtime.available(), true)
+    assert.equal(runtime.status().asr.canAttempt, true)
+    assert.equal(runtime.status().asr.state, 'starting', 'eligibility does not claim preferred provider readiness')
+    assert.equal(hits.length, 0, 'readiness never probes remote health')
+    assert.equal((await runtime.transcribe(tinyWav(), 'wav')).text, 'fallback transcript')
+    assert.equal(hits.length, 1)
+    assert.equal(runtime.status().serving.asr, 'cloud')
+    assert.deepEqual(health.snapshot().asr, {}, 'startup is not a failure or cooldown')
+    await health.park('asr', 'cloud', { until: Date.now() + 60_000, kind: 'quota', reason: 'test' })
+    assert.equal(await runtime.available(), false, 'cooling fallback is excluded while local is not cooling')
+    await assert.rejects(runtime.transcribe(tinyWav(), 'wav'), /加载中/)
+    assert.equal(hits.length, 1)
+    await health.park('asr', 'local', { until: Date.now() + 60_000, kind: 'server', reason: 'test' })
+    assert.equal(await runtime.available(), true, 'all-cooling retry policy is preserved')
+    assert.equal((await runtime.transcribe(tinyWav(), 'wav')).text, 'fallback transcript')
+    assert.equal(hits.length, 2)
+    await health.clearAll()
+    localState = { state: 'ready' }
+    speech.localAsr.available = async () => false
+    await runtime.apply(mergeVoiceUpdate(await store.load(), { asr: [{ id: 'local', label: 'Local', kind: 'local', model: 'tiny' }] }))
+    assert.equal(await runtime.available(), false, 'all unavailable returns false')
+    assert.equal(runtime.status().asr.canAttempt, false)
+    await runtime.apply(mergeVoiceUpdate(await store.load(), { asr: [
+      { id: 'cloud', label: 'Remote', kind: 'remote', baseUrl: base, model: 'whisper-1', apiKey: 'fake' },
+      { id: 'local', label: 'Local', kind: 'local', model: 'tiny' },
+    ] }))
+    localState = { state: 'starting' }
+    assert.equal(await runtime.available(), true, 'remote-first remains attemptable')
+    assert.equal((await runtime.transcribe(tinyWav(), 'wav')).text, 'fallback transcript')
+    await runtime.close()
+    assert.equal(runtime.canAttempt(), false)
+  } finally {
+    await runtime.close()
+    server.close()
+    await rm(dir, { recursive: true, force: true })
+  }
+})
+
+test('microphone fallback eligibility preserves snapshot, session and busy guards', () => {
+  const source = readFileSync(new URL('../web/app.js', import.meta.url), 'utf8')
+  const start = source.indexOf('function applyStatus(')
+  const end = source.indexOf("  $('#memory-count')", start)
+  const nodes = new Map<string, any>()
+  const $ = (selector: string) => {
+    if (!nodes.has(selector)) nodes.set(selector, { style: {}, dataset: {}, setAttribute() {} })
+    return nodes.get(selector)
+  }
+  const state: any = { status: {}, voice: {}, session: { archived: false }, busy: false, snapshotLoading: false, snapshotFailed: false }
+  const context = vm.createContext({ state, $ })
+  vm.runInContext(source.slice(start, end) + '\n}', context)
+  const apply = (voice: Record<string, unknown>) => {
+    context.voice = voice
+    vm.runInContext('applyStatus({voice})', context)
+    return [$('#mic-btn').disabled, $('#orb').disabled]
+  }
+  const fallback = { asrState: 'starting', asrCanAttempt: true }
+  assert.deepEqual(apply(fallback), [false, false])
+  assert.deepEqual(apply({ asrState: 'starting', asrCanAttempt: false }), [true, true])
+  assert.deepEqual(apply({ asrState: 'starting' }), [true, true], 'older server retains startup guard')
+  assert.deepEqual(apply({ asrState: 'ready', asrCanAttempt: false }), [true, true])
+  for (const guard of ['busy', 'snapshotLoading', 'snapshotFailed']) {
+    state[guard] = true
+    assert.deepEqual(apply(fallback), [true, true], guard)
+    state[guard] = false
+  }
+  state.session = null
+  assert.deepEqual(apply(fallback), [true, true])
+  state.session = { archived: true }
+  assert.deepEqual(apply(fallback), [true, true])
 })
