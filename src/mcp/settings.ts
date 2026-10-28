@@ -1,7 +1,7 @@
 import { chmod, mkdir, open, readFile, rename, unlink, stat } from 'node:fs/promises'
-import { dirname, resolve } from 'node:path'
+import { dirname, resolve, isAbsolute } from 'node:path'
 import { randomUUID } from 'node:crypto'
-import { spawn } from 'node:child_process'
+import { withPrivateFileLock } from '../local-tools/private-storage.ts'
 
 export type Permission = 'ask' | 'allow' | 'deny'
 export type ToolPolicy = { enabled?: boolean; permission?: Permission; usage?: 'local' | 'shared'; effect?: 'read' | 'write' }
@@ -39,7 +39,7 @@ export function normalize(input: ServerInput, previous?: ServerConfig): ServerCo
     if (typeof merged.command !== 'string' || !merged.command.trim() || merged.command.length > 4096) throw new Error('Command required')
     config.command = merged.command
     if (merged.args !== undefined) { if (!Array.isArray(merged.args) || merged.args.length > 100 || merged.args.some(x => typeof x !== 'string' || x.length > 8192)) throw new Error('Invalid arguments'); config.args = [...merged.args] }
-    if (merged.cwd !== undefined) { if (typeof merged.cwd !== 'string' || !merged.cwd.startsWith('/')) throw new Error('cwd must be absolute'); config.cwd = merged.cwd }
+    if (merged.cwd !== undefined) { if (typeof merged.cwd !== 'string' || !isAbsolute(merged.cwd)) throw new Error('cwd must be absolute'); config.cwd = merged.cwd }
     if (merged.env !== undefined) config.env = dictionary(merged.env)
   } else {
     if (typeof merged.url !== 'string' || merged.url.length > 8192) throw new Error('URL required')
@@ -72,33 +72,6 @@ export function publicConfig(config: ServerConfig) {
     preset: config.preset ? { id: config.preset.id, mode: config.preset.mode, verifiedAt: config.preset.verifiedAt, configured: true } : undefined,
     url: config.url ? (config.preset ? '[configured]' : new URL(config.url).origin) : undefined, hasEnv: !!Object.keys(config.env ?? {}).length, hasHeaders: !!Object.keys(config.headers ?? {}).length }
 }
-async function acquireLock(file: string): Promise<() => Promise<void>> {
-  // Never unlink this inode: the kernel owns lock lifetime, including parent crashes.
-  const handle = await open(file, 'a', 0o600)
-  await handle.chmod(0o600)
-  const child = spawn('/usr/bin/flock', ['--exclusive', '--timeout', '5', '--no-fork', file, process.execPath, '-e',
-    'process.stdout.write("locked\\n");process.stdin.resume();process.stdin.on("end",()=>process.exit(0));'],
-  { stdio: ['pipe', 'pipe', 'ignore'], shell: false, env: {} })
-  child.stdin.on('error', () => {})
-  const exited = new Promise<void>(resolve => { child.once('exit', () => resolve()); child.once('error', () => resolve()) })
-  try {
-    await new Promise<void>((resolve, reject) => {
-      const timer = setTimeout(() => { child.kill('SIGKILL'); reject(new Error('MCP settings lock timed out')) }, 7000)
-      let ready = false
-      const finish = (error?: Error) => { if (ready) return; ready = true; clearTimeout(timer); error ? reject(error) : resolve() }
-      child.stdout.once('data', chunk => finish(String(chunk) === 'locked\n' ? undefined : new Error('MCP settings lock protocol failed')))
-      child.once('error', () => finish(new Error('MCP settings require /usr/bin/flock')))
-      child.once('exit', () => finish(new RevisionConflict()))
-    })
-  } catch (error) {
-    child.kill('SIGKILL'); await exited; await handle.close(); throw error
-  }
-  return async () => {
-    child.stdin.end()
-    const timer = setTimeout(() => child.kill('SIGKILL'), 1000)
-    try { await exited } finally { clearTimeout(timer); await handle.close() }
-  }
-}
 export class McpSettings {
   readonly file: string
   constructor(file: string) { this.file = resolve(file) }
@@ -115,8 +88,8 @@ export class McpSettings {
   }
   async change(expected: number | undefined, apply: (data: Settings) => void): Promise<Settings> {
     await mkdir(dirname(this.file), { recursive: true, mode: 0o700 })
-    // Exclusive kernel lock makes read/CAS/rename atomic across processes and recovers on crash.
-    const release = await acquireLock(`${this.file}.lock`)
+    // SQLite serializes read/CAS/rename across native processes and releases on crash.
+    return withPrivateFileLock(this.file, async () => {
     const temp = `${this.file}.${randomUUID()}.tmp`
     try {
       const data = await this.load()
@@ -131,7 +104,7 @@ export class McpSettings {
       return data
     } finally {
       await unlink(temp).catch(() => {})
-      await release()
     }
+    })
   }
 }

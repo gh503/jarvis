@@ -1,6 +1,7 @@
 import { join } from 'node:path'
 import { AttentionManager } from './attention.ts'
 import { loadConfig, ensureRuntimeDirs } from './config.ts'
+import { acquireRuntimeLifecycle, launcherUrl } from './runtime-lifecycle.ts'
 import { ActionManager } from './actions.ts'
 import { Conversation } from './conversation.ts'
 import { SessionStore } from './sessions.ts'
@@ -46,6 +47,7 @@ import { VoiceSettingsStore } from './voice/settings.ts'
 async function main(): Promise<void> {
   process.umask(0o077)
   const config = loadConfig()
+  const lifecycle = await acquireRuntimeLifecycle(config.dataDir)
   ensureRuntimeDirs(config)
   const secure = new SecureFiles(config.dataDir)
   secure.encryptDirectory(join(config.dataDir, 'captures'))
@@ -301,8 +303,11 @@ async function main(): Promise<void> {
     memory.close()
     sessions.close()
     telemetry.close()
+    await lifecycle.close()
     process.exit(0)
   }
+  lifecycle.onShutdown(() => shutdown('local-control'))
+  lifecycle.setReady(launcherUrl(config))
   process.on('SIGINT', () => void shutdown('SIGINT'))
   process.on('SIGTERM', () => void shutdown('SIGTERM'))
 }

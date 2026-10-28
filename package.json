@@ -10,7 +10,7 @@
   "scripts": {
     "start": "node --experimental-transform-types --enable-source-maps src/main.ts",
     "dev": "node --watch --experimental-transform-types src/main.ts",
-    "test": "TZ=Asia/Shanghai node --experimental-transform-types --test --test-concurrency=4 test/*.test.ts",
+    "test": "node scripts/test.mjs",
     "typecheck": "tsc --noEmit",
     "doctor": "node --experimental-transform-types src/doctor.ts",
     "setup": "bash scripts/setup-models.sh",
@@ -28,6 +28,7 @@
   "dependencies": {
     "@modelcontextprotocol/sdk": "1.32.2",
     "ajv": "8.20.0",
+    "tar": "7.5.22",
     "ws": "8.21.3"
   },
   "devDependencies": {

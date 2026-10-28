@@ -1,4 +1,7 @@
 import { spawn } from 'node:child_process'
+import { access, stat } from 'node:fs/promises'
+import { constants } from 'node:fs'
+import { delimiter, isAbsolute, join } from 'node:path'
 
 export class ProcessError extends Error {
   constructor(
@@ -79,10 +82,18 @@ export async function runProcess(command: string, args: string[], options: RunOp
 }
 
 export async function commandExists(command: string): Promise<boolean> {
-  try {
-    await runProcess('sh', ['-c', `command -v "$1" >/dev/null 2>&1`, 'sh', command], { timeoutMs: 2000 })
-    return true
-  } catch {
-    return false
+  if (!command || command.includes('\0')) return false
+  const paths = isAbsolute(command) || /[\\/]/.test(command)
+    ? [command]
+    : (process.env.PATH ?? '').split(delimiter).filter(Boolean).map(dir => join(dir.replace(/^"|"$/g, ''), command))
+  const extensions = process.platform === 'win32' ? ['', '.exe', '.com'] : ['']
+  for (const path of paths) for (const extension of extensions) {
+    try {
+      const target = `${path}${extension}`
+      if (!(await stat(target)).isFile()) continue
+      await access(target, process.platform === 'win32' ? constants.F_OK : constants.X_OK)
+      return true
+    } catch { /* Continue searching executable PATH entries. */ }
   }
+  return false
 }

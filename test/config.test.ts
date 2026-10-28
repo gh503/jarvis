@@ -1,6 +1,13 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { loadConfig, parseEnvFile } from '../src/config.ts'
+import { defaultDataDir, loadConfig, parseEnvFile } from '../src/config.ts'
+
+test('native data defaults are absolute and preserve existing Linux state', () => {
+  assert.equal(defaultDataDir('linux', '/home/example', {}), '/home/example/.local/share/jarvis/data')
+  assert.equal(defaultDataDir('darwin', '/Users/Example Person', {}), '/Users/Example Person/Library/Application Support/Jarvis/data')
+  assert.equal(defaultDataDir('win32', 'C:\\Users\\Example', { LOCALAPPDATA: 'D:\\Local Data' }), 'D:\\Local Data\\Jarvis\\data')
+  assert.equal(defaultDataDir('win32', 'C:\\Users\\Example', { LOCALAPPDATA: 'relative' }), 'C:\\Users\\Example\\AppData\\Local\\Jarvis\\data')
+})
 
 test('parses quoted and unquoted env values', () => {
   const result = parseEnvFile('A=1\nB="two words"\n# comment\nC=\'three\'\n')

@@ -46,12 +46,12 @@ test('settings kernel lock recovers automatically after owner process crash', as
   try {
     const announced = await Promise.race([once(child.stdout, 'data'), once(child, 'exit').then(() => { throw new Error('Lock owner exited early') })])
     assert.equal(String(announced[0]), 'held\n')
-    const inode = (await stat(`${f.file}.lock`)).ino
+    const inode = (await stat(`${f.file}.lock.sqlite`)).ino
     const exited = once(child, 'exit'); child.kill('SIGKILL'); await exited
     const store = new McpSettings(f.file)
     assert.equal((await store.change(0, () => {})).revision, 1)
-    assert.equal((await stat(`${f.file}.lock`)).ino, inode)
-    assert.equal((await stat(`${f.file}.lock`)).mode & 0o777, 0o600)
+    assert.equal((await stat(`${f.file}.lock.sqlite`)).ino, inode)
+    assert.equal((await stat(`${f.file}.lock.sqlite`)).mode & 0o777, 0o600)
   } finally { child.kill('SIGKILL'); await rm(f.dir, { recursive: true, force: true }) }
 })
 test('startup does not await enabled server connection and close cancels it', async () => {

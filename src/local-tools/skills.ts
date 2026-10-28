@@ -2,6 +2,7 @@ import { createHash } from 'node:crypto'
 import { closeSync, constants, fstatSync, lstatSync, openSync, readSync, readdirSync, realpathSync } from 'node:fs'
 import path from 'node:path'
 import type { ToolDefinition } from '../tools.ts'
+import { scopedFilesystemCapability, openDirectory } from './scoped-filesystem.ts'
 
 type Snapshot={revision:number;skillsDir:string|null}
 type Dependencies={settings:{snapshot():Snapshot}}
@@ -25,6 +26,7 @@ function inspectRoot(configured:string){
 }
 
 export function skillTools(deps:Dependencies):ToolDefinition[]{
+  if(!scopedFilesystemCapability().supported)return []
   const current=deps.settings.snapshot(),snapshot={revision:current.revision,skillsDir:current.skillsDir}
   if(snapshot.skillsDir===null)return []
   let initial:ReturnType<typeof inspectRoot>|undefined
@@ -39,7 +41,7 @@ export function skillTools(deps:Dependencies):ToolDefinition[]{
     return root
   }
   const withRoot=<T>(run:(fd:number)=>T):T=>{
-    const root=assertCurrent(),fd=openSync(root.root,constants.O_RDONLY|constants.O_DIRECTORY|constants.O_NOFOLLOW)
+    const root=assertCurrent(),fd=openDirectory(root.root)
     try{
       const stat=fstatSync(fd)
       if(`${stat.dev}:${stat.ino}`!==root.identity||realpathSync(`/proc/self/fd/${fd}`)!==root.root)throw new Error('Skill directory changed')

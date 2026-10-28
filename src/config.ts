@@ -1,6 +1,6 @@
 import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { homedir } from 'node:os'
-import { dirname, isAbsolute, join, resolve } from 'node:path'
+import { dirname, isAbsolute, join, resolve, win32, posix } from 'node:path'
 import { randomBytes } from 'node:crypto'
 
 export interface JarvisConfig {
@@ -137,7 +137,7 @@ export function loadConfig(): JarvisConfig {
     throw new Error('Remote access requires JARVIS_TLS_CERT/JARVIS_TLS_KEY (or run behind a TLS tunnel)')
   }
 
-  const dataDir = absolute(env('JARVIS_DATA_DIR', DEFAULTS.dataDir), DEFAULTS.dataDir)
+  const dataDir = absolute(env('JARVIS_DATA_DIR', defaultDataDir()), defaultDataDir())
   const webDir = absolute(env('JARVIS_WEB_DIR', join(import.meta.dirname, '..', 'web')), join(import.meta.dirname, '..', 'web'))
 
   return {
@@ -211,8 +211,14 @@ export function isLoopbackHost(host: string): boolean {
   return host === '127.0.0.1' || host === 'localhost' || host === '::1'
 }
 
-export function defaultDataDir(): string {
-  return join(homedir(), '.local', 'share', 'jarvis', 'data')
+/** Native per-user state location; Linux keeps its established directory. */
+export function defaultDataDir(os: NodeJS.Platform = process.platform, home = homedir(), environment: NodeJS.ProcessEnv = process.env): string {
+  if (os === 'win32') {
+    const local = environment.LOCALAPPDATA
+    return win32.join(local && win32.isAbsolute(local) ? local : win32.join(home, 'AppData', 'Local'), 'Jarvis', 'data')
+  }
+  if (os === 'darwin') return posix.join(home, 'Library', 'Application Support', 'Jarvis', 'data')
+  return posix.join(home, '.local', 'share', 'jarvis', 'data')
 }
 
 export function ensureParent(path: string): void {

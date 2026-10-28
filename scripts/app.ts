@@ -14,8 +14,9 @@
  *   --browser=X   force a browser binary
  */
 import { spawn } from 'node:child_process'
-import { existsSync, mkdirSync, readFileSync, writeFileSync, rmSync } from 'node:fs'
-import { homedir } from 'node:os'
+import { existsSync, mkdirSync, openSync, closeSync } from 'node:fs'
+import { loadConfig } from '../src/config.ts'
+import { acquireLifecycleLock, canonicalDataDir, launcherUrl, requestRuntime } from '../src/runtime-lifecycle.ts'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
@@ -27,59 +28,56 @@ const value = (name: string): string | undefined => {
   return hit ? hit.slice(name.length + 3) : undefined
 }
 
-const port = Number(process.env.JARVIS_PORT ?? 3081)
-const url = `http://127.0.0.1:${port}/`
-const pidFile = join(process.env.JARVIS_DATA_DIR ?? join(homedir(), '.local', 'share', 'jarvis', 'data'), 'app.pid')
+let url: string
+let dataDir: string
 
-async function alive(): Promise<boolean> {
-  try {
-    const response = await fetch(`${url}api/health`, { signal: AbortSignal.timeout(1500) })
-    return response.ok
-  } catch {
-    return false
-  }
-}
-
-async function waitForHealth(timeoutMs = 45_000): Promise<boolean> {
-  const started = Date.now()
-  while (Date.now() - started < timeoutMs) {
-    if (await alive()) return true
-    await new Promise(resolve => setTimeout(resolve, 500))
-  }
-  return false
-}
-
-function stopServer(): void {
-  if (existsSync(pidFile)) {
-    const pid = Number(readFileSync(pidFile, 'utf8').trim())
-    if (pid > 0) {
-      try {
-        process.kill(pid, 'SIGTERM')
-        console.log(`已停止后台 Jarvis（pid ${pid}）`)
-      } catch {
-        console.log('后台进程已经不在了')
-      }
-    }
-    rmSync(pidFile, { force: true })
+async function stopServer(): Promise<void> {
+  const status = await requestRuntime(dataDir, 'shutdown')
+  if (!status) {
+    // The runtime lock is authoritative even if metadata is stale or unavailable.
+    const release = await acquireLifecycleLock(dataDir, 'runtime')
+    release()
+    console.log('Jarvis 没有运行。')
     return
   }
-  console.log('没有找到通过 npm run app 启动的后台进程；如果用的是 systemd，请用 systemctl --user stop jarvis')
+  if (status.state !== 'stopping') throw new Error('Jarvis is still initializing; retry shutdown when ready')
+  const release = await acquireLifecycleLock(dataDir, 'runtime', 45_000)
+  release()
+  console.log('Jarvis 已安全停止。')
 }
 
-function startServer(): boolean {
-  mkdirSync(dirname(pidFile), { recursive: true })
-  const child = spawn(process.execPath, ['--experimental-transform-types', '--enable-source-maps', join(root, 'src', 'main.ts')], {
-    cwd: root,
-    detached: true,
-    stdio: ['ignore', 'ignore', 'ignore'],
-    env: { ...process.env, JARVIS_APP: '1' },
-  })
-  child.unref()
-  if (child.pid) {
-    try { writeFileSync(pidFile, String(child.pid), { mode: 0o600 }) } catch { /* best effort */ }
+async function ensureServer(): Promise<void> {
+  let status = await requestRuntime(dataDir)
+  let startupError: Error | undefined
+  if (!status) {
+    // Never launch over an unresponsive owner or trust a stale app.pid file.
+    const release = await acquireLifecycleLock(dataDir, 'runtime')
+    release()
+    const log = openSync(join(dataDir, 'launcher.log'), 'a', 0o600)
+    try {
+      const child = spawn(process.execPath, ['--experimental-transform-types', '--enable-source-maps', join(root, 'src', 'main.ts')], {
+        // Preserve relative env configuration resolution, including paths containing spaces.
+        cwd: process.cwd(), detached: true, stdio: ['ignore', log, log],
+        env: { ...process.env, JARVIS_APP: '1', JARVIS_DATA_DIR: dataDir },
+      })
+      child.once('error', error => { startupError = error })
+      child.once('exit', code => { startupError = new Error(`Jarvis exited before readiness (code ${code}); see ${join(dataDir, 'launcher.log')}`) })
+      child.unref()
+    } finally { closeSync(log) }
   }
-  console.log(`正在启动 Jarvis（进程 ${child.pid}，日志在数据目录的 jarvis.log）…`)
-  return true
+  const deadline = Date.now() + 45_000
+  while (Date.now() < deadline) {
+    status = await requestRuntime(dataDir)
+    if (status?.state === 'ready') {
+      if (!status.url || !/^https?:\/\//.test(status.url)) throw new Error('Runtime returned an invalid browser URL')
+      url = status.url
+      return
+    }
+    if (startupError) throw startupError
+    if (status?.state === 'stopping') throw new Error('Jarvis is stopping; retry after shutdown finishes')
+    await new Promise(resolve => setTimeout(resolve, 200))
+  }
+  throw new Error(`Jarvis startup timed out; see ${join(dataDir, 'launcher.log')}`)
 }
 
 interface Candidate { label: string; paths: string[] }
@@ -126,31 +124,28 @@ function findBrowser(): { label: string; path: string } | null {
 }
 
 function openFallback(): void {
-  if (process.platform === 'darwin') { spawn('open', [url], { stdio: 'ignore', detached: true }).unref(); return }
-  if (process.platform === 'win32') { spawn('cmd', ['/c', 'start', '', url], { stdio: 'ignore', detached: true }).unref(); return }
-  spawn('xdg-open', [url], { stdio: 'ignore', detached: true }).unref()
+  const command = process.platform === 'darwin' ? 'open' : process.platform === 'win32' ? 'rundll32.exe' : 'xdg-open'
+  const child = spawn(command, process.platform === 'win32' ? ['url.dll,FileProtocolHandler', url] : [url], { stdio: 'ignore', detached: true })
+  child.on('error', error => { console.error(`Unable to open browser: ${error.message}. Open ${url}`); process.exitCode = 1 })
+  child.unref()
 }
 
 async function main(): Promise<void> {
-  if (flag('stop')) { stopServer(); return }
-
-  if (!(await alive())) {
-    startServer()
-  } else {
-    console.log('Jarvis 已经在运行。')
-  }
+  const config = loadConfig()
+  dataDir = canonicalDataDir(config.dataDir)
+  url = launcherUrl(config)
+  const release = await acquireLifecycleLock(dataDir, 'launcher', 50_000)
+  try {
+    if (flag('stop')) { await stopServer(); return }
+    await ensureServer()
+  } finally { release() }
 
   if (flag('no-open')) {
     console.log(`服务地址：${url}`)
     return
   }
 
-  await waitForHealth().then(ready => {
-    if (!ready) {
-      console.error('启动超时。看看日志，或者手动运行 npm start。')
-      process.exitCode = 1
-      return
-    }
+  {
     const browser = findBrowser()
     if (!browser) {
       console.log('没有找到 Chrome/Edge/Chromium，改用默认浏览器打开。')
@@ -159,7 +154,7 @@ async function main(): Promise<void> {
     }
     // A dedicated profile keeps the app window independent from the user's
     // normal browser session (no stray tabs, own icon, own window size).
-    const profile = join(dirname(pidFile), 'app-profile')
+    const profile = join(dataDir, 'app-profile')
     mkdirSync(profile, { recursive: true })
     const child = spawn(browser.path, [
       `--app=${url}`,
@@ -169,9 +164,10 @@ async function main(): Promise<void> {
       '--no-default-browser-check',
       '--disable-features=Translate',
     ], { stdio: 'ignore', detached: true })
+    child.on('error', error => { console.error(`Unable to open browser: ${error.message}. Open ${url}`); process.exitCode = 1 })
     child.unref()
     console.log(`已用 ${browser.label} 打开 Jarvis。关掉窗口后服务仍在后台；要停止请运行 npm run app -- --stop。`)
-  })
+  }
 }
 
-void main()
+void main().catch(error => { console.error(String(error)); process.exitCode = 1 })
