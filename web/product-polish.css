@@ -83,6 +83,51 @@ body { background: var(--surface-0); }
   .studio-main { padding: 24px 16px 60px; }
   .studio-header { margin-bottom: 18px; }
 }
+/* Immersive workspaces share one close affordance. */
+.profile-header .profile-close,
+#modal.settings-open #modal-close,
+.studio-header .studio-close-icon,
+.modal-head > .icon-btn {
+  width: 36px;
+  height: 36px;
+  min-width: 36px;
+  min-height: 36px;
+  flex: 0 0 36px;
+  display: inline-grid;
+  place-items: center;
+  padding: 0;
+  border: 1px solid var(--line-strong);
+  border-radius: 10px;
+  background: rgb(var(--ink-rgb) / .035);
+  color: var(--muted);
+  transition: color 160ms ease, border-color 160ms ease, background 160ms ease, transform 160ms ease;
+}
+.profile-header .profile-close {
+  font-size: 0;
+  gap: 0;
+}
+.profile-header .profile-close::before {
+  font-size: 22px;
+  font-weight: 350;
+  line-height: 1;
+}
+.profile-header .profile-close:hover,
+#modal.settings-open #modal-close:hover,
+.studio-header .studio-close-icon:hover,
+.modal-head > .icon-btn:hover {
+  color: var(--text);
+  border-color: rgb(var(--accent-rgb) / .48);
+  background: rgb(var(--accent-rgb) / .08);
+  transform: translateY(-1px);
+}
+.profile-header .profile-close:focus-visible,
+#modal.settings-open #modal-close:focus-visible,
+.studio-header .studio-close-icon:focus-visible,
+.modal-head > .icon-btn:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 3px;
+  box-shadow: 0 0 0 3px rgb(var(--accent-rgb) / .12);
+}
 @media (prefers-reduced-motion: reduce) {
   .ambient, .orb-ring, .orb-core, .orb-scan, .particle-field { animation: none !important; }
   .icon-btn:hover, .quick:hover, .prompt-chips button:hover { transform: none; }

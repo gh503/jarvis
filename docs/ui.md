@@ -202,7 +202,7 @@ Shell 依赖 Linux `/usr/bin/bwrap` 和可用的隔离能力；探测失败时�
 ## 4. PWA 与离线
 
 `web/sw.js` 是 network-first 的 shell 缓存，版本号在 `CACHE` 常量（当前
-`jarvis-shell-v37`）：
+`jarvis-shell-v38`）：
 
 - 只缓存 GET 同源请求；`/api/*`、`/ws`、带 `token` 参数的 URL 一律不缓存。
 - 导航请求离线时回退到 `/`；脚本/样式等非导航请求离线返回 503，不会把 HTML 当 JS。
