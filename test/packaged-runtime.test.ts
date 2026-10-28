@@ -56,6 +56,7 @@ test('native artifact verifies and starts/stops using only its bundled Node', { 
     assert.equal(started.status, 0, `${started.stdout}\n${started.stderr}\n${await readFile(join(data, 'launcher.log'), 'utf8').catch(() => '')}`)
     const response = await fetch(`http://127.0.0.1:${port}/api/health`, { headers: { Authorization: `Bearer ${env.JARVIS_AUTH_TOKEN}` }, signal: AbortSignal.timeout(5000) })
     assert.equal(response.status, 200)
+    assert.equal((await response.json() as { version: string }).version, manifest.version)
     const stopped = launch(['--stop'])
     assert.equal(stopped.status, 0, `${stopped.stdout}\n${stopped.stderr}`)
     await assert.rejects(fetch(`http://127.0.0.1:${port}/api/health`, { signal: AbortSignal.timeout(1500) }))

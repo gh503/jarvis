@@ -11,8 +11,8 @@ export function nativeTarget(platform: string, arch: string, version: string): N
   return platform as NativePlatform
 }
 
-const runtimeScripts = new Set(['app.ts', 'install-native.ts', 'runtime-lifecycle.ts', 'asr_worker.py', 'ocr_worker.py', 'screen_capture.py', 'backup.ts', 'restore.ts', 'backup-archive.ts', 'gen-tls.sh', 'install-service.sh'])
-const publicDocs = new Set(['getting-started.md', 'native-install.md', 'distribution.md', 'security.md', 'providers-guide.md', 'voice-providers.md', 'operations.md', 'models.md', 'voice.md', 'providers.md'])
+const runtimeScripts = new Set(['app.ts', 'install-native.ts', 'update-native.ts', 'runtime-lifecycle.ts', 'asr_worker.py', 'ocr_worker.py', 'screen_capture.py', 'backup.ts', 'restore.ts', 'backup-archive.ts', 'gen-tls.sh', 'install-service.sh'])
+const publicDocs = new Set(['getting-started.md', 'native-install.md', 'native-update.md', 'distribution.md', 'security.md', 'providers-guide.md', 'voice-providers.md', 'operations.md', 'models.md', 'voice.md', 'providers.md'])
 /** An allowlist of tracked public source; never recursively copy a working tree. */
 export function isPublicFile(path: string): boolean {
   const parts = path.split('/')

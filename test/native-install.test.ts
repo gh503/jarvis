@@ -9,7 +9,7 @@ import { test } from 'node:test'
 import { nativeIntegration, parseArgs, POWERSHELL_LINK, shellQuote, validatePackage, windowsQuote, xml } from '../scripts/install-native.ts'
 import type { InstallOptions, Platform } from '../scripts/install-native.ts'
 
-async function fixture(platform: Platform, run: (options: InstallOptions) => Promise<void>) {
+async function fixture(platform: Platform, run: (options: InstallOptions) => Promise<void>, realRuntime = false) {
   const temporaryRoot = await realpath(tmpdir())
   const temp = await mkdtemp(join(temporaryRoot, 'jarvis native 中文 '))
   const root = join(temp, "package ' & $ folder")
@@ -20,8 +20,9 @@ async function fixture(platform: Platform, run: (options: InstallOptions) => Pro
     const paths = [`runtime/${platform === 'win32' ? 'node.exe' : 'node'}`, 'scripts/app.ts', 'scripts/install-native.ts', 'src/main.ts']
     const files = []
     for (const path of paths) {
-      await writeFile(join(root, path), 'fixture')
-      files.push({ path, bytes: 7, sha256: createHash('sha256').update('fixture').digest('hex') })
+      const content = realRuntime && path.startsWith('runtime/') ? await readFile(process.execPath) : Buffer.from('fixture')
+      await writeFile(join(root, path), content)
+      files.push({ path, bytes: content.length, sha256: createHash('sha256').update(content).digest('hex') })
     }
     await writeFile(join(root, 'manifest.json'), JSON.stringify({ schemaVersion: 1, platform, arch: process.arch, runtime: { version: 'v24.14.0', platform, arch: process.arch }, files }))
     await run({ platform, root, home: join(temp, 'home'), appData: join(temp, 'roaming'), localAppData: join(temp, 'local'), arch: process.arch })
@@ -104,7 +105,7 @@ test('Windows native COM generates inspectable temporary shortcuts only', { skip
   assert.equal(result.cwd, options.root)
   assert.equal(result.args, ['--experimental-transform-types', join(options.root, 'scripts', 'app.ts'), '--no-open'].map(windowsQuote).join(' '))
   await nativeIntegration(options, ['--uninstall'])
-}))
+}, true))
 
 test('failed shortcut creation rolls back owned files', async () => fixture('win32', async options => {
   options.runPowerShell = () => { throw new Error('COM failed') }

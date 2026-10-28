@@ -8,7 +8,15 @@ import { createConnection, createServer } from 'node:net'
 import { fileURLToPath } from 'node:url'
 import { acquireLifecycleLock, acquireRuntimeLifecycle, launcherUrl, requestRuntime } from '../src/runtime-lifecycle.ts'
 
-const temp = () => mkdtempSync(join(tmpdir(), 'jarvis lifecycle spaces '))
+import { ensurePrivateDataDirectory } from '../src/private-directory.ts'
+
+async function temp(t: test.TestContext) {
+  const container = mkdtempSync(join(tmpdir(), 'jarvis lifecycle spaces '))
+  t.after(() => rmSync(container, { recursive: true, force: true }))
+  const dir = join(container, 'data')
+  await ensurePrivateDataDirectory(dir)
+  return dir
+}
 const launcher = fileURLToPath(new URL('../scripts/app.ts', import.meta.url))
 function run(args: string[], dataDir: string, extra: NodeJS.ProcessEnv = {}) {
   const child = spawn(process.execPath, ['--experimental-transform-types', launcher, ...args], { env: { ...process.env, JARVIS_DATA_DIR: dataDir, ...extra }, stdio: ['ignore', 'pipe', 'pipe'] })
@@ -27,8 +35,8 @@ test('resolved browser URL supports HTTPS, IPv6 and wildcard bind hosts', () => 
   assert.equal(launcherUrl({ host: 'localhost', port: 3010, tlsCert: '' }), 'http://localhost:3010/')
 })
 
-test('runtime owns directory exclusively; authenticated readiness and shutdown work with spaces', async () => {
-  const dir = temp()
+test('runtime owns directory exclusively; authenticated readiness and shutdown work with spaces', async t => {
+  const dir = await temp(t)
   const owner = await acquireRuntimeLifecycle(dir)
   try {
     assert.equal((await requestRuntime(dir))?.state, 'starting')
@@ -43,8 +51,8 @@ test('runtime owns directory exclusively; authenticated readiness and shutdown w
   } finally { await owner.close(); rmSync(dir, { recursive: true, force: true }) }
 })
 
-test('wrong token and instance cannot invoke shutdown', async () => {
-  const dir = temp()
+test('wrong token and instance cannot invoke shutdown', async t => {
+  const dir = await temp(t)
   const owner = await acquireRuntimeLifecycle(dir)
   try {
     let stopped = false
@@ -63,8 +71,8 @@ test('wrong token and instance cannot invoke shutdown', async () => {
   } finally { await owner.close(); rmSync(dir, { recursive: true, force: true }) }
 })
 
-test('concurrent launchers serialize and no-open waits for actual readiness', async () => {
-  const dir = temp()
+test('concurrent launchers serialize and no-open waits for actual readiness', async t => {
+  const dir = await temp(t)
   const owner = await acquireRuntimeLifecycle(dir)
   try {
     owner.onShutdown(() => {})
@@ -77,8 +85,8 @@ test('concurrent launchers serialize and no-open waits for actual readiness', as
   } finally { await owner.close(); rmSync(dir, { recursive: true, force: true }) }
 })
 
-test('legacy stale PID never signals an unrelated process; invalid config fails', async () => {
-  const dir = temp()
+test('legacy stale PID never signals an unrelated process; invalid config fails', async t => {
+  const dir = await temp(t)
   try {
     writeFileSync(join(dir, 'app.pid'), String(process.pid))
     const result = await run(['--stop'], dir)
@@ -90,8 +98,8 @@ test('legacy stale PID never signals an unrelated process; invalid config fails'
   } finally { rmSync(dir, { recursive: true, force: true }) }
 })
 
-test('real launcher starts without optional tools, reports readiness, and stops over IPC', { timeout: 60_000 }, async () => {
-  const dir = temp()
+test('real launcher starts without optional tools, reports readiness, and stops over IPC', { timeout: 60_000 }, async t => {
+  const dir = await temp(t)
   const probe = createServer()
   await new Promise<void>(resolve => probe.listen(0, '127.0.0.1', resolve))
   const port = (probe.address() as { port: number }).port
@@ -112,8 +120,8 @@ test('real launcher starts without optional tools, reports readiness, and stops 
   }
 })
 
-test('startup failure on occupied HTTP port is surfaced, never accepted as readiness', { timeout: 60_000 }, async () => {
-  const dir = temp()
+test('startup failure on occupied HTTP port is surfaced, never accepted as readiness', { timeout: 60_000 }, async t => {
+  const dir = await temp(t)
   const unrelated = createServer(socket => socket.end('HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nOK'))
   await new Promise<void>(resolve => unrelated.listen(0, '127.0.0.1', resolve))
   const port = (unrelated.address() as { port: number }).port
@@ -129,8 +137,8 @@ test('startup failure on occupied HTTP port is surfaced, never accepted as readi
   }
 })
 
-test('runtime crash releases SQLite ownership without stale PID cleanup', async () => {
-  const dir = temp()
+test('runtime crash releases SQLite ownership without stale PID cleanup', async t => {
+  const dir = await temp(t)
   const moduleUrl = new URL('../src/runtime-lifecycle.ts', import.meta.url).href
   const child = spawn(process.execPath, ['--experimental-transform-types', '--input-type=module', '-e', `import { acquireRuntimeLifecycle } from ${JSON.stringify(moduleUrl)}; await acquireRuntimeLifecycle(process.argv[1]); console.log('locked');`, dir], { stdio: ['ignore', 'pipe', 'pipe'] })
   try {

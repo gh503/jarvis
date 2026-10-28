@@ -48,7 +48,7 @@ function Check-Descendants {
       if ($count -gt 100000) { throw 'Data tree exceeds private permission preflight limit' }
       if ($child.Attributes -band [IO.FileAttributes]::ReparsePoint) { throw 'Unsafe descendant reparse point' }
       $security = Get-Acl -LiteralPath $child.FullName
-      if ($security.GetOwner([Security.Principal.SecurityIdentifier]).Value -ne $user.Value) { throw 'Foreign-owned descendant' }
+      if ($security.GetOwner([Security.Principal.SecurityIdentifier]).Value -ne $user.Value) { exit 48 }
       $entries = @($security.GetAccessRules($true, $true, [Security.Principal.SecurityIdentifier]))
       if ($entries.Count -eq 0) { throw 'Empty descendant DACL' }
       foreach ($entry in $entries) {
@@ -65,7 +65,7 @@ $stage = 44
 if (Test-Path -LiteralPath $p) {
   $old = Get-Acl -LiteralPath $p
   $owner = $old.GetOwner([System.Security.Principal.SecurityIdentifier]).Value
-  if ($owner -ne $user.Value) { throw 'Data root must be owned by the current account' }
+  if ($owner -ne $user.Value) { exit 49 }
   foreach ($rule in $old.GetAccessRules($true, $false, [System.Security.Principal.SecurityIdentifier])) {
     if ($rule.IdentityReference.Value -notin @($user.Value, $system.Value, $admins)) {
       throw 'Explicit shared permissions: choose a dedicated private data root'
@@ -148,7 +148,7 @@ export async function ensurePrivateDataDirectory(dir: string): Promise<void> {
       ], { env: { ...process.env, JARVIS_PRIVATE_DIRECTORY: root }, windowsHide: true, timeout: 30_000, maxBuffer: 64 * 1024 })
     } catch (error) {
       // Report only our allowlisted stage codes, never stderr or exception text.
-      const stages: Record<number, string> = { 41: 'native-module', 42: 'path-boundary', 43: 'descendant-preflight', 44: 'root-preflight', 45: 'create-root', 46: 'apply-acl', 47: 'verify-acl' }
+      const stages: Record<number, string> = { 41: 'native-module', 42: 'path-boundary', 43: 'descendant-preflight', 44: 'root-preflight', 45: 'create-root', 46: 'apply-acl', 47: 'verify-acl', 48: 'descendant-owner', 49: 'root-owner' }
       const code = (error as { code?: unknown }).code
       const stage = typeof code === 'number' ? stages[code] ?? 'native-process' : 'native-process'
       throw new Error(`Cannot establish private Windows data permissions [${stage}]: use a dedicated current-account-owned local directory without links or explicit shared ACLs`)

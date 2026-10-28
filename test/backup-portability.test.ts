@@ -9,6 +9,7 @@ import { DatabaseSync } from 'node:sqlite'
 import { Header } from 'tar'
 import { archivePath, extractBackup, remapPrivatePath } from '../scripts/backup-archive.ts'
 import { acquireLifecycleLock } from '../src/runtime-lifecycle.ts'
+import { ensurePrivateDataDirectory } from '../src/private-directory.ts'
 
 async function fixture(t: test.TestContext) {
   const dir = await mkdtemp(join(tmpdir(), 'jarvis-portable-backup-'))
@@ -55,7 +56,7 @@ test('hostile tar entries fail before extraction, including links and case alias
 
 test('backup and restore work without PATH tools; live ownership cannot be forced and lock inode persists', async t => {
   const dir = await fixture(t), source = join(dir, 'source'), target = join(dir, 'target'), archive = join(dir, 'backup.tgz')
-  await mkdir(source, { mode: 0o700 }); await mkdir(target, { mode: 0o700 })
+  await ensurePrivateDataDirectory(source); await ensurePrivateDataDirectory(target)
   const db = new DatabaseSync(join(source, 'jarvis.db')); db.exec('CREATE TABLE marker(value TEXT)'); db.close()
   const run = (name: string, data: string, ...args: string[]) => spawnSync(process.execPath, ['--experimental-transform-types', resolve(import.meta.dirname, '..', 'scripts', `${name}.ts`), ...args], { encoding: 'utf8', timeout: 30000, env: { ...process.env, PATH: '', JARVIS_DATA_DIR: data } })
   let release = await acquireLifecycleLock(source, 'runtime')
