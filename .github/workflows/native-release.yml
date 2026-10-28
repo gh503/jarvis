@@ -68,7 +68,8 @@ jobs:
       - name: Build pinned native filesystem helper
         run: npm run native:build
       - name: Native filesystem protocol and handle acceptance
-        run: node --experimental-transform-types --test test/native-filesystem.test.ts
+        timeout-minutes: 3
+        run: node --experimental-transform-types --test test/native-filesystem.test.ts test/native-skill-tools.test.ts
         env:
           JARVIS_NATIVE_HELPER_REQUIRED: '1'
       - name: Native and release acceptance

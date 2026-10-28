@@ -7,7 +7,7 @@ import { spawn } from 'node:child_process'
 import { once } from 'node:events'
 import { LocalToolSettings } from '../src/local-tools/settings.ts'
 import { FileTools } from '../src/local-tools/files.ts'
-import { skillTools } from '../src/local-tools/skills.ts'
+import { skillTools, skillCapability } from '../src/local-tools/skills.ts'
 import { atomicPrivateJson, readPrivateJson, withPrivateFileLock } from '../src/local-tools/private-storage.ts'
 
 const settingsURL=new URL('../src/local-tools/settings.ts',import.meta.url).href
@@ -27,7 +27,8 @@ test('portable private settings initialize, reload, update and reset; scoped too
       const reopened=new LocalToolSettings(f.file,f.out);await reopened.load();assert.equal(reopened.snapshot().webEnabled,true)
       const files=new FileTools({settings:reopened});assert.equal(files.capabilities().supported,false);assert.match(files.capabilities().reason!,/native descriptor-relative/)
       assert.deepEqual(files.definitions(),[]);assert.deepEqual(files.artifacts('session'),[])
-      assert.deepEqual(skillTools({settings:{snapshot:()=>({revision:0,skillsDir:f.out})}}),[])
+      const skills=skillTools({settings:{snapshot:()=>({revision:0,skillsDir:f.out})}})
+      assert.deepEqual(skills.map(tool=>tool.name),skillCapability().supported?['skill_list','skill_load']:[])
       await assert.rejects(reopened.update({expectedRevision:1,readRoots:[f.out]}),{code:'SCOPED_FILESYSTEM_UNAVAILABLE'})
       assert.doesNotThrow(()=>files.clearSession('session'));assert.doesNotThrow(()=>files.clearAll())
       await reopened.reset();assert.equal(reopened.snapshot().revision,2)

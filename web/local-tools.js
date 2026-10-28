@@ -73,8 +73,12 @@
     if (!capabilities.shellAvailable) { advanced.open = true; advanced.append(node('p', `Shell 不可用：${text(capabilities.reason || '当前环境未提供沙箱能力')}`, 'lt-warning')) }
     const skills = field(advanced, '技能目录（可选，绝对路径）', settings.skillsDir)
     if (capabilities.filesystem?.supported === false) {
-      reads.disabled = true; writes.disabled = true; skills.disabled = true
+      reads.disabled = true; writes.disabled = true
       controls.prepend(node('p', text(capabilities.filesystem.reason || '此平台暂未提供安全的本地文件与技能访问。'), 'lt-warning'))
+    }
+    if (capabilities.skills?.supported === false || (!capabilities.skills && capabilities.filesystem?.supported === false)) {
+      skills.disabled = true
+      advanced.append(node('p', text(capabilities.skills?.reason || '技能读取需要原生文件辅助程序。'), 'lt-warning'))
     }
     const actions = node('div', undefined, 'lt-actions'), save = node('button', '保存授权', 'lt-button'); save.type = 'submit'; save.disabled = conflict
     actions.append(save, button('丢弃草稿并重新加载', () => { if (!saving) void load(true) })); controls.append(actions)
@@ -83,7 +87,7 @@
     form.addEventListener('submit', async event => {
       event.preventDefault(); if (saving || conflict) return
       const payload = { expectedRevision: settings.revision, readRoots: roots(reads), writeRoots: roots(writes), webEnabled: web.checked, shellEnabled: shell.checked, skillsDir: skills.value.trim() || null }
-      if ([...payload.readRoots, ...payload.writeRoots, ...(payload.skillsDir ? [payload.skillsDir] : [])].some(p => !p.startsWith('/'))) { notice.textContent = '请使用绝对目录路径（以 / 开头）。'; return }
+      if ([...payload.readRoots, ...payload.writeRoots, ...(payload.skillsDir ? [payload.skillsDir] : [])].some(p => !p.startsWith('/') && !/^[A-Za-z]:\\/.test(p))) { notice.textContent = '请使用绝对目录路径，例如 /home/me/skills 或 C:\\Users\\me\\skills。'; return }
       saving = true; controls.disabled = true; notice.textContent = '正在保存…'
       try { await api('/api/local-tools/settings', 'PATCH', payload); dirty = false; notice.textContent = '授权已保存。'; await load(true) }
       catch (error) { conflict = error.status === 409; notice.textContent = conflict ? '配置已被其他页面修改。你的草稿已保留；请记录修改后，点击“丢弃草稿并重新加载”读取最新版本。' : error.message; save.disabled = conflict }

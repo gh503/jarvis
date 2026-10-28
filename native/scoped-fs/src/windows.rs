@@ -7,7 +7,7 @@ use std::{
     os::windows::io::FromRawHandle,
     ptr::{null, null_mut},
 };
-use windows_sys::Win32::Foundation::{CloseHandle, HANDLE, INVALID_HANDLE_VALUE};
+use windows_sys::Win32::Foundation::{CloseHandle, GetLastError, HANDLE, INVALID_HANDLE_VALUE};
 #[repr(C)]
 struct UnicodeString {
     length: u16,
@@ -86,7 +86,6 @@ unsafe extern "system" {
 }
 #[link(name = "kernel32")]
 unsafe extern "system" {
-    fn ReOpenFile(original: HANDLE, access: u32, share: u32, flags: u32) -> HANDLE;
     fn CreateFileW(
         name: *const u16,
         access: u32,
@@ -167,7 +166,17 @@ fn open_at(parent: &Handle, name: &str, directory: bool) -> Result<Handle> {
         )
     };
     if status < 0 {
-        return Err("OPEN_DENIED");
+        return Err(match status as u32 {
+            0xC0000022 => "OPEN_COMPONENT_ACCESS_DENIED",
+            0xC0000043 => "OPEN_COMPONENT_SHARING_VIOLATION",
+            0xC000000D => "OPEN_COMPONENT_INVALID_PARAMETER",
+            0xC0000034 => "OPEN_COMPONENT_NOT_FOUND",
+            0xC000003A => "OPEN_COMPONENT_PATH_NOT_FOUND",
+            0xC0000103 => "OPEN_COMPONENT_NOT_DIRECTORY",
+            0xC00000BA => "OPEN_COMPONENT_IS_DIRECTORY",
+            0xC0000033 => "OPEN_COMPONENT_INVALID_NAME",
+            _ => "OPEN_COMPONENT_DENIED",
+        });
     }
     let h = Handle(handle);
     let i = info(&h)?;
@@ -205,7 +214,14 @@ impl Root {
             )
         };
         if raw == INVALID_HANDLE_VALUE {
-            return Err("OPEN_DENIED");
+            return Err(match unsafe { GetLastError() } {
+                5 => "OPEN_ROOT_ACCESS_DENIED",
+                32 => "OPEN_ROOT_SHARING_VIOLATION",
+                87 => "OPEN_ROOT_INVALID_PARAMETER",
+                2 | 3 => "OPEN_ROOT_NOT_FOUND",
+                123 => "OPEN_ROOT_INVALID_NAME",
+                _ => "OPEN_ROOT_DENIED",
+            });
         }
         let anchor = Handle(raw);
         info(&anchor)?;
@@ -256,17 +272,6 @@ impl Root {
     }
     fn descend(&self, parts: &[String], directory: bool) -> Result<Vec<Handle>> {
         let mut handles = Vec::new();
-        // Reopen by HANDLE for an independent enumeration position, never by path.
-        if parts.is_empty() {
-            let raw =
-                unsafe { ReOpenFile(self.ancestors.last().unwrap().0, 0x100081, 3, 0x02200000) };
-            if raw == INVALID_HANDLE_VALUE {
-                return Err("OPEN_DENIED");
-            }
-            let h = Handle(raw);
-            info(&h)?;
-            handles.push(h);
-        }
         for (i, p) in parts.iter().enumerate() {
             let parent = handles
                 .last()
@@ -324,7 +329,12 @@ impl Root {
     }
     pub fn list(&self, parts: &[String], limit: usize) -> Result<Listing> {
         let ancestors = self.descend(parts, true)?;
-        let h = ancestors.last().unwrap();
+        // Requests run synchronously. RestartScan resets this handle's cursor on
+        // every list operation, including after a previous truncated listing.
+        // Borrow the root object directly; no path or ReOpenFile is needed.
+        let h = ancestors
+            .last()
+            .unwrap_or_else(|| self.ancestors.last().unwrap());
         let mut entries = Vec::new();
         let mut restart = 1;
         loop {

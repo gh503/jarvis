@@ -19,16 +19,19 @@ export interface NativeEntry { name: string; kind: 'file' | 'directory' | 'other
  * never tool arguments. No operations are enabled merely by importing this module. */
 export class NativeFilesystem {
   private child: ChildProcessWithoutNullStreams
+  private readonly exited: Promise<void>
   private seq = 0
-  private pending?: { seq: number; resolve: (value: unknown) => void; reject: (error: Error) => void; timer: NodeJS.Timeout }
+  private pending?: { seq: number; op: string; resolve: (value: unknown) => void; reject: (error: Error) => void; timer: NodeJS.Timeout }
   private chunks: Buffer[] = []
   private buffered = 0
   private dead = false
   private queue: Promise<unknown> = Promise.resolve()
   private roots = new Set<string>()
+  private detachAbort?: () => void
   private constructor(executable: string, private timeoutMs: number, args: string[]) {
     if (!isAbsolute(executable)) throw fail('EXECUTABLE_MUST_BE_ABSOLUTE')
     this.child = spawn(executable, args, { stdio: ['pipe', 'pipe', 'pipe'], shell: false, windowsHide: true, cwd: dirname(executable) })
+    this.exited = new Promise(resolve => this.child.once('close', () => resolve()))
     this.child.stdout.on('data', (chunk: Buffer) => this.receive(chunk))
     // Drain diagnostics without retaining or exposing file content.
     this.child.stderr.resume()
@@ -36,12 +39,19 @@ export class NativeFilesystem {
     this.child.on('close', () => this.stop(fail('HELPER_EXITED')))
     this.child.stdin.on('error', () => this.stop(fail('HELPER_PIPE_CLOSED')))
   }
-  static async start(roots: string[], options: { executable?: string; timeoutMs?: number; args?: string[] } = {}): Promise<{ filesystem: NativeFilesystem; roots: string[] }> {
+  static async start(roots: string[], options: { executable?: string; timeoutMs?: number; args?: string[]; signal?: AbortSignal } = {}): Promise<{ filesystem: NativeFilesystem; roots: string[] }> {
     if (!roots.every(root => isAbsolute(root) && !root.includes('\0'))) throw fail('INVALID_ROOT')
     roots = [...roots]
     const timeout = options.timeoutMs ?? 10000
     if (!Number.isSafeInteger(timeout) || timeout < 1) throw fail('INVALID_TIMEOUT')
+    options.signal?.throwIfAborted()
     const fs = new NativeFilesystem(options.executable ?? nativeFilesystemExecutable(), timeout, options.args ?? [])
+    if (options.signal) {
+      const signal = options.signal, abort = () => fs.dispose()
+      signal.addEventListener('abort', abort, { once: true })
+      fs.detachAbort = () => signal.removeEventListener('abort', abort)
+      if (signal.aborted) fs.dispose()
+    }
     try {
       const hello = await fs.request('hello', {}) as Record<string, unknown>
       if (hello.protocolVersion !== 1 || hello.maxRequestBytes !== MAX_REQUEST || hello.maxReadBytes !== MAX_READ || hello.maxListEntries !== 1000 || !Array.isArray(hello.capabilities) || !['read', 'list'].every(value => (hello.capabilities as unknown[]).includes(value))) throw fail('PROTOCOL_MISMATCH')
@@ -51,16 +61,31 @@ export class NativeFilesystem {
       if (new Set(tokens).size !== tokens.length) throw fail('INVALID_RESPONSE')
       tokens.forEach(token => fs.roots.add(token))
       return { filesystem: fs, roots: tokens }
-    } catch (error) { fs.dispose(); throw error }
+    } catch (error) { await fs.disposeAsync(); throw error }
   }
   private stop(error: Error): void {
     if (this.dead) return
     this.dead = true
+    this.detachAbort?.(); this.detachAbort = undefined
     if (this.pending) { clearTimeout(this.pending.timer); this.pending.reject(error); this.pending = undefined }
     this.roots.clear(); this.chunks = []; this.buffered = 0
     this.child.kill()
   }
   dispose(): void { this.stop(fail('HELPER_CLOSED')) }
+  /** Await OS handle release before removing a helper-owned workspace. */
+  async disposeAsync(): Promise<void> {
+    this.dispose()
+    let timer: NodeJS.Timeout | undefined
+    try {
+      await Promise.race([this.exited, new Promise<never>((_resolve, reject) => {
+        timer = setTimeout(() => {
+          this.child.kill('SIGKILL')
+          this.child.stdin.destroy(); this.child.stdout.destroy(); this.child.stderr.destroy()
+          reject(fail('HELPER_SHUTDOWN_TIMEOUT'))
+        }, 5000)
+      })])
+    } finally { if (timer) clearTimeout(timer) }
+  }
   private receive(chunk: Buffer): void {
     if (this.dead) return
     // Exactly one response per outstanding request. Bound before concatenation.
@@ -77,7 +102,7 @@ export class NativeFilesystem {
       if (!response.ok && (typeof response.error?.code !== 'string' || !/^[A-Z0-9_]{1,100}$/.test(response.error.code))) throw fail('INVALID_RESPONSE')
       const pending = this.pending; this.pending = undefined; clearTimeout(pending.timer)
       if (response.ok) pending.resolve(response.result)
-      else pending.reject(fail(response.error.code))
+      else pending.reject(Object.assign(new Error(`Native filesystem ${pending.op}: ${response.error.code}`), { code: response.error.code, operation: pending.op }))
     } catch { this.stop(fail('INVALID_RESPONSE')) }
   }
   private request(op: string, fields: Record<string, unknown>): Promise<unknown> {
@@ -87,7 +112,7 @@ export class NativeFilesystem {
       const frame = JSON.stringify({ version: 1, seq, op, ...fields }) + '\n'
       if (Buffer.byteLength(frame) > MAX_REQUEST) { reject(fail('REQUEST_TOO_LARGE')); return }
       const timer = setTimeout(() => this.stop(fail('HELPER_TIMEOUT')), this.timeoutMs)
-      this.pending = { seq, resolve, reject, timer }
+      this.pending = { seq, op, resolve, reject, timer }
       this.child.stdin.write(frame)
     })
     const result = this.queue.then(run)
