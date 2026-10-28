@@ -1,7 +1,8 @@
 import assert from 'node:assert/strict'
 import { execFileSync, spawnSync } from 'node:child_process'
 import { closeSync, openSync, readFileSync } from 'node:fs'
-import { mkdir, mkdtemp, readFile, readdir, realpath, rm } from 'node:fs/promises'
+import { mkdir, mkdtemp, readFile, readdir, realpath, rm, writeFile } from 'node:fs/promises'
+import { pathToFileURL } from 'node:url'
 import { createServer } from 'node:net'
 import { tmpdir } from 'node:os'
 import { join, resolve, sep } from 'node:path'
@@ -66,6 +67,14 @@ test('native artifact verifies and starts/stops using only its bundled Node', { 
     const binary = join(bundle, 'runtime', process.platform === 'win32' ? 'node.exe' : 'node')
     const identity = JSON.parse(execFileSync(binary, ['-p', 'JSON.stringify({version:process.version,platform:process.platform,arch:process.arch})'], { env, encoding: 'utf8', timeout: 15_000 }))
     assert.equal(identity.version, manifest.runtime.version)
+    nextStage('bundled native helper with empty PATH')
+    const helperRoot = join(temporary, 'approved files')
+    await mkdir(helperRoot)
+    await writeFile(join(helperRoot, 'hello.txt'), 'native scoped fixture')
+    const helperScript = `import assert from 'node:assert/strict';import {NativeFilesystem} from ${JSON.stringify(pathToFileURL(join(bundle, 'src/local-tools/native-filesystem.ts')).href)};const {filesystem,roots}=await NativeFilesystem.start([${JSON.stringify(helperRoot)}]);try{assert.equal((await filesystem.read(roots[0],['hello.txt'])).toString(),'native scoped fixture');const result=await filesystem.list(roots[0],[]);assert.ok(result.entries.some(x=>x.name==='hello.txt'));}finally{filesystem.dispose()}`
+    const helperResult = spawnSync(binary, ['--experimental-transform-types', '--input-type=module', '-e', helperScript], { env, cwd: temporary, encoding: 'utf8', timeout: 20_000 })
+    assert.ifError(helperResult.error)
+    assert.equal(helperResult.status, 0, helperResult.stderr)
     const powershell = join(process.env.SystemRoot ?? 'C:\\Windows', 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe')
     let invocation = 0
     launch = args => {

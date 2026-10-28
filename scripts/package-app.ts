@@ -5,6 +5,7 @@ import { chmod, copyFile, mkdir, mkdtemp, readFile, rename, rm, stat, writeFile 
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import { copyPublicFiles, createArchive, licenseInventory, nativeTarget, payloadFiles, provenance, sha256, writeLaunchers, writeManifest } from './packaging.ts'
+import { buildNativeHelper } from './build-native-helper.ts'
 
 export async function packageApp(root: string, args = process.argv.slice(2)): Promise<string> {
   const platform = nativeTarget(process.platform, process.arch, process.version)
@@ -50,6 +51,16 @@ export async function packageApp(root: string, args = process.argv.slice(2)): Pr
     const binary = join(runtime, platform === 'win32' ? 'node.exe' : 'node')
     await copyFile(process.execPath, binary)
     if (platform !== 'win32') await chmod(binary, 0o755)
+    // Rebuild from the checked-out locked source; never package a stale helper.
+    const helper = await buildNativeHelper(root)
+    const helperBinary = join(runtime, platform === 'win32' ? 'jarvis-scoped-fs.exe' : 'jarvis-scoped-fs')
+    await copyFile(helper.binary, helperBinary)
+    if (platform !== 'win32') await chmod(helperBinary, 0o755)
+    for (const path of await payloadFiles(helper.licensesDir)) {
+      const destination = join(runtime, 'helper-licenses', path)
+      await mkdir(dirname(destination), { recursive: true })
+      await copyFile(join(helper.licensesDir, path), destination)
+    }
     // This includes the runtime's bundled third-party notices, not just the MIT header.
     const licenseUrl = `https://raw.githubusercontent.com/nodejs/node/${process.version}/LICENSE`
     const response = await fetch(licenseUrl, { signal: AbortSignal.timeout(60_000) })

@@ -23,7 +23,8 @@
     "ui:smoke": "node --experimental-transform-types scripts/ui-smoke.ts",
     "acceptance:full": "node --experimental-transform-types scripts/acceptance-full.ts",
     "app": "node --experimental-transform-types scripts/app.ts",
-    "package": "node --experimental-transform-types scripts/package-app.ts"
+    "package": "node --experimental-transform-types scripts/package-app.ts",
+    "native:build": "node --experimental-transform-types scripts/build-native-helper.ts"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "1.32.2",

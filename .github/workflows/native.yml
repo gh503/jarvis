@@ -20,6 +20,12 @@ jobs:
           cache: npm
       - run: npm ci
       - run: npm run typecheck
+      - name: Build pinned native filesystem helper
+        run: npm run native:build
+      - name: Native filesystem protocol and handle acceptance
+        run: node --experimental-transform-types --test test/native-filesystem.test.ts
+        env:
+          JARVIS_NATIVE_HELPER_REQUIRED: '1'
       - name: Native lifecycle and configuration acceptance
         run: node --experimental-transform-types --test test/config.test.ts test/runtime-lifecycle.test.ts test/native-actions.test.ts test/worker-utf8.test.ts test/packaging.test.ts test/private-directory.test.ts test/backup-portability.test.ts test/native-install.test.ts test/doctor.test.ts test/browser-capture.test.ts test/browser-capture-frontend.test.ts test/browser-capture-integration.test.ts test/model-redirects.test.ts test/native-privacy.test.ts test/native-update.test.ts test/windows-notification.test.ts test/voice-runtime.test.ts
       - name: Build self-contained native distribution
