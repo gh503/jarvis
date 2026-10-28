@@ -1,4 +1,5 @@
 import { initStudio } from './studio.js'
+import { captureAndConfirm } from './browser-capture.js'
 import { applyVisualTuning, loadVisualTuning, visualValues } from './visual.js'
 
 const $ = (selector, root = document) => root.querySelector(selector)
@@ -621,6 +622,7 @@ async function rejectTurn(identity, message) {
   state.turnDrafts.delete(identity.turnId)
 }
 async function selectSession(id) {
+  browserCaptureController?.abort()
   if (state.selectedSessionId) state.drafts.set(state.selectedSessionId, $('#input').value)
   state.recordToken++
   if (state.recording) { state.recording.onstop = null; stopRecording() }
@@ -849,6 +851,22 @@ function bindHistory() {
       state.drafts.clear(); await selectSession(data.session.id); await loadHistory()
     } catch (error) { $('#history-status').textContent = error.message }
   })
+}
+
+let browserCaptureController = null
+async function sendBrowserCapture(event, target) {
+  if (!canSend()) return
+  const identity = beginTurn()
+  state.turnViaWs = false
+  const controller = new AbortController()
+  browserCaptureController = controller
+  try {
+    const result = await captureAndConfirm({ event, target, ...identity, token: state.token, signal: controller.signal,
+      isCurrent: () => sameTurn(identity, state.activeTurn) && identity.sessionId === state.selectedSessionId })
+    if (result) handleHttpResult(result, identity)
+    else if (sameTurn(identity, state.activeTurn)) { setActiveTurn(null); void refreshSelected() }
+  } catch (error) { await rejectTurn(identity, error.message) }
+  finally { if (browserCaptureController === controller) browserCaptureController = null }
 }
 
 function sendText(text, options = {}) {
@@ -3247,12 +3265,12 @@ function capabilityListHtml() {
 function applyCapabilities(platform) {
   if (!platform || !platform.os) return
   state.capabilities = platform
-  for (const [action, ok] of Object.entries({ screen: platform.screenCapture, camera: platform.camera })) {
+  for (const [action, ok] of Object.entries({ screen: window.isSecureContext && !!navigator.mediaDevices?.getDisplayMedia, camera: window.isSecureContext && !!navigator.mediaDevices?.getUserMedia })) {
     const button = document.querySelector(`.quick[data-action="${action}"]`)
     if (!button) continue
     button.disabled = !ok
     if (!ok) {
-      const reason = platform.reasons?.[action === 'screen' ? 'screenCapture' : action] || '当前平台不支持'
+      const reason = '当前浏览器不支持此采集能力，请使用本机 localhost 或 HTTPS 下的桌面浏览器。'
       button.title = reason
       button.setAttribute('aria-description', reason)
     } else {
@@ -3557,6 +3575,7 @@ function bind() {
     if (state.cancelling || !state.activeTurn) return
     const identity = { ...state.activeTurn }
     state.cancelling = true
+    browserCaptureController?.abort()
     stopAudio()
     api('/api/cancel', { method: 'POST', body: JSON.stringify(identity) })
       .then(() => { if (sameTurn(identity, state.activeTurn)) void refreshSelected() })
@@ -3647,8 +3666,8 @@ function bind() {
 
   $$('.quick').forEach(button => button.addEventListener('click', () => {
     const action = button.dataset.action
-    if (action === 'screen') sendText('看下屏幕，告诉我最值得注意的一件事。')
-    if (action === 'camera') sendText('看下摄像头，看看我这边有什么。')
+    if (action === 'screen') void sendBrowserCapture(event, 'screen')
+    if (action === 'camera') void sendBrowserCapture(event, 'camera')
     if (action === 'remember') {
       const input = $('#input')
       input.value = '记住：'

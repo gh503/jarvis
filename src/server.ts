@@ -2,6 +2,7 @@ import { createServer as createHttpServer, type IncomingMessage, type Server, ty
 import { createServer as createHttpsServer } from 'node:https'
 import { createHash, randomInt, timingSafeEqual } from 'node:crypto'
 import { buildDailyBrief } from './brief.ts'
+import { MAX_BROWSER_CAPTURE_BYTES } from './senses/browser-capture.ts'
 import { DeviceStore } from './devices.ts'
 import type { SecureFiles } from './secure-files.ts'
 import { readCalendar } from './proactive/calendar.ts'
@@ -1352,6 +1353,34 @@ export class JarvisServer {
       const scenario = url.searchParams.get('scenario') ?? undefined
       const result = await this.deps.conversation.handleAudio(body, mime, { ...identity, scenario })
       sendJson(response, result.busy ? 409 : 200, { ...result, ...(result.busy ? { error: result.reply, activeTurn: this.deps.conversation.status().activeTurn ?? null } : {}) })
+      return
+    }
+
+    if (request.method === 'POST' && path === '/api/browser-capture') {
+      const identity = conversationIdentity({ sessionId: url.searchParams.get('sessionId'), turnId: url.searchParams.get('turnId') })
+      if (!identity.sessionId || !identity.turnId) throw new HttpError(400, 'sessionId 和 turnId 必填')
+      const target = url.searchParams.get('target')
+      if (target !== 'screen' && target !== 'camera') throw new HttpError(400, 'target 必须为 screen 或 camera')
+      const mime = request.headers['content-type']
+      if (mime !== 'image/png') throw new HttpError(400, '需要 image/png 请求体')
+      const admit = () => {
+        if (this.erasing || this.changingMcp || this.changingModel || this.changingLocalSettings) throw new HttpError(409, '正在更新配置或清空数据，请稍后再试')
+        if (this.deletingSessions.has(identity.sessionId!) || (this.deps.sessions && !this.deps.sessions.get(identity.sessionId!))) throw new HttpError(404, '会话不存在或已删除')
+        if (this.deps.sessions?.getTurn(identity.turnId!)) throw new HttpError(409, 'Browser capture turn already exists; use a new turnId')
+      }
+      admit()
+      const body = await readBody(request, MAX_BROWSER_CAPTURE_BYTES)
+      if (!body.length) throw new HttpError(400, 'empty image')
+      admit()
+      const controller = new AbortController()
+      const onClose = () => { if (!response.writableEnded) controller.abort() }
+      response.on('close', onClose)
+      try {
+        const result = await this.deps.conversation.handleBrowserCapture(body, mime, {
+          sessionId: identity.sessionId, turnId: identity.turnId, target, signal: controller.signal,
+        })
+        sendJson(response, result.busy ? 409 : 200, { ...result, ...(result.busy ? { error: result.reply, activeTurn: this.deps.conversation.status().activeTurn ?? null } : {}) })
+      } finally { response.off('close', onClose) }
       return
     }
 

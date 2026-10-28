@@ -5,7 +5,8 @@ import { runToolLoop } from './tool-loop.ts'
 import type { ToolRuntime } from './tools.ts'
 import type { ToolJournal } from './tool-journal.ts'
 import { readdir, rm, stat } from 'node:fs/promises'
-import { join } from 'node:path'
+import { basename, join } from 'node:path'
+import { browserCaptureIdentity, validateBrowserCapture, storeBrowserCapture, describeBrowserCapture, type BrowserCaptureIdentity } from './senses/browser-capture.ts'
 import type { AttentionManager } from './attention.ts'
 import type { JarvisConfig } from './config.ts'
 import type { EventBus } from './events.ts'
@@ -149,6 +150,7 @@ export class Conversation {
   private readonly auxiliary = new Set<Promise<unknown>>()
   private admissionsBlocked = false
   private readonly blockedSessions = new Set<string>()
+  private readonly browserCaptureTurns = new Set<string>()
   private extraction: Promise<unknown> = Promise.resolve()
   private abort: AbortController | null = null
   private followupTimer: NodeJS.Timeout | null = null
@@ -414,7 +416,37 @@ export class Conversation {
     return this.runTurn(turn, options, async () => input.trim())
   }
 
-  private async runTurn(turn: ActiveTurn, options: TurnOptions, readText: () => Promise<string>): Promise<TurnResult> {
+  async handleBrowserCapture(buffer: Buffer, mime: string, options: BrowserCaptureIdentity & { signal?: AbortSignal }): Promise<TurnResult> {
+    const identity = browserCaptureIdentity(options)
+    // Unlike text retries, a repeated image ID cannot prove identical content.
+    // Reject before decoding, storage, or invoking any model.
+    if (this.browserCaptureTurns.has(identity.turnId) || this.deps.sessions?.getTurn(identity.turnId) || this.active?.turnId === identity.turnId) {
+      throw new SessionStoreError('CONFLICT', 'Browser capture turn already exists; use a new turnId')
+    }
+    const turn = this.reserve(identity)
+    if (!('controller' in turn)) return turn
+    if (!this.deps.sessions) this.browserCaptureTurns.add(identity.turnId)
+    turn.contextExcluded = true
+    turn.text = identity.target === 'screen' ? '[浏览器屏幕单帧]' : '[浏览器摄像头单帧]'
+    return this.runTurn(turn, { ...identity, signal: options.signal }, async () => turn.text, async () => {
+      const local = this.deps.model.localClient?.() ?? this.deps.model
+      if (local.isLocal !== true || local.servingRemote?.() === true || local.localClient) {
+        throw new Error('Browser captures require a direct local-only model client')
+      }
+      const capture = await validateBrowserCapture(buffer, mime)
+      this.check(turn)
+      const stored = await storeBrowserCapture(capture, identity, this.deps.config.dataDir, this.deps.secure)
+      this.check(turn)
+      this.emitTurn('sense.capture', { target: identity.target, source: 'browser',
+        url: `/api/captures/${encodeURIComponent(basename(stored.path))}`, bytes: stored.bytes,
+        width: capture.width, height: capture.height, windowTitle: '', titleKnown: false }, turn)
+      const reply = await describeBrowserCapture(local, capture, identity.target, '', turn.controller.signal)
+      this.check(turn)
+      return { reply }
+    })
+  }
+
+  private async runTurn(turn: ActiveTurn, options: TurnOptions, readText: () => Promise<string>, sensitiveExecutor?: () => Promise<TurnResult>): Promise<TurnResult> {
     const onAbort = () => this.cancel(this.identity(turn))
     options.signal?.addEventListener('abort', onAbort, { once: true })
     try {
@@ -430,17 +462,17 @@ export class Conversation {
       if (duplicate) return duplicate
       this.emitTurn('user.message', { text, source: options.source ?? 'text' }, turn)
       const intent = intentOf(text)
-      turn.contextExcluded = intent.type !== 'chat'
-      const update = intent.type === 'chat' ? await this.resolveStatementUpdate(text) : null
+      turn.contextExcluded = Boolean(sensitiveExecutor) || intent.type !== 'chat'
+      const update = !sensitiveExecutor && intent.type === 'chat' ? await this.resolveStatementUpdate(text) : null
       this.check(turn)
-      const result = update ?? await this.route(intent, text, { ...options, ...this.identity(turn), signal: turn.controller.signal })
+      const result = sensitiveExecutor ? await sensitiveExecutor() : update ?? await this.route(intent, text, { ...options, ...this.identity(turn), signal: turn.controller.signal })
       this.check(turn)
       const reply = result.reply.trim() || '我在。'
-      const audioUrl = (options.voice || intent.type === 'look') && !result.audioSpoken ? await this.speak(reply) : undefined
+      const audioUrl = !sensitiveExecutor && (options.voice || intent.type === 'look') && !result.audioSpoken ? await this.speak(reply) : undefined
       await this.speechQueue
       this.check(turn)
       const completed = { ...result, profileUsed: result.profileUsed ?? turn.profileUsed, ...this.identity(turn), reply, audioUrl: audioUrl ?? this.turnAudioUrls[0] }
-      if (!result.error) {
+      if (!result.error && !sensitiveExecutor) {
         this.deps.memory.addEpisode({ startedAt: new Date(turn.startedAt).toISOString(), endedAt: new Date().toISOString(),
           summary: `用户：${text.slice(0, 500)}\nJarvis：${reply.slice(0, 800)}`, sourceRef: `turn:${turn.turnId}` })
         // Guard extraction's post-model writes against cancellation/reset and drain it before release.
@@ -869,7 +901,7 @@ export class Conversation {
         target,
         source: capture.source,
         file: capture.path,
-        url: `/api/captures/${capture.path.split('/').pop()}`,
+        url: `/api/captures/${encodeURIComponent(basename(capture.path))}`,
         bytes: capture.bytes,
         windowTitle: capture.windowTitle || '',
         titleKnown: capture.titleKnown ?? false,
