@@ -1067,15 +1067,40 @@ async function runRecall() {
 }
 
 async function seedDemoMemory() {
+  const buttons = $$('[data-demo-seed]')
+  if (buttons.some(button => button.disabled)) return
+  buttons.forEach(button => { button.disabled = true; button.setAttribute('aria-busy', 'true'); button.textContent = '加载中…' })
+  const wait = ms => new Promise(resolve => setTimeout(resolve, ms))
   try {
-    const result = await api('/api/dev/demo-memory', { method: 'POST', headers: { 'x-jarvis-demo': '1' }, body: '{}' })
+    let result
+    let lastError
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      try {
+        result = await api('/api/dev/demo-memory', { method: 'POST', headers: { 'x-jarvis-demo': '1' }, body: '{}' })
+        break
+      } catch (error) {
+        lastError = error
+        if (attempt === 0) await wait(350)
+      }
+    }
+    if (!result) throw lastError || new Error('演示记忆加载失败')
     notify(`已加载 ${result.items} 条演示记忆`)
-    await loadGraph()
-    state.data = await api('/api/observatory')
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      try {
+        await loadGraph()
+        state.data = await api('/api/observatory')
+        break
+      } catch (error) {
+        if (attempt === 1) throw error
+        await wait(250)
+      }
+    }
     renderMemory()
     window.dispatchEvent(new CustomEvent('jarvis:memory-changed'))
   } catch (error) {
     notify(error instanceof Error ? error.message : String(error), 'danger')
+  } finally {
+    buttons.forEach(button => { button.disabled = false; button.removeAttribute('aria-busy'); button.textContent = '加载演示记忆' })
   }
 }
 
