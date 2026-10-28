@@ -10,7 +10,19 @@ import { payloadFiles, sha256 } from '../scripts/packaging.ts'
 // Opt in after npm run package. The default test suite never launches a server.
 const archiveInput = process.env.JARVIS_PACKAGE_ARCHIVE
 
-test('native artifact verifies and starts/stops using only its bundled Node', { skip: !archiveInput, timeout: 120_000 }, async () => {
+// Windows extraction and scanning thousands of files can exceed two minutes on
+// shared runners. Keep each subprocess bounded independently of this total budget.
+test('native artifact verifies and starts/stops using only its bundled Node', { skip: !archiveInput, timeout: 300_000 }, async () => {
+  const begun = performance.now()
+  let stage = 'archive checksum'
+  let stageStarted = begun
+  const nextStage = (next: string) => {
+    const now = performance.now()
+    console.log(`[artifact] ${stage}: ${Math.round(now - stageStarted)}ms; total ${Math.round(now - begun)}ms; starting ${next}`)
+    stage = next
+    stageStarted = now
+  }
+  console.log(`[artifact] starting ${stage} (${process.platform}/${process.arch})`)
   const pkg = JSON.parse(await readFile(new URL('../package.json', import.meta.url), 'utf8'))
   const filename = `jarvis-${process.env.JARVIS_RELEASE_VERSION ?? pkg.version}-${process.platform}-${process.arch}${process.platform === 'win32' ? '.zip' : '.tar.gz'}`
   const archive = archiveInput === 'auto' ? resolve('dist', filename) : resolve(archiveInput!)
@@ -24,8 +36,10 @@ test('native artifact verifies and starts/stops using only its bundled Node', { 
   // Let the shipped runtime create and secure its own fresh data root.
   let launch: ((args: string[]) => ReturnType<typeof spawnSync>) | undefined
   try {
-    if (process.platform === 'win32') execFileSync('powershell.exe', ['-NoProfile', '-Command', 'Expand-Archive -LiteralPath $env:ARCHIVE -DestinationPath $env:DEST -ErrorAction Stop'], { env: { ...process.env, ARCHIVE: archive, DEST: extracted } })
-    else execFileSync('tar', ['-xzf', archive, '-C', extracted])
+    nextStage('archive extraction')
+    if (process.platform === 'win32') execFileSync('powershell.exe', ['-NoProfile', '-Command', 'Expand-Archive -LiteralPath $env:ARCHIVE -DestinationPath $env:DEST -ErrorAction Stop'], { env: { ...process.env, ARCHIVE: archive, DEST: extracted }, timeout: 150_000 })
+    else execFileSync('tar', ['-xzf', archive, '-C', extracted], { timeout: 150_000 })
+    nextStage('payload enumeration and SHA256 verification')
     const roots = await readdir(extracted)
     assert.equal(roots.length, 1)
     const bundle = join(extracted, roots[0]!)
@@ -38,6 +52,8 @@ test('native artifact verifies and starts/stops using only its bundled Node', { 
     }
     assert.equal(manifest.platform, process.platform)
     assert.equal(manifest.arch, process.arch)
+    console.log(`[artifact] verified ${manifest.files.length} payload files`)
+    nextStage('runtime identity and port allocation')
     const server = createServer()
     await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve))
     const address = server.address()
@@ -47,23 +63,28 @@ test('native artifact verifies and starts/stops using only its bundled Node', { 
     const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => !/^JARVIS_|^NODE_|^PATH$/i.test(key)))
     Object.assign(env, { PATH: '', JARVIS_DATA_DIR: data, JARVIS_HOST: '127.0.0.1', JARVIS_PORT: String(port), JARVIS_AUTH_TOKEN: 'artifact-test-token-at-least-24-characters', JARVIS_OLLAMA_URL: 'http://127.0.0.1:1', JARVIS_DAILY_SPEAK_BUDGET: '0' })
     const binary = join(bundle, 'runtime', process.platform === 'win32' ? 'node.exe' : 'node')
-    const identity = JSON.parse(execFileSync(binary, ['-p', 'JSON.stringify({version:process.version,platform:process.platform,arch:process.arch})'], { env, encoding: 'utf8' }))
+    const identity = JSON.parse(execFileSync(binary, ['-p', 'JSON.stringify({version:process.version,platform:process.platform,arch:process.arch})'], { env, encoding: 'utf8', timeout: 15_000 }))
     assert.equal(identity.version, manifest.runtime.version)
     const powershell = join(process.env.SystemRoot ?? 'C:\\Windows', 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe')
     launch = args => process.platform === 'win32'
       ? spawnSync(powershell, ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', join(bundle, 'Jarvis.ps1'), ...args], { env, cwd: temporary, encoding: 'utf8', timeout: 55_000 })
       : spawnSync(join(bundle, 'jarvis'), args, { env, cwd: temporary, encoding: 'utf8', timeout: 55_000 })
+    nextStage('launcher startup (55s subprocess limit)')
     const started = launch(['--no-open'])
     assert.equal(started.status, 0, `${started.stdout}\n${started.stderr}\n${await readFile(join(data, 'launcher.log'), 'utf8').catch(() => '')}`)
+    nextStage('authenticated health and version')
     const response = await fetch(`http://127.0.0.1:${port}/api/health`, { headers: { Authorization: `Bearer ${env.JARVIS_AUTH_TOKEN}` }, signal: AbortSignal.timeout(5000) })
     assert.equal(response.status, 200)
     assert.equal((await response.json() as { version: string }).version, manifest.version)
+    nextStage('launcher shutdown (55s subprocess limit)')
     const stopped = launch(['--stop'])
     assert.equal(stopped.status, 0, `${stopped.stdout}\n${stopped.stderr}`)
     await assert.rejects(fetch(`http://127.0.0.1:${port}/api/health`, { signal: AbortSignal.timeout(1500) }))
   } finally {
+    nextStage('cleanup shutdown and temporary files')
     launch?.(['--stop'])
     assert.ok(temporary.startsWith(join(tempRoot, 'Jarvis artifact 中文 ')) && temporary !== tempRoot && temporary.includes(sep))
     await rm(temporary, { recursive: true, force: true })
+    nextStage('finished')
   }
 })
