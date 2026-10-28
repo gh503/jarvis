@@ -30,14 +30,14 @@ function readStoredMode() {
     return 'dark';
 }
 
-function resolveTheme(mode) {
-    if (mode === 'auto') return media && media.matches ? 'light' : 'dark';
+function resolveTheme(mode, systemLight = media?.matches) {
+    if (mode === 'auto') return systemLight ? 'light' : 'dark';
     return mode;
 }
 
-function apply(mode, { persist = true } = {}) {
+function apply(mode, { persist = true, systemLight } = {}) {
     const safeMode = MODES.includes(mode) ? mode : 'dark';
-    const theme = resolveTheme(safeMode);
+    const theme = resolveTheme(safeMode, systemLight);
 
     root.dataset.themeMode = safeMode;
     root.dataset.theme = theme;
@@ -83,6 +83,25 @@ apply(readStoredMode(), { persist: false });
 
 document.getElementById('theme-btn')?.addEventListener('click', () => window.JarvisTheme.cycle());
 
-media?.addEventListener?.('change', () => {
-    if (window.JarvisTheme.mode === 'auto') apply('auto', { persist: false });
-});
+let lastSystemLight = media?.matches ?? false;
+
+function syncSystemTheme() {
+    if (readStoredMode() !== 'auto' || !media) return;
+    const systemLight = media.matches;
+    if (systemLight === lastSystemLight && root.dataset.theme === (systemLight ? 'light' : 'dark')) return;
+    lastSystemLight = systemLight;
+    apply('auto', { persist: false, systemLight });
+}
+
+function handleSystemThemeChange(event) {
+    if (readStoredMode() !== 'auto') return;
+    lastSystemLight = event.matches;
+    apply('auto', { persist: false, systemLight: event.matches });
+}
+
+if (media) {
+    if (typeof media.addEventListener === 'function') media.addEventListener('change', handleSystemThemeChange);
+    else if (typeof media.addListener === 'function') media.addListener(handleSystemThemeChange);
+    window.addEventListener('focus', syncSystemTheme);
+    window.setInterval(syncSystemTheme, 250);
+}
