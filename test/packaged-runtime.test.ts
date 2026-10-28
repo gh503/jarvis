@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict'
 import { execFileSync, spawnSync } from 'node:child_process'
+import { closeSync, openSync, readFileSync } from 'node:fs'
 import { mkdir, mkdtemp, readFile, readdir, realpath, rm } from 'node:fs/promises'
 import { createServer } from 'node:net'
 import { tmpdir } from 'node:os'
@@ -66,11 +67,23 @@ test('native artifact verifies and starts/stops using only its bundled Node', { 
     const identity = JSON.parse(execFileSync(binary, ['-p', 'JSON.stringify({version:process.version,platform:process.platform,arch:process.arch})'], { env, encoding: 'utf8', timeout: 15_000 }))
     assert.equal(identity.version, manifest.runtime.version)
     const powershell = join(process.env.SystemRoot ?? 'C:\\Windows', 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe')
-    launch = args => process.platform === 'win32'
-      ? spawnSync(powershell, ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', join(bundle, 'Jarvis.ps1'), ...args], { env, cwd: temporary, encoding: 'utf8', timeout: 55_000 })
-      : spawnSync(join(bundle, 'jarvis'), args, { env, cwd: temporary, encoding: 'utf8', timeout: 55_000 })
+    let invocation = 0
+    launch = args => {
+      // PowerShell descendants may retain inherited capture-pipe handles after the
+      // wrapper exits. Files preserve diagnostics without waiting for pipe EOF.
+      const output = join(temporary, `launcher-${++invocation}.log`)
+      const fd = openSync(output, 'wx', 0o600)
+      try {
+        const options = { env, cwd: temporary, encoding: 'utf8' as const, timeout: 55_000, stdio: ['ignore', fd, fd] as ['ignore', number, number] }
+        const result = process.platform === 'win32'
+          ? spawnSync(powershell, ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', join(bundle, 'Jarvis.ps1'), ...args], options)
+          : spawnSync(join(bundle, 'jarvis'), args, options)
+        return { ...result, stdout: readFileSync(output, 'utf8'), stderr: '' }
+      } finally { closeSync(fd) }
+    }
     nextStage('launcher startup (55s subprocess limit)')
     const started = launch(['--no-open'])
+    assert.ifError(started.error)
     assert.equal(started.status, 0, `${started.stdout}\n${started.stderr}\n${await readFile(join(data, 'launcher.log'), 'utf8').catch(() => '')}`)
     nextStage('authenticated health and version')
     const response = await fetch(`http://127.0.0.1:${port}/api/health`, { headers: { Authorization: `Bearer ${env.JARVIS_AUTH_TOKEN}` }, signal: AbortSignal.timeout(5000) })
@@ -78,6 +91,7 @@ test('native artifact verifies and starts/stops using only its bundled Node', { 
     assert.equal((await response.json() as { version: string }).version, manifest.version)
     nextStage('launcher shutdown (55s subprocess limit)')
     const stopped = launch(['--stop'])
+    assert.ifError(stopped.error)
     assert.equal(stopped.status, 0, `${stopped.stdout}\n${stopped.stderr}`)
     await assert.rejects(fetch(`http://127.0.0.1:${port}/api/health`, { signal: AbortSignal.timeout(1500) }))
   } finally {
