@@ -969,7 +969,7 @@ export class JarvisServer {
       const created = []
       for (const item of items) {
         this.deps.memory.delete(item.id ?? '')
-        created.push(await this.deps.memory.add(item))
+        created.push(await this.deps.memory.add(item, true))
       }
       this.deps.memory.link('demo-semantic-review', 'demo-prospective-report', 'related', 0.9)
       this.deps.memory.link('demo-episodic-latency', 'demo-procedural-start', 'related', 0.65)

@@ -271,7 +271,10 @@ export class MemoryStore {
     }
   }
 
-  private checkInference(input: MemoryInput): void {
+  private checkInference(input: MemoryInput, demoFixture = false): void {
+    // Only the guarded demo endpoint passes this internal option. A caller's
+    // sourceRef alone must never bypass the user's inference protections.
+    if (demoFixture && input.sourceRef === 'demo:seed') return
     if (!['inferred', 'external', 'system-observed'].includes(input.sourceKind)) return
     const settings = this.db.prepare('SELECT learning_enabled FROM profile_settings WHERE id=1').get()
     if (settings?.learning_enabled === 0) throw new Error('Profile learning is paused')
@@ -306,8 +309,8 @@ export class MemoryStore {
     )
   }
 
-  async add(input: MemoryInput): Promise<MemoryItem> {
-    this.checkInference(input)
+  async add(input: MemoryInput, demoFixture = false): Promise<MemoryItem> {
+    this.checkInference(input, demoFixture)
     const generation = this.eraseGeneration
     const content = normalizeContent(input.content)
     if (!content) throw new Error('memory content cannot be empty')
@@ -353,7 +356,7 @@ export class MemoryStore {
       }
     }
     if (generation !== this.eraseGeneration) throw new Error('Memory write cancelled by privacy erase')
-    this.checkInference(input)
+    this.checkInference(input, demoFixture)
     this.insertItem(item, embedding)
     this.event(item.id, 'created', item.sourceKind)
     if (input.resolveConflicts && item.status === 'confirmed') {
