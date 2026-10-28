@@ -22,6 +22,21 @@ $p = $env:JARVIS_PRIVATE_DIRECTORY
 $user = [System.Security.Principal.WindowsIdentity]::GetCurrent().User
 $system = [System.Security.Principal.SecurityIdentifier]::new('S-1-5-18')
 $admins = 'S-1-5-32-544'
+$principal = [Security.Principal.WindowsPrincipal]::new([Security.Principal.WindowsIdentity]::GetCurrent())
+# IsInRole checks the enabled token group: UAC-filtered membership alone is
+# insufficient. Elevated Node-created files can use Administrators as owner.
+$elevated = $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
+function Check-PrivateEntries($security) {
+  $entries = @($security.GetAccessRules($true, $true, [Security.Principal.SecurityIdentifier]))
+  if ($entries.Count -eq 0) { throw 'Empty descendant DACL' }
+  $userFullControl = $false
+  foreach ($entry in $entries) {
+    if ($entry.IdentityReference.Value -notin @($user.Value, $system.Value, $admins)) { throw 'Shared descendant ACL: migrate to a private data tree explicitly' }
+    if ($entry.AccessControlType -ne 'Allow') { throw 'Private tree contains deny entries' }
+    if ($entry.IdentityReference.Value -eq $user.Value -and ($entry.FileSystemRights -band [Security.AccessControl.FileSystemRights]::FullControl) -eq [Security.AccessControl.FileSystemRights]::FullControl -and !($entry.PropagationFlags -band [Security.AccessControl.PropagationFlags]::InheritOnly)) { $userFullControl = $true }
+  }
+  if (!$userFullControl) { throw 'Private tree must retain current-account full control' }
+}
 function Check-Boundaries {
   $cursor = $p
   while ($cursor) {
@@ -48,12 +63,9 @@ function Check-Descendants {
       if ($count -gt 100000) { throw 'Data tree exceeds private permission preflight limit' }
       if ($child.Attributes -band [IO.FileAttributes]::ReparsePoint) { throw 'Unsafe descendant reparse point' }
       $security = Get-Acl -LiteralPath $child.FullName
-      if ($security.GetOwner([Security.Principal.SecurityIdentifier]).Value -ne $user.Value) { exit 48 }
-      $entries = @($security.GetAccessRules($true, $true, [Security.Principal.SecurityIdentifier]))
-      if ($entries.Count -eq 0) { throw 'Empty descendant DACL' }
-      foreach ($entry in $entries) {
-        if ($entry.IdentityReference.Value -notin @($user.Value, $system.Value, $admins)) { throw 'Shared descendant ACL: migrate to a private data tree explicitly' }
-      }
+      $childOwner = $security.GetOwner([Security.Principal.SecurityIdentifier]).Value
+      if ($childOwner -ne $user.Value -and !($childOwner -eq $admins -and $elevated)) { exit 48 }
+      Check-PrivateEntries $security
       if ($child.PSIsContainer) { $queue.Enqueue($child.FullName) }
     }
   }
@@ -65,7 +77,11 @@ $stage = 44
 if (Test-Path -LiteralPath $p) {
   $old = Get-Acl -LiteralPath $p
   $owner = $old.GetOwner([System.Security.Principal.SecurityIdentifier]).Value
-  if ($owner -ne $user.Value) { exit 49 }
+  if ($owner -ne $user.Value) {
+    if ($owner -ne $admins -or !$elevated) { exit 49 }
+    # Never claim a broadly shared admin-owned root merely because elevated.
+    Check-PrivateEntries $old
+  }
   foreach ($rule in $old.GetAccessRules($true, $false, [System.Security.Principal.SecurityIdentifier])) {
     if ($rule.IdentityReference.Value -notin @($user.Value, $system.Value, $admins)) {
       throw 'Explicit shared permissions: choose a dedicated private data root'

@@ -86,6 +86,11 @@ test('Windows native ACL grants only user and SYSTEM; new files inherit private 
   const root = join(await fixture(t), "data ' ; $value")
   await ensurePrivateDataDirectory(root)
   await writeFile(join(root, 'probe'), 'account read/write')
+  // Elevated Windows may assign Administrators ownership to Node-created files;
+  // restart must accept their inherited private DACL without granting new access.
+  await ensurePrivateDataDirectory(root)
+  await ensurePrivateDataDirectory(root)
+  await writeFile(join(root, 'probe'), 'account read/write')
   assert.equal(await readFile(join(root, 'probe'), 'utf8'), 'account read/write')
   const report = JSON.parse(await powershell(`
 $ErrorActionPreference = 'Stop'

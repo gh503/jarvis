@@ -1,0 +1,41 @@
+name: Native shortcut diagnostics
+on:
+  workflow_dispatch:
+jobs:
+  shortcut:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - name: Probe Unicode shell-link target handling in temporary directories
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $root = Join-Path $env:RUNNER_TEMP ('jarvis-probe-' + [Guid]::NewGuid())
+          New-Item -ItemType Directory -Path $root | Out-Null
+          $node = (Get-Command node.exe).Source
+          $names = @('plain', 'with spaces', '中文', "package ' & `$ folder")
+          foreach ($name in $names) {
+            $dir = Join-Path $root $name
+            New-Item -ItemType Directory -Path $dir | Out-Null
+            $target = Join-Path $dir 'node.exe'
+            Copy-Item -LiteralPath $node -Destination $target
+            foreach ($quoted in @($false, $true)) {
+              try {
+                $out = Join-Path $dir ("probe-$quoted.lnk")
+                $link = (New-Object -ComObject WScript.Shell).CreateShortcut($out)
+                $value = if ($quoted) { '"' + $target + '"' } else { $target }
+                $link.TargetPath = $value
+                $link.Save()
+                $loaded = (New-Object -ComObject WScript.Shell).CreateShortcut($out)
+                Write-Host ("SUCCESS name={0} quoted={1} exact={2}" -f $name, $quoted, ($loaded.TargetPath -eq $target))
+              } catch {
+                Write-Host ("FAIL name={0} quoted={1} error={2}" -f $name, $quoted, $_.Exception.Message)
+              }
+            }
+          }
+          # Only exact directory allocated by this step, below the runner's temp root.
+          if ((Split-Path -Parent $root) -ne $env:RUNNER_TEMP) { throw 'Unsafe probe cleanup' }
+          Remove-Item -LiteralPath $root -Recurse -Force
