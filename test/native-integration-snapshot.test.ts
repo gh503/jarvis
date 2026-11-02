@@ -284,7 +284,12 @@ Import-Module "$PSHOME\Modules\Microsoft.PowerShell.Security\Microsoft.PowerShel
 $user=[Security.Principal.WindowsIdentity]::GetCurrent().User
 foreach ($p in (ConvertFrom-Json $env:JARVIS_TEST_PATHS)) {
  $acl=Get-Acl -LiteralPath $p
- if ($env:JARVIS_TEST_ACTION -eq 'read') { Write-Output $acl.Sddl; continue }
+ if ($env:JARVIS_TEST_ACTION -eq 'read') {
+  $direct=if ([IO.File]::GetAttributes($p) -band [IO.FileAttributes]::Directory) { [IO.Directory]::GetAccessControl($p) } else { [IO.File]::GetAccessControl($p) }
+  $sections=[Security.AccessControl.AccessControlSections]::Owner -bor [Security.AccessControl.AccessControlSections]::Group -bor [Security.AccessControl.AccessControlSections]::Access
+  if ($acl.GetSecurityDescriptorSddlForm($sections) -cne $direct.GetSecurityDescriptorSddlForm($sections)) { throw 'ACL reader parity mismatch' }
+  Write-Output $acl.Sddl; continue
+ }
  if ($env:JARVIS_TEST_ACTION -eq 'private') {
   $acl.SetAccessRuleProtection($true,$false)
   foreach ($rule in @($acl.Access)) { [void]$acl.RemoveAccessRuleSpecific($rule) }
