@@ -36,14 +36,16 @@ test('resolver emits no build outputs for stale unpublished source but preserves
   try {
     Object.assign(process.env, { GITHUB_EVENT_PATH: join(root, 'event.json'), GITHUB_EVENT_NAME: 'workflow_run', GITHUB_REPOSITORY: 'fixture/repo', GITHUB_OUTPUT: join(root, 'output') });
     writeFileSync(process.env.GITHUB_EVENT_PATH, JSON.stringify({ workflow_run: { conclusion: 'success', head_branch: 'main', head_repository: { full_name: 'fixture/repo' }, event: 'push', head_sha: sha } }));
-    let releases = [], main = 'b'.repeat(40);
+    let releases = [], main = 'b'.repeat(40), calls = 0;
+    const mainQueries = [];
     t.mock.method(childProcess, 'execFileSync', (command, args) => {
+      calls++;
       if (command === 'gh') {
         assert.deepEqual(args, ['api', '--paginate', '--slurp', 'repos/fixture/repo/releases?per_page=100']);
         return JSON.stringify([releases]);
       }
       assert.equal(command, 'git');
-      if (args.at(-1) === 'refs/heads/main') return `${main}\trefs/heads/main`;
+      if (args.at(-1) === 'refs/heads/main') { mainQueries.push(main); return `${main}\trefs/heads/main`; }
       assert.deepEqual(args, ['ls-remote', 'origin', 'refs/tags/v2.0.1', 'refs/tags/v2.0.1^{}']);
       return `${sha}\trefs/tags/v2.0.1`;
     });
@@ -57,6 +59,25 @@ test('resolver emits no build outputs for stale unpublished source but preserves
       else resolveRelease();
       assert.equal(readFileSync(process.env.GITHUB_OUTPUT, 'utf8'), mode === 'published' ? `tag=v2.0.1\nversion=2.0.1\nsha=${sha}\n` : '');
     }
+    const trusted = { conclusion: 'success', head_branch: 'main', head_repository: { full_name: 'fixture/repo' }, event: 'push', head_sha: sha };
+    for (const patch of [{ conclusion: 'failure' }, { head_branch: 'feature' }, { head_repository: { full_name: 'fork/repo' } }, { event: 'pull_request' }, { head_sha: 'invalid' }]) {
+      writeFileSync(process.env.GITHUB_EVENT_PATH, JSON.stringify({ workflow_run: { ...trusted, ...patch } }));
+      writeFileSync(process.env.GITHUB_OUTPUT, '');
+      const before = calls;
+      assert.throws(() => resolveRelease(), /Untrusted or unsuccessful CI run|Invalid source SHA/);
+      assert.equal(calls, before, 'reject before remote queries');
+      assert.equal(readFileSync(process.env.GITHUB_OUTPUT, 'utf8'), '');
+    }
+    process.env.GITHUB_EVENT_NAME = 'workflow_dispatch';
+    writeFileSync(process.env.GITHUB_EVENT_PATH, JSON.stringify({ inputs: { tag: 'v2.0.1' } }));
+    const beforeMainQueries = mainQueries.length;
+    releases = [];
+    assert.throws(() => resolveRelease(), /found 0/);
+    assert.equal(readFileSync(process.env.GITHUB_OUTPUT, 'utf8'), '');
+    releases = [{ tag_name: 'v2.0.1' }];
+    resolveRelease();
+    assert.equal(readFileSync(process.env.GITHUB_OUTPUT, 'utf8'), `tag=v2.0.1\nversion=2.0.1\nsha=${sha}\n`);
+    assert.equal(mainQueries.length, beforeMainQueries, 'manual exact tag never consults main or skips as stale');
   } finally {
     t.mock.restoreAll(); syncBuiltinESMExports();
     keys.forEach((key, index) => { if (previous[index] === undefined) delete process.env[key]; else process.env[key] = previous[index]; });
