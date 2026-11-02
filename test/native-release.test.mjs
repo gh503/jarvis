@@ -1,10 +1,12 @@
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, rmSync, writeFileSync, readFileSync } from 'node:fs';
+import childProcess from 'node:child_process';
+import { syncBuiltinESMExports } from 'node:module';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
-import { assetStem, selectPublishedRelease, validateAssetSet } from '../scripts/native-release.mjs';
+import { assetStem, selectPublishedRelease, validateAssetSet, resolveRelease } from '../scripts/native-release.mjs';
 
 const sha = 'a'.repeat(40);
 test('resolves the published release for exact CI SHA, not latest or package version', () => {
@@ -25,6 +27,42 @@ test('only confirmed unpublished stale automatic sources may skip native publica
   assert.equal(selectPublishedRelease([release], undefined, sha, () => sha, other), release);
   assert.throws(() => selectPublishedRelease([release, { tag_name: 'v2.0.2' }], undefined, sha, () => sha, other), /found 2/);
   assert.throws(() => selectPublishedRelease([release], undefined, sha, () => { throw new Error('remote failure'); }, other), /remote failure/);
+});
+
+test('resolver emits no build outputs for stale unpublished source but preserves exact release outputs', t => {
+  const root = mkdtempSync(join(tmpdir(), 'jarvis-resolve-'));
+  const keys = ['GITHUB_EVENT_PATH', 'GITHUB_EVENT_NAME', 'GITHUB_REPOSITORY', 'GITHUB_OUTPUT'];
+  const previous = keys.map(key => process.env[key]);
+  try {
+    Object.assign(process.env, { GITHUB_EVENT_PATH: join(root, 'event.json'), GITHUB_EVENT_NAME: 'workflow_run', GITHUB_REPOSITORY: 'fixture/repo', GITHUB_OUTPUT: join(root, 'output') });
+    writeFileSync(process.env.GITHUB_EVENT_PATH, JSON.stringify({ workflow_run: { conclusion: 'success', head_branch: 'main', head_repository: { full_name: 'fixture/repo' }, event: 'push', head_sha: sha } }));
+    let releases = [], main = 'b'.repeat(40);
+    t.mock.method(childProcess, 'execFileSync', (command, args) => {
+      if (command === 'gh') {
+        assert.deepEqual(args, ['api', '--paginate', '--slurp', 'repos/fixture/repo/releases?per_page=100']);
+        return JSON.stringify([releases]);
+      }
+      assert.equal(command, 'git');
+      if (args.at(-1) === 'refs/heads/main') return `${main}\trefs/heads/main`;
+      assert.deepEqual(args, ['ls-remote', 'origin', 'refs/tags/v2.0.1', 'refs/tags/v2.0.1^{}']);
+      return `${sha}\trefs/tags/v2.0.1`;
+    });
+    syncBuiltinESMExports();
+    for (const mode of ['stale', 'current', 'published', 'missing-main']) {
+      writeFileSync(process.env.GITHUB_OUTPUT, '');
+      main = mode === 'current' ? sha : mode === 'missing-main' ? '' : 'b'.repeat(40);
+      releases = mode === 'published' ? [{ tag_name: 'v2.0.1' }] : [];
+      if (mode === 'current') assert.throws(() => resolveRelease(), /found 0/);
+      else if (mode === 'missing-main') assert.throws(() => resolveRelease(), /Remote main identity unavailable/);
+      else resolveRelease();
+      assert.equal(readFileSync(process.env.GITHUB_OUTPUT, 'utf8'), mode === 'published' ? `tag=v2.0.1\nversion=2.0.1\nsha=${sha}\n` : '');
+    }
+  } finally {
+    t.mock.restoreAll(); syncBuiltinESMExports();
+    keys.forEach((key, index) => { if (previous[index] === undefined) delete process.env[key]; else process.env[key] = previous[index]; });
+    assert.ok(root.startsWith(join(tmpdir(), 'jarvis-resolve-')));
+    rmSync(root, { recursive: true, force: true });
+  }
 });
 
 test('publication requires all three platforms and rejects tampered asset bytes', () => {
