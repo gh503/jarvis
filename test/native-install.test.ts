@@ -95,6 +95,7 @@ for (const platform of ['darwin', 'win32'] as const) for (const autostart of [fa
   options.runPowerShell = (script, env) => {
     assert.equal(script, POWERSHELL_LINK)
     assert.equal(existsSync(env.JARVIS_LINK_PATH!), false)
+    for (const path of describeNativeIntegration(options).artifactPaths) assert.equal(existsSync(path), false, 'all COM generation precedes final publication')
     calls.push({ target: env.JARVIS_LINK_TARGET!, args: env.JARVIS_LINK_ARGS!, cwd: env.JARVIS_LINK_CWD! })
     writeFileSync(env.JARVIS_LINK_PATH!, Buffer.from([0, 255, calls.length]), { mode: 0o600 })
   }
@@ -106,7 +107,10 @@ for (const platform of ['darwin', 'win32'] as const) for (const autostart of [fa
       assert.deepEqual(await readFile(artifact.path), artifact.bytes)
       if (process.platform !== 'win32') assert.equal((await lstat(artifact.path)).mode & 0o777, artifact.mode & ~process.umask())
     }
-  } else assert.deepEqual(calls, plan.shortcuts.map(({ target, args, cwd }) => ({ target, args, cwd })))
+  } else {
+    assert.deepEqual(calls, plan.shortcuts.map(({ target, args, cwd }) => ({ target, args, cwd })))
+    for (const [index, shortcut] of plan.shortcuts.entries()) assert.deepEqual(await readFile(shortcut.path), Buffer.from([0, 255, index + 1]))
+  }
   const receipt = JSON.parse(await readFile(created.at(-1)!, 'utf8'))
   assert.deepEqual(receipt.files.map((entry: { path: string }) => entry.path), planned.map(artifact => artifact.path))
   for (const entry of receipt.files) assert.equal(entry.sha256, createHash('sha256').update(await readFile(entry.path)).digest('hex'))
@@ -614,6 +618,46 @@ for (const scenario of ['second shortcut', 'partial shortcut publication'] as co
     assert.equal(existsSync(join(options.localAppData!, 'Jarvis', 'native-install.json')), false)
     if (scenario === 'partial shortcut publication') assert.equal(await readFile(second, 'utf8'), 'uncertain copy')
     else assert.equal(existsSync(second), false)
+  } finally { t.mock.restoreAll(); syncBuiltinESMExports() }
+}))
+
+for (const stage of ['generation', 'read'] as const) test(`second Windows shortcut ${stage} failure precedes all final publication`, async t => fixture('win32', async options => {
+  const { artifactPaths, receiptPath } = describeNativeIntegration(options)
+  const temporaryLinks: string[] = []
+  const uncertain = Buffer.from([0, 255, 13, 10, 42])
+  const failure = new Error(`injected second shortcut ${stage} failure`)
+  options.runPowerShell = (_script, env) => {
+    for (const path of [...artifactPaths, receiptPath]) assert.equal(existsSync(path), false, 'no final link may exist even transiently during generation')
+    temporaryLinks.push(env.JARVIS_LINK_PATH!)
+    if (temporaryLinks.length === 2) {
+      assert.equal(existsSync(dirname(temporaryLinks[0]!)), false, 'previous verified staging is already cleaned')
+      writeFileSync(env.JARVIS_LINK_PATH!, uncertain, { mode: 0o600 })
+      if (stage === 'generation') throw failure
+    } else writeFileSync(env.JARVIS_LINK_PATH!, 'verified first shortcut', { mode: 0o600 })
+  }
+  const originalOpen = fsPromises.open
+  const finalOpens: string[] = []
+  t.mock.method(fsPromises, 'open', async (...args: Parameters<typeof open>) => {
+    if (args[1] === 'wx' && [...artifactPaths, receiptPath].includes(String(args[0]))) finalOpens.push(String(args[0]))
+    if (stage === 'read' && temporaryLinks.length === 2 && args[0] === temporaryLinks[1]) throw failure
+    return originalOpen(...args)
+  })
+  syncBuiltinESMExports()
+  try {
+    await assert.rejects(nativeIntegration(options, ['--install', '--autostart']), (error: unknown) => {
+      assert.ok(error instanceof AggregateError)
+      assert.equal(error.cause, failure)
+      assert.equal(error.errors[0], failure)
+      assert.equal(error.errors.length, 2)
+      assert.match(error.message, /Retained unverified installation artifact/)
+      assert.ok(error.message.includes(JSON.stringify(temporaryLinks[1])))
+      return true
+    })
+    assert.equal(temporaryLinks.length, 2)
+    assert.deepEqual(finalOpens, [], 'rollback alone must not satisfy the no-publication guarantee')
+    for (const path of [...artifactPaths, receiptPath, temporaryLinks[0]!, dirname(temporaryLinks[0]!)]) assert.equal(existsSync(path), false)
+    assert.deepEqual(await readFile(temporaryLinks[1]!), uncertain, 'unverified second staging bytes remain untouched')
+    assert.ok((await lstat(dirname(temporaryLinks[1]!))).isDirectory())
   } finally { t.mock.restoreAll(); syncBuiltinESMExports() }
 }))
 

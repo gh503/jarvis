@@ -424,6 +424,7 @@ export async function nativeIntegration(options: InstallOptions, args: string[])
       if (plan.platform === 'darwin') {
         for (const artifact of plan.artifacts) await output(artifact.path, artifact.bytes, artifact.mode)
       } else {
+        const shortcuts: { path: string; bytes: Buffer }[] = []
         for (const { path, target, args, cwd } of plan.shortcuts) {
           await mkdir(dirname(path), { recursive: true, mode: 0o755 })
           // COM must see a nonexistent path: a zero-byte reservation is not a valid .lnk.
@@ -438,9 +439,9 @@ export async function nativeIntegration(options: InstallOptions, args: string[])
             const source = await boundedIntegrationRead(temporaryLink, 1024 * 1024, userRoots)
             if (!source?.bytes.length) throw new Error('PowerShell did not create a shortcut')
             staged = { path: temporaryLink, identity: source.identity, sha256: digest(source.bytes), limit: 1024 * 1024 }
-            // Use an exclusive descriptor for publication: copyFile provides no destination
-            // identity and cannot safely establish ownership after a partial failure.
-            await output(path, source.bytes)
+            // Keep the exact bounded-read bytes; every selected shortcut must finish
+            // generation, validation and owned staging cleanup before publication.
+            shortcuts.push({ path, bytes: source.bytes })
           } catch (error) { failed = true; failure = error }
           try {
             if (dirname(staging) !== dirname(path) || dirname(temporaryLink) !== staging) throw new Error('Unsafe shortcut staging cleanup')
@@ -450,6 +451,9 @@ export async function nativeIntegration(options: InstallOptions, args: string[])
           } catch (error) { if (failed) cleanupErrors.push(error); else { failed = true; failure = error } }
           if (failed) throw failure
         }
+        // Use exclusive descriptors: copyFile cannot establish destination ownership
+        // after a partial failure. No final link exists during COM generation.
+        for (const shortcut of shortcuts) await output(shortcut.path, shortcut.bytes)
       }
       const records = created.map(({ path, sha256 }) => ({ path, sha256 }))
       await output(state, JSON.stringify({ schemaVersion: 1, platform: options.platform, root, autostart, ...binding, ...(options.platform === 'win32' ? { notificationAumid: WINDOWS_AUMID } : {}), files: records }, null, 2) + '\n')
