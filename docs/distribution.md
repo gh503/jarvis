@@ -2,15 +2,15 @@
 
 ## 原生便携预览包已发布
 
-当前推荐 [v2.0.35](https://github.com/gh503/jarvis/releases/tag/v2.0.35)，提供 Linux x64、Windows x64、macOS arm64 的未签名便携包，每个平台包含归档、SHA256 与 provenance，共九个资产文件。包内自带 Node 24；源码运行要求 Node.js >=24。
+当前推荐 [v2.0.38](https://github.com/gh503/jarvis/releases/tag/v2.0.38)，提供 Linux x64、Windows x64、macOS arm64 的未签名便携包，每个平台包含归档、SHA256 与 provenance，共九个资产文件。包内自带 Node 24；源码运行要求 Node.js >=24。
 
-上述 v2.0.35 的三平台自动化发布门槛已通过，覆盖运行时生命周期、便携包以及打包后隐私、备份与更新检查，Windows 还验证 Unicode 快捷方式实际启动。这是预览交付与自动化证据，不是稳定生产保证、签名安装器或所有平台功能对齐。
+上述 v2.0.38 的三平台自动化发布门槛已通过，覆盖运行时生命周期、便携包以及打包后隐私、备份与更新检查，Windows 还验证 Unicode 快捷方式实际启动。这是预览交付与自动化证据，不是稳定生产保证、签名安装器或所有平台功能对齐。
 
 | 形态 | 覆盖平台 | 当前入口 |
 |---|---|---|
 | PWA 客户端 | 桌面浏览器 / Android / iOS | 先启动主机，再安装网页应用 |
 | 源码桌面窗口 | Windows / macOS / Linux | Git、Node >=24，`npm ci` 后 `npm run app` |
-| Node 24 便携预览包 | 与构建机相同的系统 / CPU | 从 v2.0.35 获取上述三种目标；无需另装 Node |
+| Node 24 便携预览包 | 与构建机相同的系统 / CPU | 从 v2.0.38 获取上述三种目标；无需另装 Node |
 | 原生桌面集成 | macOS `.app` / Windows 开始菜单 | 包内 `scripts/install-native.ts` 创建入口，仍需浏览器 |
 
 便携包与生成的 macOS wrapper 未签名、未公证；当前不提供已完成签名的 `.msi` / `.dmg` 安装器。首次启动按操作系统的受支持流程批准。
@@ -21,7 +21,7 @@
 
 发布开关 `JARVIS_NATIVE_RELEASE_PUBLISH` 已启用，自动附加资产仍要求三平台构建门槛全部通过。手动 dispatch 必须指定已有的稳定发布 tag，且永远只生成 unsigned preview artifacts，不附加 Release 资产；旧 tag 如果缺少所需脚本不能重建。详见 [原生发布流水线](native-release-pipeline.md)。CI 覆盖 hosted runner 的架构，不表示所有 x64/arm64 组合均已实机验证。
 
-面向普通用户的生产分发目标尚未完成：代表性机器上的 Finder / 开始菜单 / 登录启动与浏览器人工验收、签名／公证仍需完成。v2.0.35 已通过原生 helper 提供 macOS / Windows 的 `file_read`、`file_list`、`file_search`；写入、输出工作区操作、产物交付、图片检查与 Shell 仍不提供。只读 Markdown 技能此前已支持三平台。完整功能对齐和事务式更新激活尚未完成。
+面向普通用户的生产分发目标尚未完成：代表性机器上的 Finder / 开始菜单 / 登录启动与浏览器人工验收、签名／公证仍需完成。v2.0.38 已通过原生 helper 提供 macOS / Windows 的 `file_read`、`file_list`、`file_search`；写入、输出工作区操作、产物交付、图片检查与 Shell 仍不提供。只读 Markdown 技能此前已支持三平台。完整功能对齐和事务式更新激活尚未完成。
 
 ---
 
@@ -124,9 +124,11 @@ macOS / Windows 使用包内 `scripts/install-native.ts --install --autostart`�
 
 ---
 
+v2.0.38 随包提供离线[数据快照 CLI](native-state-snapshot.md)：停止运行时及所有其他写入者后创建快照，用独立保存的可信清单摘要验证，只恢复到全新目录。它保留数据目录内的原始秘密与 SQLite WAL（排除文档列出的根级协调文件），不包含外部配置、外部路径或安装集成，也不自动激活版本或保证数据库兼容。
+
 ## 平台能力矩阵
 
-下表描述 v2.0.35 的能力边界，包含已发布的原生只读文件支持。平台能力由 `src/platform.ts` 探测，`/api/health` 返回，UI 据此禁用按钮并给出原因。
+下表描述 v2.0.38 的能力边界，包含已发布的原生只读文件支持。平台能力由 `src/platform.ts` 探测，`/api/health` 返回，UI 据此禁用按钮并给出原因。
 
 | 能力 | Linux | macOS | Windows | 备注 |
 |---|---|---|---|---|

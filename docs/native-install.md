@@ -32,7 +32,7 @@ Choose one install command. Existing integrations are never silently overwritten
 
 ## Optional private external configuration
 
-Use the recommended [v2.0.35 unsigned preview](https://github.com/gh503/jarvis/releases/tag/v2.0.35) for this optional binding. Installation without `--config` keeps the existing behavior.
+Use the recommended [v2.0.38 unsigned preview](https://github.com/gh503/jarvis/releases/tag/v2.0.38) for this optional binding. Installation without `--config` keeps the existing behavior.
 
 To bind shortcuts and optional login startup to a private config file outside the portable package, add `--config` with its canonical absolute filename:
 
@@ -82,6 +82,8 @@ If the directory already exists, inspect its ownership and permissions before us
 
 On Windows, prepare a private directory **before** creating the UTF-8 file, then verify the DACL on both the directory and the file. Allowed access entries are restricted to the current user, SYSTEM, and Administrators, and the current user must have read access. Ownership must be the current user (or Administrators for an elevated current user). A directory inside your user profile does not by itself guarantee an acceptable file ACL: inherited entries, editor-created replacements, and explicit file permissions must be checked. Use your trusted Windows permissions tooling to establish and verify these requirements; the installer will refuse an unsafe file or parent rather than change its ACL.
 
+Windows owner validation is aligned across external configuration and native private-directory handling, including tests under an actual elevated Windows token. This does not relax private-permission requirements or repair permissions during validation.
+
 The binding is an editable config **path**, not an immutable digest pin. The file is validated again when loaded; edits affect subsequent launches, not an already running server. Review changes to `JARVIS_DATA_DIR` especially carefully: a later `--stop` using the edited file selects the newly configured directory. Binding a file does not activate a staged update, switch releases, snapshot data, or establish schema compatibility.
 
 ## What is installed
@@ -105,6 +107,8 @@ Windows notification settings, Focus Assist, organization policies and desktop/s
 Before installation, the manifest must match the platform, CPU architecture and Node 24 runtime metadata. Every listed payload file is checked for size and SHA-256, paths must remain within the package, and symlink payloads are rejected. Runtime, launcher, native installer and server entry point must be listed. This catches corruption; it does **not** authenticate an attacker-modified manifest. Verify the downloaded release archive's published SHA-256 through a trusted channel before executing any included runtime or installer. Validation cannot protect the installer before it is first executed, nor protect a package modified after installation.
 
 There is no install-time copy or in-place updater. For manual upgrades, stop Jarvis using the existing launcher's `--stop` command with the same config selection used to launch it, uninstall the old integrations, extract and verify the new package in a separate stable directory, and install its integrations. If using an external binding, explicitly supply `--config ABS` again at installation; uninstall does not take that flag. Review production data compatibility and recovery before launching a new release against existing data; see [Native update staging and recovery](native-update.md). Never extract a release over a running package. The installer itself leaves running servers alone, including during uninstall.
+
+For data recovery, v2.0.38 includes the offline [data-only snapshot CLI](native-state-snapshot.md): stop the runtime and all other writers, create and verify a snapshot, then restore only to a fresh directory. It preserves original secrets and application SQLite WAL within the selected data tree, subject to the documented root coordination-file exclusions. External config, external paths and installer integrations are not captured; restoration neither activates a release nor proves schema compatibility.
 
 An ownership receipt is kept at `~/Library/Application Support/Jarvis/native-install.json` on macOS or `%LOCALAPPDATA%\Jarvis\native-install.json` on Windows. Uninstall accepts only the known integration paths and removes only files whose hashes still match that receipt. Modified artifacts cause refusal before deletion; inspect them manually rather than deleting user changes blindly. Uninstall without a receipt is a no-op. It removes empty app-wrapper directories but preserves unrelated files, the portable package, configuration, conversations, models, browser profile and all other user data. If you lose the receipt, remove the documented integration files manually after reviewing them. Uninstall does not unload an already loaded LaunchAgent or stop the server; log out to clear the login-session registration.
 

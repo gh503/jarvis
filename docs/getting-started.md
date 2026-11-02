@@ -4,7 +4,7 @@ Jarvis 是跑在自己电脑上的助手：对话、记忆与提醒保存在本�
 
 ## 1. 选择启动方式
 
-**当前推荐原生便携预览包**：[v2.0.35](https://github.com/gh503/jarvis/releases/tag/v2.0.35) 提供 Linux x64、Windows x64、macOS arm64 的未签名包，自带 Node 24。它们是预览交付，不代表签名安装器、稳定生产保证或完整平台功能对齐。其他架构可参考源码方式；CI artifacts 仅在相应构建成功且未过期时可用。
+**当前推荐原生便携预览包**：[v2.0.38](https://github.com/gh503/jarvis/releases/tag/v2.0.38) 提供 Linux x64、Windows x64、macOS arm64 的未签名包，自带 Node 24。它们是预览交付，不代表签名安装器、稳定生产保证或完整平台功能对齐。其他架构可参考源码方式；CI artifacts 仅在相应构建成功且未过期时可用。
 
 | 你的情况 | 选择 |
 |---|---|
@@ -12,13 +12,13 @@ Jarvis 是跑在自己电脑上的助手：对话、记忆与提醒保存在本�
 | 没有可用预览包，或想参与开发 | 安装 Git 和 Node.js >=24，从源码启动 |
 | 只有手机或平板 | 连接已运行的主机，按远程访问文档配置后添加 PWA |
 
-上述 v2.0.35 的三平台自动化发布门槛已通过，覆盖原生生命周期、Node 24 便携包及打包后隐私、备份与更新检查，Windows 还验证了 Unicode 快捷方式实际启动。自动化检查不代替各类机器上的桌面交互验收。剩余生产发行边界见 [分发说明](distribution.md)。
+上述 v2.0.38 的三平台自动化发布门槛已通过，覆盖原生生命周期、Node 24 便携包及打包后隐私、备份与更新检查，Windows 还验证了 Unicode 快捷方式实际启动。自动化检查不代替各类机器上的桌面交互验收。剩余生产发行边界见 [分发说明](distribution.md)。
 
 ## 2. 启动 Jarvis
 
 ### A. 原生便携预览包已发布
 
-1. 打开 [v2.0.35 原生预览下载](https://github.com/gh503/jarvis/releases/tag/v2.0.35)，选择 Linux x64、Windows x64 或 macOS arm64。每个平台提供归档、SHA256 与 provenance 来源信息。需要其他构建时，可在 [GitHub Actions](https://github.com/gh503/jarvis/actions) 查找相符的成功预览产物；没有匹配包则使用源码方式。
+1. 打开 [v2.0.38 原生预览下载](https://github.com/gh503/jarvis/releases/tag/v2.0.38)，选择 Linux x64、Windows x64 或 macOS arm64。每个平台提供归档、SHA256 与 provenance 来源信息。需要其他构建时，可在 [GitHub Actions](https://github.com/gh503/jarvis/actions) 查找相符的成功预览产物；没有匹配包则使用源码方式。
 2. 下载对应应用归档、SHA256 与来源信息。先核对归档 SHA256，再解压到固定、可写的独立目录。便携包自带 Node 24，不包含本地模型或全部语音组件。
 3. 在解压目录运行 Linux 的 `./jarvis`、macOS 的 `./Jarvis.command`，或 Windows PowerShell 的 `.\Jarvis.cmd`。窗口未打开时访问 <http://127.0.0.1:3081/>。
 4. macOS `.app` 与 Windows 开始菜单入口可通过包内 `scripts/install-native.ts --install` 创建，必须使用包内 Node 执行；完整命令见 [原生集成说明](native-install.md)。可选 `--autostart` 在下次登录时启动服务；需要包外私有配置时，安装与启动器可用 `--config ABS`，详见 [配置绑定](native-install.md#optional-private-external-configuration)。快捷方式引用当前目录，请保持目录位置不变。
@@ -58,14 +58,14 @@ macOS / Windows 源码运行如需可选的只读文件工具或只读 Markdown 
 | 浏览器屏幕／摄像头单帧预览 | 支持的浏览器中显式授权 | 支持的浏览器中显式授权 |
 | 浏览器画面分析 | 需要可用的本地视觉模型，local-only | 同左 |
 | 服务端 OS 屏幕／摄像头捕获 | 需要 portal / ffmpeg 等组件 | 不提供 |
-| 外部文件读取 / 列表 / 搜索 | 按范围授权 | v2.0.35 已支持，需要原生 helper 与只读目录授权 |
+| 外部文件读取 / 列表 / 搜索 | 按范围授权 | v2.0.38 已支持，需要原生 helper 与只读目录授权 |
 | 文件写入 / 输出工作区 / 产物交付 / 图片检查 | 按权限及依赖开启 | 不提供 |
 | 只读 Markdown 技能 | 显式配置技能目录 | 需要原生 helper 和显式配置技能目录 |
 | Shell | Bubblewrap 与逐次批准 | 保持拒绝执行（fail-closed） |
 | 桌面通知 | notify-send | macOS 使用 osascript；Windows 须安装 Jarvis toast 身份，可见投递未验证 |
 | 登录启动 | systemd 用户服务 | 原生安装脚本的可选登录启动 |
 
-v2.0.35 已包含原生只读文件支持。macOS / Windows 可在 **设置 → 系统** 显式授权最多 16 个读取根目录，使用 `file_read`、`file_list`、`file_search`；文本读取仅支持 UTF-8、每文件最多 1 MiB，过滤秘密路径并拒绝私钥内容。读取授权不会开启写入、输出工作区、产物交付或图片检查。Linux 保留现有文件写入与沙箱 Shell 能力。
+v2.0.38 已包含原生只读文件支持。macOS / Windows 可在 **设置 → 系统** 显式授权最多 16 个读取根目录，使用 `file_read`、`file_list`、`file_search`；文本读取仅支持 UTF-8、每文件最多 1 MiB，过滤秘密路径并拒绝私钥内容。读取授权不会开启写入、输出工作区、产物交付或图片检查。Linux 保留现有文件写入与沙箱 Shell 能力。
 
 浏览器感知需要浏览器支持、权限及安全上下文；只在你明确操作后获取单帧预览，不表示后台持续采集。它和 Linux 的服务端系统捕获是两个入口。
 
@@ -92,15 +92,17 @@ v2.0.35 已包含原生只读文件支持。macOS / Windows 可在 **设置 → 
 
 设置中的隐私页面可导出或确认后擦除数据；备份和恢复前应停止服务。更新工具只提供候选包验证、stage、隔离 health 与 rollback；**不会自动激活或替换生产版本**。手动升级须先停止旧服务，保留备份与旧包，将新包解压到另一固定目录，再显式卸载旧集成并安装新集成。隔离健康检查不证明旧数据库迁移兼容，详见 [更新与恢复边界](native-update.md)。
 
+v2.0.38 的离线[数据快照 CLI](native-state-snapshot.md)可创建、验证并恢复到全新数据目录。先停止运行时及所有其他写入者；快照保留数据目录内的原始秘密与 SQLite WAL，须私密保存。外部配置、外部路径和安装集成不在快照范围内；恢复不会切换版本，也不证明数据库兼容。
+
 ## 8. 卡住了看哪里
 
 | 现象 | 先看 |
 |---|---|
-| 找不到原生下载 | 打开 v2.0.35 的 Assets；没有匹配系统／CPU 的包时使用源码方式 |
+| 找不到原生下载 | 打开 v2.0.38 的 Assets；没有匹配系统／CPU 的包时使用源码方式 |
 | 页面打不开 | 确认服务启动、端口；源码运行 `npm run doctor` |
 | 模型无法对话 | 设置中的模型地址、凭据与供应商状态 |
 | 语音或视觉不可用 | 对应依赖、浏览器权限、本地视觉模型或语音供应商是否配置 |
-| macOS / Windows 只读文件工具不可用 | 确认使用 v2.0.35 预览包或包含此实现的源码、原生 helper 可用，并显式授权读取目录 |
+| macOS / Windows 只读文件工具不可用 | 确认使用 v2.0.38 预览包或包含此实现的源码、原生 helper 可用，并显式授权读取目录 |
 | macOS / Windows 文件写入或 Shell 不可用 | 当前平台边界，读取目录授权不能开启写入或 Shell |
 | macOS / Windows 只读技能不可用 | 检查原生 helper 与设置中的技能目录；源码构建命令见上文 |
 | 手机无法访问 | 按远程文档核对 TLS、令牌、监听地址与白名单 |

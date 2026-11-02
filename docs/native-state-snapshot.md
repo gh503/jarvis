@@ -1,18 +1,28 @@
 # Native data-only state snapshots
 
-Status: **upcoming source implementation**, not assigned to a released version. This is the data-filesystem snapshot prerequisite for native update recovery, not a complete installation snapshot or an automatic updater. See [Native update staging and recovery](native-update.md).
+Status: **released in [v2.0.38](https://github.com/gh503/jarvis/releases/tag/v2.0.38)**, including the offline CLI in portable packages. This is the data-filesystem snapshot prerequisite for native update recovery, not a complete installation snapshot or an automatic updater. See [Native update staging and recovery](native-update.md).
 
 The snapshot copies the complete stopped data directory as raw files and directories, with only the nine root-level ownership/coordination files listed below excluded. It preserves empty directories, secrets, keys, tokens, and application SQLite database sidecars, including WAL. It does not export logical records, open application databases to migrate them, or promise logical/schema compatibility with another binary.
 
 ## Commands and trust
 
-Run the script from a trusted source checkout with a trusted Node 24 executable:
+Run this offline CLI from a trusted v2.0.38 portable package using its bundled Node 24. Stop the runtime and all other writers before creation; this command does not stop them for you. On Linux/macOS, from the extracted package directory:
 
 ```sh
-node --experimental-transform-types scripts/snapshot-native.ts create --data /absolute/data --destination /absolute/new-snapshot
-node --experimental-transform-types scripts/snapshot-native.ts verify --snapshot /absolute/new-snapshot --manifest-sha256 TRUSTED_MANIFEST_SHA256
-node --experimental-transform-types scripts/snapshot-native.ts restore --snapshot /absolute/new-snapshot --manifest-sha256 TRUSTED_MANIFEST_SHA256 --destination /absolute/new-restored-data
+./runtime/node --experimental-transform-types scripts/snapshot-native.ts create --data /absolute/data --destination /absolute/new-snapshot
+./runtime/node --experimental-transform-types scripts/snapshot-native.ts verify --snapshot /absolute/new-snapshot --manifest-sha256 TRUSTED_MANIFEST_SHA256
+./runtime/node --experimental-transform-types scripts/snapshot-native.ts restore --snapshot /absolute/new-snapshot --manifest-sha256 TRUSTED_MANIFEST_SHA256 --destination /absolute/new-restored-data
 ```
+
+Windows PowerShell uses the same commands and options with the bundled executable, for example:
+
+```powershell
+& '.\runtime\node.exe' --experimental-transform-types '.\scripts\snapshot-native.ts' create --data 'C:\private\data' --destination 'C:\private\new-snapshot'
+& '.\runtime\node.exe' --experimental-transform-types '.\scripts\snapshot-native.ts' verify --snapshot 'C:\private\new-snapshot' --manifest-sha256 TRUSTED_MANIFEST_SHA256
+& '.\runtime\node.exe' --experimental-transform-types '.\scripts\snapshot-native.ts' restore --snapshot 'C:\private\new-snapshot' --manifest-sha256 TRUSTED_MANIFEST_SHA256 --destination 'C:\private\new-restored-data'
+```
+
+Source checkout users can substitute a trusted `node` 24 executable for the bundled runtime.
 
 On Windows use absolute Windows paths and quote paths containing spaces. Paths must be canonical absolute paths without linked ancestors. Destination parents must already exist; destinations must not exist, even as empty directories. Create requires a destination separate from the source data tree. Restore requires a destination separate from both the snapshot tree and the original source data tree recorded in the manifest. There is no implicit configuration discovery, overwrite, merge, or default destination. Unknown, repeated, or missing options are rejected.
 

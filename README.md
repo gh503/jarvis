@@ -8,7 +8,7 @@ Start with [上手指南](docs/getting-started.md) for **native preview or sourc
 and [分发说明](docs/distribution.md) for platform limits and release gates.
 Windows, macOS and Linux have native runtime lifecycle support and Node 24 portable
 package matrices. **Unsigned native portable previews are published** for Linux x64, Windows x64
-and macOS arm64 at the recommended [v2.0.35](https://github.com/gh503/jarvis/releases/tag/v2.0.35). They are
+and macOS arm64 at the recommended [v2.0.38](https://github.com/gh503/jarvis/releases/tag/v2.0.38). They are
 not signed installers or a guarantee of stable production readiness or full feature parity.
 The in-app `/providers` and `/install` pages help configure models and browser clients.
 
@@ -47,13 +47,13 @@ repository write permission limited to the release job.
 
 ## Native preview status
 
-For the pinned v2.0.35 preview, the three-platform automated release gates passed for runtime lifecycle and
+For the pinned v2.0.38 preview, the three-platform automated release gates passed for runtime lifecycle and
 bundled Node 24 packages, including packaged privacy, backup and updater checks
 and Windows Unicode shortcut activation. This covers the hosted runner targets,
 not every OS/CPU pair or interactive desktop environment.
 
 Download the archive matching your OS/CPU, its SHA256 and provenance from
-[v2.0.35](https://github.com/gh503/jarvis/releases/tag/v2.0.35), verify the archive,
+[v2.0.38](https://github.com/gh503/jarvis/releases/tag/v2.0.38), verify the archive,
 and extract into a stable writable folder. Each of the three targets has these
 three files. Other builds may be available as conditional unsigned CI previews in
 [Actions](https://github.com/gh503/jarvis/actions); source instructions remain below.
@@ -76,6 +76,13 @@ parity and transactional update activation remain unfinished. Desktop notificati
 explicit native installation of Jarvis’s own identity; visible delivery remains
 unverified and can be suppressed by system settings or session policy.
 
+v2.0.38 also ships an offline [data-only snapshot CLI](docs/native-state-snapshot.md):
+stop the runtime and all other writers, create a snapshot, verify it against a separately
+trusted manifest digest, and restore only to a fresh directory. It preserves all supported
+data, including original secrets and SQLite WAL, except documented root coordination
+files. External config, external paths and installer integrations are outside its scope;
+it does not activate a release or establish schema compatibility.
+
 ## Native tools and local work
 
 Enable native tool calling explicitly for a supported model in 设置 → 模型.
@@ -93,7 +100,7 @@ confirmation. Questions collect information and do not grant tool permissions.
 See [本地工具与权限说明](docs/ui.md#本地工具任务与目录授权) for the exact names,
 API routes, privacy boundaries and recurrence behavior.
 
-The v2.0.35 preview supports `file_read`, `file_list` and `file_search` on macOS/Windows
+The v2.0.38 preview supports `file_read`, `file_list` and `file_search` on macOS/Windows
 through the native filesystem helper: explicitly authorize at most 16 read roots;
 text reads are UTF-8 and limited to 1 MiB, with secret-path filtering and private-key content rejection.
 Native writes, output workspace operations, artifact delivery, image inspection
@@ -251,7 +258,7 @@ are in [voice.md](docs/voice.md).
 
 ## Tests
 
-The current full regression result is **744 tests: 723 passed, 21 platform skips,
+The current full regression result is **794 tests: 771 passed, 23 platform skips,
 0 failed**. The suite (`npm test`) covers attention, memory and its
 sensitive-data boundaries, server auth/CSRF/host checks, at-rest encryption,
 telemetry, voice cancellation, LLM protocols/model discovery and voice routing.
