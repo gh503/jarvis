@@ -487,7 +487,8 @@ public static class InspectShortcut {
 }
 '@
 $values = [InspectShortcut]::Read($env:JARVIS_TEST_LINK)
-@{target=$values[0]; args=$values[1]; cwd=$values[2]; aumid=$values[3]} | ConvertTo-Json -Compress
+$normal = [InspectShortcut]::Read($env:JARVIS_TEST_NORMAL_LINK)
+@{target=$values[0]; args=$values[1]; cwd=$values[2]; aumid=$values[3]; normal=@{target=$normal[0]; args=$normal[1]; cwd=$normal[2]; aumid=$normal[3]}} | ConvertTo-Json -Compress
 # Independently activate the .lnk through Windows ShellExecute. The target script
 # only writes a sentinel and exits: no Jarvis imports, browser or server.
 $start = New-Object System.Diagnostics.ProcessStartInfo
@@ -496,10 +497,14 @@ $start.UseShellExecute = $true
 $process = [System.Diagnostics.Process]::Start($start)
 if ($null -ne $process) { if (!$process.WaitForExit(15000)) { throw 'Fixture shortcut activation timeout' }; if ($process.ExitCode -ne 0) { throw 'Fixture shortcut failed' } }
 `
-  const result = JSON.parse(execFileSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-EncodedCommand', Buffer.from(inspect, 'utf16le').toString('base64')], { encoding: 'utf8', env: { ...process.env, JARVIS_TEST_LINK: path, PSModulePath: join(process.env.SystemRoot ?? 'C:\\Windows', 'System32', 'WindowsPowerShell', 'v1.0', 'Modules') }, timeout: 30000 }))
+  const result = JSON.parse(execFileSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-EncodedCommand', Buffer.from(inspect, 'utf16le').toString('base64')], { encoding: 'utf8', env: { ...process.env, JARVIS_TEST_LINK: path, JARVIS_TEST_NORMAL_LINK: join(options.appData!, 'Microsoft', 'Windows', 'Start Menu', 'Programs', 'Jarvis.lnk'), PSModulePath: join(process.env.SystemRoot ?? 'C:\\Windows', 'System32', 'WindowsPowerShell', 'v1.0', 'Modules') }, timeout: 30000 }))
   assert.equal(result.target, join(options.root, 'runtime', 'node.exe'))
   assert.equal(result.cwd, options.root)
   assert.equal(result.aumid, WINDOWS_AUMID)
+  assert.deepEqual(result.normal, {
+    target: join(options.root, 'runtime', 'node.exe'), cwd: options.root, aumid: WINDOWS_AUMID,
+    args: ['--experimental-transform-types', join(options.root, 'scripts', 'app.ts')].map(windowsQuote).join(' '),
+  })
   assert.equal(result.args, ['--experimental-transform-types', join(options.root, 'scripts', 'app.ts'), '--no-open'].map(windowsQuote).join(' '))
   const sentinel = join(options.root, 'shortcut-sentinel.json')
   const deadline = Date.now() + 15000
