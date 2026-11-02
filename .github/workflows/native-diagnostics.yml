@@ -18,7 +18,23 @@ jobs:
       - run: npm ci --ignore-scripts
       - name: Run isolated snapshot boundary, CLI and bounded diagnostics
         run: node --experimental-transform-types --test --test-concurrency=1 test/native-snapshot-diagnostics.test.ts test/native-integration-snapshot.test.ts test/native-integration-snapshot-cli.test.ts
+  production-shortcut:
+    name: Production Unicode shortcut creation and activation
+    runs-on: windows-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: npm
+      - run: npm ci --ignore-scripts
+      - name: Verify production COM fields and inert shortcut activation
+        run: node --experimental-transform-types --test --test-concurrency=1 --test-name-pattern="Windows native COM generates inspectable temporary shortcuts only" test/native-install.test.ts
   shortcut:
+    name: Legacy WScript.Shell comparison probe
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
