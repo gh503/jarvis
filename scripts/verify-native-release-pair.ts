@@ -93,14 +93,17 @@ export async function main(): Promise<void> {
       progress(`inspect and extract v${release.version}`)
       if (process.platform === 'win32') {
         const env = { SystemRoot: systemRoot, WINDIR: systemRoot, ARCHIVE: archive, DEST: extracted }
+        progress(`inspect ZIP members v${release.version}`)
         const entries = JSON.parse(run(powershell, ['-NoProfile', '-NonInteractive', '-Command', "Add-Type -AssemblyName System.IO.Compression.FileSystem; $z=[IO.Compression.ZipFile]::OpenRead($env:ARCHIVE); try { @($z.Entries | ForEach-Object { @{name=$_.FullName; mode=(($_.ExternalAttributes -shr 16) -band 61440)} }) | ConvertTo-Json -Compress } finally { $z.Dispose() }"], env))
         for (const entry of entries) { validateMember(entry.name, stem); assert.ok([0, 32768, 16384].includes(entry.mode), 'Nonregular ZIP member') }
+        progress(`extract ZIP v${release.version}`)
         run(powershell, ['-NoProfile', '-NonInteractive', '-Command', 'Expand-Archive -LiteralPath $env:ARCHIVE -DestinationPath $env:DEST -ErrorAction Stop'], env)
       } else {
         for (const name of run(tar, ['-tzf', archive]).split('\n')) validateMember(name, stem)
         for (const line of run(tar, ['-tvzf', archive]).split('\n')) assert.ok(['-', 'd'].includes(line[0]!), 'Nonregular tar member')
         run(tar, ['-xzf', archive, '-C', extracted])
       }
+      progress(`validate extracted layout v${release.version}`)
       assert.deepEqual(await readdir(extracted), [stem])
       const root = await realpath(join(extracted, stem)), manifestSha256 = await hash(join(root, 'manifest.json'))
       const manifest = JSON.parse(await readFile(join(root, 'manifest.json'), 'utf8'))
