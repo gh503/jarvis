@@ -2,7 +2,8 @@
 /** Local-directory staging and isolated authenticated health checks. Never downloads, extracts, migrates, or activates. */
 import { createHash, randomBytes } from 'node:crypto'
 import { spawn } from 'node:child_process'
-import { lstat, readdir, readFile, mkdir, realpath } from 'node:fs/promises'
+import { lstat, open, opendir, mkdir, realpath } from 'node:fs/promises'
+import { constants, type BigIntStats } from 'node:fs'
 import { createServer } from 'node:net'
 import { dirname, isAbsolute, join, relative, resolve } from 'node:path'
 import { pathToFileURL } from 'node:url'
@@ -10,7 +11,6 @@ import { acquireLifecycleLock, requestRuntime } from '../src/runtime-lifecycle.t
 import { ensurePrivateDataDirectory } from '../src/private-directory.ts'
 import { readUpdateJournal, writeUpdateJournal } from './native-update-journal.ts'
 
-const hash = (bytes: Buffer) => createHash('sha256').update(bytes).digest('hex')
 const sha256 = /^[a-f0-9]{64}$/
 const stable = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/
 export interface Identity { root: string; manifestSha256: string; version: string; sourceSha: string; platform: string; arch: string; runtime: string }
@@ -25,42 +25,130 @@ export async function safePath(path: string): Promise<void> {
     current = parent
   }
 }
+class BundleVerificationError extends Error {}
+const manifestLimit = 16 * 1024 * 1024
+const payloadLimit = 16 * 1024 ** 3
+const totalPayloadLimit = 64 * 1024 ** 3
+const entryLimit = 100_000
+const depthLimit = 64
 /** A user-supplied manifest digest is the trust anchor, not a digest read from the bundle. */
 export async function verifyBundle(root: string, expected: string, platform = process.platform as string, arch = process.arch as string): Promise<Identity> {
-  if (!sha256.test(expected)) throw new Error('Expected explicit lowercase manifest SHA256')
-  if (!isAbsolute(root)) throw new Error('Bundle path must be absolute')
-  await safePath(root)
-  root = await realpath(root)
-  if (!(await lstat(root)).isDirectory()) throw new Error('Expected extracted bundle directory; archives are unsupported')
-  const bytes = await readFile(join(root, 'manifest.json'))
-  if (hash(bytes) !== expected) throw new Error('Manifest checksum mismatch')
-  const m = JSON.parse(bytes.toString('utf8'))
-  if (m.schemaVersion !== 1 || !stable.test(m.version) || !/^[a-f0-9]{40}$/.test(m.sourceSha) || m.sourceTag !== `v${m.version}` || m.dirty !== false || m.platform !== platform || m.arch !== arch || !['darwin', 'win32', 'linux'].includes(platform) || !['x64', 'arm64'].includes(arch) || m.runtime?.platform !== platform || m.runtime?.arch !== arch || !/^v24\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/.test(m.runtime?.version) || !Array.isArray(m.files)) throw new Error('Incompatible release identity (stable clean release, exact platform/arch, Node 24 required)')
-  const expectedFiles = new Map<string, { bytes: number; sha256: string }>()
-  const folded = new Set<string>()
-  for (const file of m.files) {
-    if (typeof file.path !== 'string' || /[\\:\x00-\x1f]/.test(file.path) || file.path.split('/').some((p: string) => !p || p === '.' || p === '..' || /[. ]$/.test(p)) || isAbsolute(file.path) || file.path === 'manifest.json' || file.path === '.env' || folded.has(file.path.toLowerCase()) || !sha256.test(file.sha256) || !Number.isSafeInteger(file.bytes) || file.bytes < 0) throw new Error('Unsafe or duplicate manifest entry')
-    expectedFiles.set(file.path, file); folded.add(file.path.toLowerCase())
+  const deadline = performance.now() + 5 * 60_000
+  const fail = (message: string): never => { throw new BundleVerificationError(message) }
+  const checkDeadline = () => { if (performance.now() > deadline) fail('Bundle verification deadline exceeded') }
+  async function checked<T>(operation: Promise<T>): Promise<T> { const value = await operation; checkDeadline(); return value }
+  const same = (a: BigIntStats, b: BigIntStats) => a.dev === b.dev && a.ino === b.ino && a.mode === b.mode && a.nlink === b.nlink && a.size === b.size && a.mtimeNs === b.mtimeNs && a.ctimeNs === b.ctimeNs && a.birthtimeNs === b.birthtimeNs
+  const regular = (info: BigIntStats) => { if (!info.isFile() || info.nlink !== 1n) fail('Unsafe filesystem entry') }
+  // One reusable buffer bounds payload memory regardless of declared or actual size.
+  const chunk = Buffer.allocUnsafe(1024 * 1024)
+  async function readVerified(path: string, limit: number, size?: number, collect = false) {
+    checkDeadline()
+    const before = await checked(lstat(path, { bigint: true }))
+    regular(before)
+    if (before.size > BigInt(limit)) fail('Bundle file exceeds size limit')
+    if (size !== undefined && before.size !== BigInt(size)) fail('Payload checksum mismatch or unlisted file')
+    const handle = await open(path, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0) | (constants.O_NONBLOCK ?? 0))
+    try {
+      checkDeadline()
+      const opened = await checked(handle.stat({ bigint: true }))
+      regular(opened)
+      if (!same(before, opened)) fail('Bundle file changed during verification')
+      const bytes = collect ? Buffer.alloc(Number(opened.size)) : undefined
+      const digest = createHash('sha256')
+      let position = 0
+      while (position < Number(opened.size)) {
+        const length = Math.min(chunk.length, Number(opened.size) - position)
+        const { bytesRead } = await checked(handle.read(chunk, 0, length, position))
+        if (!bytesRead) fail('Bundle file changed during verification')
+        digest.update(chunk.subarray(0, bytesRead))
+        if (bytes) chunk.copy(bytes, position, 0, bytesRead)
+        position += bytesRead
+      }
+      if ((await checked(handle.read(chunk, 0, 1, position))).bytesRead !== 0) fail('Bundle file changed during verification')
+      const after = await checked(handle.stat({ bigint: true }))
+      const named = await checked(lstat(path, { bigint: true }))
+      regular(after); regular(named)
+      if (!same(opened, after) || !same(opened, named)) fail('Bundle file changed during verification')
+      return { digest: digest.digest('hex'), bytes, info: opened }
+    } finally { await handle.close() }
   }
-  const seen = new Set<string>()
-  async function walk(directory: string, prefix = ''): Promise<void> {
-    for (const entry of await readdir(directory)) {
-      const name = prefix + entry, file = join(directory, entry), info = await lstat(file)
-      if (info.isSymbolicLink() || (!info.isFile() && !info.isDirectory()) || (info.isFile() && info.nlink !== 1)) throw new Error(`Unsafe filesystem entry: ${name}`)
-      if (info.isDirectory()) { await walk(file, name + '/'); continue }
-      if (name === 'manifest.json') continue
-      const record = expectedFiles.get(name)
-      if (!record || info.size !== record.bytes || hash(await readFile(file)) !== record.sha256) throw new Error(`Payload checksum mismatch or unlisted file: ${name}`)
-      seen.add(name)
+  try {
+    if (!sha256.test(expected)) fail('Expected explicit lowercase manifest SHA256')
+    if (!isAbsolute(root)) fail('Bundle path must be absolute')
+    await checked(safePath(root))
+    root = await checked(realpath(root))
+    if (!(await checked(lstat(root))).isDirectory()) fail('Expected extracted bundle directory; archives are unsupported')
+    const manifest = await readVerified(join(root, 'manifest.json'), manifestLimit, undefined, true)
+    if (manifest.digest !== expected) fail('Manifest checksum mismatch')
+    let m
+    try { m = JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(manifest.bytes)) }
+    catch { fail('Invalid manifest JSON or UTF-8') }
+    if (!m || m.schemaVersion !== 1 || !stable.test(m.version) || !/^[a-f0-9]{40}$/.test(m.sourceSha) || m.sourceTag !== `v${m.version}` || m.dirty !== false || m.platform !== platform || m.arch !== arch || !['darwin', 'win32', 'linux'].includes(platform) || !['x64', 'arm64'].includes(arch) || m.runtime?.platform !== platform || m.runtime?.arch !== arch || !/^v24\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/.test(m.runtime?.version) || !Array.isArray(m.files)) fail('Incompatible release identity (stable clean release, exact platform/arch, Node 24 required)')
+    if (m.files.length > entryLimit) fail('Bundle entry limit exceeded')
+    const expectedFiles = new Map<string, { bytes: number; sha256: string }>()
+    const folded = new Set<string>()
+    const expectedDirectories = new Set<string>()
+    let total = 0
+    for (const file of m.files) {
+      checkDeadline()
+      if (!file || typeof file.path !== 'string' || /[\\:\x00-\x1f\ufffd\ud800-\udfff]/u.test(file.path) || Buffer.byteLength(file.path, 'utf8') > 4096 || file.path.split('/').length > depthLimit || file.path.split('/').some((p: string) => !p || p === '.' || p === '..' || /[. ]$/.test(p) || Buffer.byteLength(p, 'utf8') > 255) || isAbsolute(file.path) || file.path === 'manifest.json' || file.path === '.env' || folded.has(file.path.toLowerCase()) || typeof file.sha256 !== 'string' || !sha256.test(file.sha256) || !Number.isSafeInteger(file.bytes) || file.bytes < 0) fail('Unsafe or duplicate manifest entry')
+      total += file.bytes
+      if (file.bytes > payloadLimit || total > totalPayloadLimit) fail('Declared payload exceeds size limit')
+      expectedFiles.set(file.path, file); folded.add(file.path.toLowerCase())
+      let parent = file.path.lastIndexOf('/')
+      while (parent !== -1) {
+        expectedDirectories.add(file.path.slice(0, parent))
+        if (expectedDirectories.size + m.files.length + 1 > entryLimit) fail('Bundle entry limit exceeded')
+        parent = file.path.lastIndexOf('/', parent - 1)
+      }
     }
+    const seen = new Set<string>()
+    let entries = 0
+    async function walk(directory: string, prefix = '', depth = 0): Promise<void> {
+      checkDeadline()
+      if (depth > depthLimit) fail('Bundle depth limit exceeded')
+      const before = await checked(lstat(directory, { bigint: true }))
+      if (!before.isDirectory()) fail('Unsafe filesystem entry')
+      const iterator = await opendir(directory)
+      try {
+        checkDeadline()
+        while (true) {
+          const entry = await checked(iterator.read())
+          if (!entry) break
+          if (++entries > entryLimit) fail('Bundle entry limit exceeded')
+          const name = prefix + entry.name, file = join(directory, entry.name)
+          if (/[\ufffd\ud800-\udfff]/u.test(entry.name) || Buffer.byteLength(entry.name, 'utf8') > 255 || Buffer.byteLength(name, 'utf8') > 4096) fail('Unsafe filesystem entry')
+          const info = await checked(lstat(file, { bigint: true }))
+          if (info.isDirectory()) {
+            if (!expectedDirectories.has(name)) fail('Unlisted bundle directory')
+            await walk(file, name + '/', depth + 1); continue
+          }
+          regular(info)
+          if (name === 'manifest.json') continue
+          const record = expectedFiles.get(name)
+          if (!record || info.size !== BigInt(record.bytes)) fail('Payload checksum mismatch or unlisted file')
+          const payload = await readVerified(file, payloadLimit, record!.bytes)
+          if (!same(info, payload.info)) fail('Bundle file changed during verification')
+          if (payload.digest !== record!.sha256) fail('Payload checksum mismatch or unlisted file')
+          seen.add(name)
+        }
+      } finally { await iterator.close() }
+      if (!same(before, await checked(lstat(directory, { bigint: true })))) fail('Bundle directory changed during verification')
+    }
+    await walk(root)
+    if (seen.size !== expectedFiles.size) fail('Missing manifest payload')
+    for (const name of [`runtime/${platform === 'win32' ? 'node.exe' : 'node'}`, 'src/main.ts', 'scripts/app.ts', 'scripts/install-native.ts']) if (!seen.has(name)) fail('Missing required payload')
+    // Detect replacement as well as mutation; this is not a filesystem snapshot or a lock against writers.
+    const finalManifest = await readVerified(join(root, 'manifest.json'), manifestLimit)
+    if (finalManifest.digest !== expected || !same(manifest.info, finalManifest.info)) fail('Manifest changed during verification')
+    checkDeadline()
+    return { root, manifestSha256: expected, version: m.version, sourceSha: m.sourceSha, platform, arch, runtime: m.runtime.version }
+  } catch (error) {
+    if (error instanceof BundleVerificationError) throw error
+    throw new BundleVerificationError('Bundle verification failed')
   }
-  await walk(root)
-  if (seen.size !== expectedFiles.size) throw new Error('Missing manifest payload')
-  for (const name of [`runtime/${platform === 'win32' ? 'node.exe' : 'node'}`, 'src/main.ts', 'scripts/app.ts', 'scripts/install-native.ts']) if (!seen.has(name)) throw new Error(`Missing required payload: ${name}`)
-  // Recheck the manifest after walking; no claim of protection against a concurrent malicious writer.
-  if (hash(await readFile(join(root, 'manifest.json'))) !== expected) throw new Error('Manifest changed during verification')
-  return { root, manifestSha256: expected, version: m.version, sourceSha: m.sourceSha, platform, arch, runtime: m.runtime.version }
 }
+
 function newer(a: string, b: string): boolean {
   const aa = a.split('.').map(BigInt), bb = b.split('.').map(BigInt)
   for (let i = 0; i < 3; i++) if (aa[i] !== bb[i]) return aa[i]! > bb[i]!

@@ -1,7 +1,8 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { createHash } from 'node:crypto'
-import { mkdtemp, mkdir, writeFile, readFile, rm, symlink, cp, copyFile, readdir, stat, realpath } from 'node:fs/promises'
+import fsPromises, { mkdtemp, mkdir, writeFile, readFile, rm, symlink, cp, copyFile, readdir, stat, realpath, open, link, rename } from 'node:fs/promises'
+import { syncBuiltinESMExports } from 'node:module'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -112,7 +113,17 @@ for (const mode of ['healthy', 'wrong-version', 'nonzero', 'signal', 'redirect',
 test('real packaged candidate starts with separate home and data and shuts down', { timeout: 120_000 }, async () => fixture(async (root, old, next, oldHash) => {
   const source = dirname(dirname(fileURLToPath(import.meta.url)))
   // Real application and runtime, copied into a fully hashed portable layout. No symlink to the checkout.
-  for (const directory of ['src', 'web', 'node_modules']) await cp(join(source, directory), join(next, directory), { recursive: true, dereference: true })
+  // Release source packaging copies a file inventory, which excludes empty checkout directories.
+  const populated = new Map<string, boolean>()
+  async function hasPayload(path: string): Promise<boolean> {
+    if (!(await stat(path)).isDirectory()) return true
+    if (populated.has(path)) return populated.get(path)!
+    let result = false
+    for (const name of await readdir(path)) if (await hasPayload(join(path, name))) result = true
+    populated.set(path, result)
+    return result
+  }
+  for (const directory of ['src', 'web', 'node_modules']) await cp(join(source, directory), join(next, directory), { recursive: true, dereference: true, filter: hasPayload })
   await copyFile(join(source, 'package.json'), join(next, 'package.json'))
   await copyFile(process.execPath, join(next, 'runtime', process.platform === 'win32' ? 'node.exe' : 'node'))
   const nextHash = await refreshManifest(next)
@@ -178,3 +189,85 @@ test('tampering after staging prevents health callback', async () => fixture(asy
   await assert.rejects(health(transaction, async () => { called = true }), /Payload checksum/)
   assert.equal(called, false)
 }))
+
+
+test('oversized sparse manifest is rejected before allocation or parsing', async () => fixture(async (_root, _old, next) => {
+  const handle = await open(join(next, 'manifest.json'), 'r+')
+  try { await handle.truncate(16 * 1024 * 1024 + 1) } finally { await handle.close() }
+  await assert.rejects(verifyBundle(next, 'a'.repeat(64)), { message: 'Bundle file exceeds size limit' })
+}))
+test('sparse payload with incorrect declared size is rejected before hashing', async () => fixture(async (_root, _old, next, _oldHash, nextHash) => {
+  const handle = await open(join(next, 'src/main.ts'), 'r+')
+  try { await handle.truncate(16 * 1024 ** 3) } finally { await handle.close() }
+  await assert.rejects(verifyBundle(next, nextHash), { message: 'Payload checksum mismatch or unlisted file' })
+}))
+test('manifest decoding rejects malformed UTF-8 even with trusted digest', async () => fixture(async (_root, _old, next) => {
+  const original = await readFile(join(next, 'manifest.json'))
+  // The invalid byte is inside an otherwise valid, ignored JSON property.
+  const bytes = Buffer.concat([Buffer.from('{"ignored":"'), Buffer.from([0xff]), Buffer.from('",'), original.subarray(1)])
+  await writeFile(join(next, 'manifest.json'), bytes)
+  await assert.rejects(verifyBundle(next, digest(bytes)), { message: 'Invalid manifest JSON or UTF-8' })
+}))
+for (const name of ['src/main.ts', 'manifest.json']) {
+  test(`hardlinked ${name} is rejected`, async () => fixture(async (root, _old, next, _oldHash, nextHash) => {
+    await link(join(next, name), join(root, 'external-hardlink'))
+    await assert.rejects(verifyBundle(next, nextHash), { message: 'Unsafe filesystem entry' })
+  }))
+}
+test('payload larger than a read chunk is hashed through its final byte', async () => fixture(async (_root, _old, next) => {
+  const bytes = Buffer.alloc(2 * 1024 * 1024 + 13, 97)
+  await writeFile(join(next, 'src/main.ts'), bytes)
+  const hash = await refreshManifest(next)
+  assert.equal((await verifyBundle(next, hash)).version, '1.0.1')
+  bytes[bytes.length - 1] = 98
+  await writeFile(join(next, 'src/main.ts'), bytes)
+  await assert.rejects(verifyBundle(next, hash), { message: 'Payload checksum mismatch or unlisted file' })
+}))
+for (const mode of ['individual', 'total', 'count', 'depth', 'name'] as const) {
+  test(`manifest ${mode} budget is enforced`, async () => fixture(async (_root, _old, next) => {
+    const manifest = JSON.parse(await readFile(join(next, 'manifest.json'), 'utf8'))
+    if (mode === 'individual') manifest.files[0].bytes = 16 * 1024 ** 3 + 1
+    if (mode === 'total') manifest.files = Array.from({ length: 5 }, (_, i) => ({ path: `large-${i}`, bytes: 16 * 1024 ** 3, sha256: 'a'.repeat(64) }))
+    if (mode === 'count') manifest.files = Array.from({ length: 100_001 }, (_, i) => ({ path: `f${i}`, bytes: 0, sha256: 'a'.repeat(64) }))
+    if (mode === 'depth') manifest.files[0].path = 'a/'.repeat(64) + 'file'
+    if (mode === 'name') manifest.files[0].path = 'é'.repeat(128)
+    const text = JSON.stringify(manifest)
+    await writeFile(join(next, 'manifest.json'), text)
+    await assert.rejects(verifyBundle(next, digest(text)), mode === 'individual' || mode === 'total' ? /Declared payload exceeds size limit/ : mode === 'count' ? /Bundle entry limit exceeded/ : /Unsafe or duplicate manifest entry/)
+  }))
+}
+test('filesystem and JSON failures do not expose paths or parser content', async () => fixture(async (root, _old, next) => {
+  await assert.rejects(verifyBundle(join(root, 'private-secret-missing'), 'a'.repeat(64)), { message: 'Bundle verification failed' })
+  const text = '{"private-secret-value":'
+  await writeFile(join(next, 'manifest.json'), text)
+  await assert.rejects(verifyBundle(next, digest(text)), { message: 'Invalid manifest JSON or UTF-8' })
+}))
+
+test('unlisted empty directories are rejected', async () => fixture(async (_root, _old, next, _oldHash, nextHash) => {
+  await mkdir(join(next, 'unlisted-empty'))
+  await assert.rejects(verifyBundle(next, nextHash), { message: 'Unlisted bundle directory' })
+}))
+for (const name of ['manifest.json', 'src/main.ts']) {
+  test(`replacement of an opened ${name} is rejected`, async t => fixture(async (root, _old, next, _oldHash, nextHash) => {
+    const target = join(next, name)
+    const replacement = join(root, 'replacement')
+    await copyFile(target, replacement)
+    const originalOpen = fsPromises.open
+    let replaced = false
+    t.mock.method(fsPromises, 'open', async (...args: Parameters<typeof open>) => {
+      const handle = await originalOpen(...args)
+      if (args[0] === target && !replaced) {
+        replaced = true
+        // The descriptor still names the old inode, but the path now has identical bytes.
+        await rename(target, join(root, 'displaced'))
+        await rename(replacement, target)
+      }
+      return handle
+    })
+    syncBuiltinESMExports()
+    try {
+      await assert.rejects(verifyBundle(next, nextHash), /Bundle file changed during verification/)
+      assert.equal(replaced, true)
+    } finally { t.mock.restoreAll(); syncBuiltinESMExports() }
+  }))
+}
