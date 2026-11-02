@@ -8,7 +8,7 @@ Start with [上手指南](docs/getting-started.md) for **native preview or sourc
 and [分发说明](docs/distribution.md) for platform limits and release gates.
 Windows, macOS and Linux have native runtime lifecycle support and Node 24 portable
 package matrices. **Unsigned native portable previews are published** for Linux x64, Windows x64
-and macOS arm64 at [v2.0.31](https://github.com/gh503/jarvis/releases/tag/v2.0.31). They are
+and macOS arm64 at the recommended [v2.0.35](https://github.com/gh503/jarvis/releases/tag/v2.0.35). They are
 not signed installers or a guarantee of stable production readiness or full feature parity.
 The in-app `/providers` and `/install` pages help configure models and browser clients.
 
@@ -47,13 +47,13 @@ repository write permission limited to the release job.
 
 ## Native preview status
 
-For the pinned v2.0.31 preview, the three-platform automated release gates passed for runtime lifecycle and
+For the pinned v2.0.35 preview, the three-platform automated release gates passed for runtime lifecycle and
 bundled Node 24 packages, including packaged privacy, backup and updater checks
 and Windows Unicode shortcut activation. This covers the hosted runner targets,
 not every OS/CPU pair or interactive desktop environment.
 
 Download the archive matching your OS/CPU, its SHA256 and provenance from
-[v2.0.31](https://github.com/gh503/jarvis/releases/tag/v2.0.31), verify the archive,
+[v2.0.35](https://github.com/gh503/jarvis/releases/tag/v2.0.35), verify the archive,
 and extract into a stable writable folder. Each of the three targets has these
 three files. Other builds may be available as conditional unsigned CI previews in
 [Actions](https://github.com/gh503/jarvis/actions); source instructions remain below.
@@ -61,7 +61,9 @@ Publication is enabled but requires all three build gates; see the
 [release pipeline](docs/native-release-pipeline.md).
 
 Portable packages include `scripts/install-native.ts` for a macOS `.app` wrapper
-or Windows Start menu shortcuts, with optional next-login startup. They point to
+or Windows Start menu shortcuts, with optional next-login startup and private
+external configuration via `--install --config ABS`. The app launcher also accepts
+`--config ABS` for launch and stop; see [configuration binding](docs/native-install.md#optional-private-external-configuration). They point to
 the extracted folder and are **unsigned, not notarized**. See [native installation](docs/native-install.md).
 The updater only verifies/stages candidates, runs isolated health checks and
 abandons a stage on rollback: **there is no automatic activation**. Explicit
@@ -91,7 +93,7 @@ confirmation. Questions collect information and do not grant tool permissions.
 See [本地工具与权限说明](docs/ui.md#本地工具任务与目录授权) for the exact names,
 API routes, privacy boundaries and recurrence behavior.
 
-The v2.0.31 preview supports `file_read`, `file_list` and `file_search` on macOS/Windows
+The v2.0.35 preview supports `file_read`, `file_list` and `file_search` on macOS/Windows
 through the native filesystem helper: explicitly authorize at most 16 read roots;
 text reads are UTF-8 and limited to 1 MiB, with secret-path filtering and private-key content rejection.
 Native writes, output workspace operations, artifact delivery, image inspection
@@ -249,7 +251,8 @@ are in [voice.md](docs/voice.md).
 
 ## Tests
 
-The suite (`npm test`, 100+ cases) covers attention, memory and its
+The current full regression result is **744 tests: 723 passed, 21 platform skips,
+0 failed**. The suite (`npm test`) covers attention, memory and its
 sensitive-data boundaries, server auth/CSRF/host checks, at-rest encryption,
 telemetry, voice cancellation, LLM protocols/model discovery and voice routing.
 `npm run memory:eval` is a separate deterministic recall/abstention/privacy

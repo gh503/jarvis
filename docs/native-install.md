@@ -30,9 +30,9 @@ Windows PowerShell:
 
 Choose one install command. Existing integrations are never silently overwritten: uninstall before reinstalling, enabling/disabling startup, or pointing shortcuts to a different package or config file. Missing or ambiguous actions and unknown flags fail. `--autostart` and `--config ABS` are valid only with `--install`; they can be used together. `--uninstall` rejects both options.
 
-## Optional private external configuration (unreleased)
+## Optional private external configuration
 
-The optional binding described here is implemented in the working tree and is not yet released. Do not assume an already downloaded release supports these flags. Installation without `--config` keeps the existing behavior.
+Use the recommended [v2.0.35 unsigned preview](https://github.com/gh503/jarvis/releases/tag/v2.0.35) for this optional binding. Installation without `--config` keeps the existing behavior.
 
 To bind shortcuts and optional login startup to a private config file outside the portable package, add `--config` with its canonical absolute filename:
 
