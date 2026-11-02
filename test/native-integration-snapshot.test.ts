@@ -292,7 +292,11 @@ foreach ($p in (ConvertFrom-Json $env:JARVIS_TEST_PATHS)) {
   $acl.AddAccessRule([Security.AccessControl.FileSystemAccessRule]::new($user,$rights,'Allow'))
  }
  if ($env:JARVIS_TEST_ACTION -eq 'shared') { $acl.AddAccessRule([Security.AccessControl.FileSystemAccessRule]::new([Security.Principal.SecurityIdentifier]::new('S-1-1-0'),'Read','Allow')) }
- if ($env:JARVIS_TEST_ACTION -eq 'restore') { $acl.AddAccessRule([Security.AccessControl.FileSystemAccessRule]::new($user,'FullControl','Allow')) }
+ if ($env:JARVIS_TEST_ACTION -eq 'deny-write') { $acl.AddAccessRule([Security.AccessControl.FileSystemAccessRule]::new($user,'WriteData','Deny')) }
+ if ($env:JARVIS_TEST_ACTION -eq 'restore') {
+  foreach ($rule in @($acl.Access)) { if ($rule.AccessControlType -eq 'Deny') { [void]$acl.RemoveAccessRuleSpecific($rule) } }
+  $acl.AddAccessRule([Security.AccessControl.FileSystemAccessRule]::new($user,'FullControl','Allow'))
+ }
  Set-Acl -LiteralPath $p -AclObject $acl
 }`, 'utf16le').toString('base64')], { env: { ...process.env, JARVIS_TEST_PATHS: JSON.stringify(selectedPaths), JARVIS_TEST_ACTION: action }, encoding: 'utf8', timeout: 10_000, windowsHide: true })
   try {
@@ -301,8 +305,10 @@ foreach ($p in (ConvertFrom-Json $env:JARVIS_TEST_PATHS)) {
     await verifyIntegrationSnapshot({ snapshot: destination, manifestSha256: result.manifestSha256, integration })
     assert.equal(run('read'), before)
     // Isolate each kind: a shared directory must not mask an unchecked file ACL.
-    for (const path of paths.toReversed()) {
-      run('shared', [path])
+    const cases = paths.toReversed().map(path => ({ path, action: 'shared' }))
+    cases.push({ path: join(destination, 'payload', '0.bin'), action: 'deny-write' })
+    for (const { path, action } of cases) {
+      run(action, [path])
       const shared = run('read')
       await assert.rejects(verifyIntegrationSnapshot({ snapshot: destination, manifestSha256: result.manifestSha256, integration }), (error: unknown) => {
         assert.ok(error instanceof Error)
