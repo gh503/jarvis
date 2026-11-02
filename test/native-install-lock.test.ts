@@ -96,9 +96,19 @@ test('native Windows rejects shared ACL without repairing it', { skip: process.p
   const { controlDirectory } = await fixture(t)
   await withNativeInstallLock({ controlDirectory }, async () => {})
   await withNativeInstallLock({ controlDirectory }, async () => {})
-  const powershell = (script: string) => execFileSync(join(process.env.SystemRoot!, 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe'), [
-    '-NoLogo', '-NoProfile', '-NonInteractive', '-EncodedCommand', Buffer.from(script, 'utf16le').toString('base64'),
-  ], { env: { ...process.env, TEST_CONTROL: controlDirectory }, encoding: 'utf8', timeout: 10_000, windowsHide: true })
+  const env: NodeJS.ProcessEnv = { ...process.env, TEST_CONTROL: controlDirectory }
+  for (const key of Object.keys(env)) if (key.toLowerCase() === 'psmodulepath') delete env[key]
+  const powershell = (script: string) => {
+    // Match the production boundary checker's fixed Windows PowerShell modules;
+    // CI may inherit an incompatible PSModulePath from PowerShell Core.
+    script = String.raw`$ErrorActionPreference = 'Stop'
+$env:PSModulePath = "$PSHOME\Modules"
+Import-Module "$PSHOME\Modules\Microsoft.PowerShell.Security\Microsoft.PowerShell.Security.psd1" -ErrorAction Stop
+` + script
+    return execFileSync(join(process.env.SystemRoot!, 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe'), [
+      '-NoLogo', '-NoProfile', '-NonInteractive', '-EncodedCommand', Buffer.from(script, 'utf16le').toString('base64'),
+    ], { env, encoding: 'utf8', timeout: 10_000, windowsHide: true })
+  }
   powershell(String.raw`
 $ErrorActionPreference = 'Stop'
 $p = $env:TEST_CONTROL
@@ -138,7 +148,7 @@ test('operation and release failures retain both errors with original cause', as
   await withNativeInstallLock({ controlDirectory }, async () => {})
 })
 
-for (const platform of ['darwin', 'win32'] as const) test(`${platform}: process contention spans package roots/config and crash releases same inode`, { timeout: 30_000 }, async t => {
+for (const platform of ['darwin', 'win32'] as const) test(`${platform}: process contention spans package roots/config and crash releases same inode`, { timeout: process.platform === 'win32' ? 120_000 : 30_000 }, async t => {
   const f = await fixture(t)
   const options = { ...f.options, platform, appData: join(f.root, 'roaming'), localAppData: join(f.root, 'local') }
   const { receiptPath, artifactPaths } = describeNativeIntegration(options)
@@ -148,13 +158,22 @@ for (const platform of ['darwin', 'win32'] as const) test(`${platform}: process 
   await writeFile(artifactPaths[0]!, 'sentinel', { mode: 0o600 })
   const original = await lstat(artifactPaths[0]!, { bigint: true })
   const moduleUrl = new URL('../scripts/native-install-lock.ts', import.meta.url).href
-  const child = spawn(process.execPath, ['--experimental-transform-types', '--input-type=module', '-e', `
+  const child = spawn(process.execPath, ['--expose-gc', '--experimental-transform-types', '--input-type=module', '-e', `
     import { withNativeInstallLock } from ${JSON.stringify(moduleUrl)};
     await withNativeInstallLock({controlDirectory: process.env.TEST_CONTROL}, async () => {
-      process.stdout.write('READY\\n');
-      await new Promise(() => { setInterval(() => {}, 1000) });
+      // A timer alone keeps the process alive but not an unreachable pending
+      // promise: GC can collect its suspended lock scope and SQLite connection.
+      await new Promise((resolve, reject) => {
+        process.stdin.once('end', resolve);
+        process.stdin.once('error', reject);
+        process.stdin.on('data', () => {
+          global.gc();
+          process.stdout.write('ALIVE\\n');
+        });
+        process.stdout.write('READY\\n');
+      });
     });
-  `], { env: { ...process.env, TEST_CONTROL: controlDirectory }, stdio: ['ignore', 'pipe', 'pipe'] })
+  `], { env: { ...process.env, TEST_CONTROL: controlDirectory }, stdio: ['pipe', 'pipe', 'pipe'] })
   let stderr = ''
   child.stderr.on('data', data => { stderr += data })
   const exited = once(child, 'exit')
@@ -164,10 +183,26 @@ for (const platform of ['darwin', 'win32'] as const) test(`${platform}: process 
     child.once('exit', () => reject(new Error(stderr)))
     child.stdout.on('data', data => { if (String(data).includes('READY')) resolve() })
   })
+  const assertHolderAlive = async () => {
+    assert.equal(child.exitCode, null, stderr)
+    assert.equal(child.signalCode, null, stderr)
+    await new Promise<void>((resolve, reject) => {
+      const cleanup = () => { child.stdout.off('data', onData); child.off('exit', onExit); child.off('error', onError) }
+      const onData = (data: Buffer) => { if (String(data).includes('ALIVE')) { cleanup(); resolve() } }
+      const onExit = () => { cleanup(); reject(new Error(`Lock holder exited: ${stderr}`)) }
+      const onError = (error: Error) => { cleanup(); reject(error) }
+      child.stdout.on('data', onData)
+      child.once('exit', onExit)
+      child.once('error', onError)
+      child.stdin.write('GC and acknowledge\n')
+    })
+  }
   const lock = join(controlDirectory, 'launcher.lock.sqlite')
   const identity = await lstat(lock)
   for (const args of [['--install'], ['--uninstall'], ['--install', '--config', join(f.root, 'nonexistent-config')]]) {
+    await assertHolderAlive()
     await assert.rejects(nativeIntegration({ ...options, root: join(f.root, 'different-package') }, args), /Another launcher is still working/)
+    await assertHolderAlive()
     assert.equal(await readFile(artifactPaths[0]!, 'utf8'), 'sentinel')
     const current = await lstat(artifactPaths[0]!, { bigint: true })
     assert.equal(current.ino, original.ino)
