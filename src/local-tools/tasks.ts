@@ -127,7 +127,10 @@ export class TaskTools {
   jobs(sessionId:string){return this.db.prepare('SELECT * FROM jobs WHERE session_id=? ORDER BY created_at DESC LIMIT 100').all(sessionId).map(row=>this.publicJob(row))}
   cancelJob(id:string,sessionId:string):boolean{if(!this.job(id,sessionId))return false;this.active.get(id)?.cancel();return true}
   private baseSandbox():string[]{
-    const args=['--unshare-all','--unshare-net','--die-with-parent','--new-session','--clearenv','--setenv','PATH','/usr/bin:/bin','--setenv','LANG','C.UTF-8','--setenv','HOME','/tmp','--proc','/proc','--dev','/dev','--tmpfs','/tmp']
+    // Both spawns use detached:true to create a session without a controlling tty.
+    // Keep bwrap's init in that process group: another --new-session can move it
+    // out before --die-with-parent is armed, letting startup cancellation orphan it.
+    const args=['--unshare-all','--unshare-net','--die-with-parent','--clearenv','--setenv','PATH','/usr/bin:/bin','--setenv','LANG','C.UTF-8','--setenv','HOME','/tmp','--proc','/proc','--dev','/dev','--tmpfs','/tmp']
     for(const path of ['/usr','/bin','/lib','/lib64'])if(existsSync(path)){const real=realpathSync(path);if(real===path)args.push('--ro-bind',real,path);else args.push('--symlink',real,path)}
     return args
   }

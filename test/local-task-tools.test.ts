@@ -4,6 +4,7 @@ import { mkdtempSync, mkdirSync, readFileSync, readlinkSync, statSync, existsSyn
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { DatabaseSync } from 'node:sqlite'
+import { setTimeout as delay } from 'node:timers/promises'
 import { TaskTools } from '../src/local-tools/tasks.ts'
 import { EventBus } from '../src/events.ts'
 
@@ -86,6 +87,42 @@ test('shell is fail-closed until actual bubblewrap passes its capability probe',
     f.settings.shellEnabled=false;assert.equal(f.tools.definitions().some(d=>d.name==='shell_execute'),false)
     assert.equal(f.tools.status().shellAvailable,hostCapability);assert.equal(f.tools.status().shell.enabled,false);assert.equal(f.tools.status().shell.available,false)
     const unknown=await f.execute('job_output',{id:'unknown'},f.ctx('foreign'));assert.deepEqual(JSON.parse(unknown.content),{error:'Job not found',status:404})
+  }finally{await f.tools.close()}
+})
+
+test('real sandbox cancellation keeps startup in its kill group and stops detached descendants',async t=>{
+  const f=fixture(true)
+  try{
+    await f.tools.initialize();if(!f.tools.status().shellAvailable){t.skip(f.tools.status().reason);return}
+    // Exercise cancellation immediately after spawn, before a readiness handshake.
+    for(let attempt=0;attempt<20;attempt++){
+      const job=JSON.parse((await f.execute('shell_execute',{command:'sleep 30',runInBackground:true})).content)
+      const start=performance.now();assert.equal(f.tools.cancelJob(job.id,'s'),true)
+      await f.tools.quiesce()
+      assert.ok(performance.now()-start<5000,'startup cancellation kills the sandbox promptly')
+      assert.equal(f.tools.jobs('s').find(j=>j.id===job.id)!.status,'cancelled')
+    }
+    const controller=new AbortController()
+    const job=JSON.parse((await f.execute('shell_execute',{command:`setsid /bin/bash -c 'trap "" TERM; printf ready; sleep 30; touch survived' & wait`,runInBackground:true},f.ctx('s',controller.signal))).content)
+    const deadline=performance.now()+5000
+    while(!f.tools.jobs('s').find(j=>j.id===job.id)!.output.includes('ready')&&performance.now()<deadline)await delay(10)
+    assert.equal(f.tools.jobs('s').find(j=>j.id===job.id)!.output,'ready','descendant is running before cancellation')
+    const db=new DatabaseSync(f.file,{readOnly:true})
+    let pid:number
+    try{pid=Number(db.prepare('SELECT pid FROM jobs WHERE id=?').get(job.id)!.pid)}finally{db.close()}
+    const children=readFileSync(`/proc/${pid}/task/${pid}/children`,'utf8').trim().split(/\s+/).map(Number)
+    assert.ok(children.length>0,'bubblewrap has a namespace init')
+    for(const child of children){
+      const stat=readFileSync(`/proc/${child}/stat`,'utf8')
+      const fields=stat.slice(stat.lastIndexOf(')')+2).split(' ')
+      assert.equal(Number(fields[2]),pid,'namespace init remains in the detached launcher kill group during startup')
+      assert.equal(Number(fields[3]),pid,'detached launcher provides the sandbox session')
+      assert.equal(Number(fields[4]),0,'sandbox has no controlling terminal')
+    }
+    const start=performance.now();controller.abort();await f.tools.quiesce()
+    assert.ok(performance.now()-start<5000,'abort kills even descendants in separate sessions promptly')
+    assert.equal(f.tools.jobs('s').find(j=>j.id===job.id)!.status,'cancelled')
+    assert.equal(existsSync(join(f.outputDir,'survived')),false)
   }finally{await f.tools.close()}
 })
 
