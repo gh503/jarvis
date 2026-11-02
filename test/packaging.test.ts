@@ -2,8 +2,9 @@ import assert from 'node:assert/strict'
 import { execFileSync, spawnSync } from 'node:child_process'
 import { mkdtemp, mkdir, readFile, rm, writeFile, copyFile, chmod, symlink } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { join, posix, resolve } from 'node:path'
 import { test } from 'node:test'
+import ts from 'typescript'
 import { copyPublicFiles, createArchive, isPublicFile, launchers, nativeTarget, payloadFiles, provenance, sha256, writeLaunchers, writeManifest } from '../scripts/packaging.ts'
 
 async function temporary(run: (dir: string) => Promise<void>) {
@@ -15,8 +16,86 @@ async function temporary(run: (dir: string) => Promise<void>) {
 }
 
 test('public allowlist excludes private state, environment files and unrelated scripts', () => {
-  for (const path of ['.env', 'src/.env', 'web/.env.local', 'src/private/key.ts', 'data/state.json', 'node_modules/ws/index.js', 'scripts/__pycache__/worker.pyc', 'scripts/package-app.ts', 'docs/customer-notes.md', 'src/secrets/token.ts', 'web/key.pem']) assert.equal(isPublicFile(path), false, path)
+  for (const path of ['.env', 'src/.env', 'web/.env.local', 'src/private/key.ts', 'data/state.json', 'node_modules/ws/index.js', 'scripts/__pycache__/worker.pyc', 'scripts/package-app.ts', 'scripts/native-private-experiment.ts', 'docs/native-private-notes.md', 'docs/customer-notes.md', 'src/secrets/token.ts', 'web/key.pem']) assert.equal(isPublicFile(path), false, path)
   for (const path of ['src/main.ts', 'src/local-tools/scoped-filesystem.ts', 'web/index.html', 'web/icons/jarvis.svg', 'scripts/app.ts', 'scripts/runtime-lifecycle.ts', 'scripts/backup-archive.ts', 'scripts/install-native.ts', 'docs/native-install.md', 'LICENSE', 'package-lock.json']) assert.equal(isPublicFile(path), true, path)
+})
+
+function relativeImports(source: string): string[] {
+  const file = ts.createSourceFile('payload.ts', source, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS)
+  const imports = new Set<string>()
+  const collect = (node: ts.Node) => {
+    let specifier: ts.Node | undefined
+    if (ts.isImportDeclaration(node) || ts.isExportDeclaration(node)) specifier = node.moduleSpecifier
+    else if (ts.isCallExpression(node) && node.expression.kind === ts.SyntaxKind.ImportKeyword) specifier = node.arguments[0]
+    else if (ts.isImportTypeNode(node) && ts.isLiteralTypeNode(node.argument)) specifier = node.argument.literal
+    else if (ts.isExternalModuleReference(node)) specifier = node.expression
+    if (specifier && ts.isStringLiteralLike(specifier) && specifier.text.startsWith('.')) imports.add(specifier.text)
+    ts.forEachChild(node, collect)
+  }
+  collect(file)
+  return [...imports]
+}
+
+test('payload import collector handles static, type, export and dynamic imports without matching comments', () => {
+  assert.deepEqual(relativeImports(`
+    import './side-effect.ts'
+    import type { Type } from './types.ts'
+    export { value } from './export.ts'
+    export type * from './export-types.ts'
+    const lazy = import('./dynamic.ts')
+    const template = import(\`./template.ts\`)
+    type Other = import('./import-type.ts').Other
+    import legacy = require('./legacy.ts')
+    import { readFile } from 'node:fs/promises'
+    import external from 'external-package'
+    // import './comment.ts'
+    const text = "import('./string.ts')"
+  `), ['./side-effect.ts', './types.ts', './export.ts', './export-types.ts', './dynamic.ts', './template.ts', './import-type.ts', './legacy.ts'])
+})
+
+test('packaged runtime entrypoints and their transitive local imports are tracked public files', async () => {
+  const root = resolve(import.meta.dirname, '..')
+  const tracked = new Set(execFileSync('git', ['ls-files', '-z'], { cwd: root, encoding: 'utf8' }).split('\0').filter(Boolean))
+  // Explicit entrypoints also catch a CLI accidentally removed from the allowlist.
+  // Scan every other packaged TS file too, including APIs and src entrypoints
+  // launched as subprocesses rather than imported by app.ts.
+  const pending = [
+    'scripts/app.ts', 'scripts/install-native.ts', 'scripts/update-native.ts',
+    'scripts/snapshot-native.ts', 'scripts/snapshot-native-config.ts',
+    'scripts/recovery-native.ts', 'scripts/snapshot-native-integration.ts',
+    'scripts/diagnose-native-install.ts', 'scripts/backup.ts', 'scripts/restore.ts',
+    ...[...tracked].filter(path => path.endsWith('.ts') && isPublicFile(path)),
+  ]
+  const visited = new Set<string>()
+  while (pending.length) {
+    const path = pending.pop()!
+    if (visited.has(path)) continue
+    visited.add(path)
+    assert.ok(tracked.has(path), `Missing tracked payload file: ${path}`)
+    assert.ok(isPublicFile(path), `Payload file excluded by allowlist: ${path}`)
+    const source = await readFile(join(root, path), 'utf8')
+    for (const specifier of relativeImports(source)) {
+      const dependency = posix.normalize(posix.join(posix.dirname(path), specifier))
+      assert.ok(tracked.has(dependency), `${path} imports missing or untracked file ${dependency}`)
+      assert.ok(isPublicFile(dependency), `${path} imports excluded payload file ${dependency}`)
+      if (dependency.endsWith('.ts')) pending.push(dependency)
+    }
+  }
+})
+
+test('native operational documentation is tracked and included in the public payload', async () => {
+  const root = resolve(import.meta.dirname, '..')
+  const tracked = new Set(execFileSync('git', ['ls-files', '-z'], { cwd: root, encoding: 'utf8' }).split('\0').filter(Boolean))
+  for (const name of [
+    'native-install.md', 'native-update.md', 'native-state-snapshot.md',
+    'native-config-snapshot.md', 'stopped-data-scope.md', 'native-recovery-set.md',
+    'native-integration-snapshot.md', 'native-install-intent.md', 'native-release-pipeline.md',
+  ]) {
+    const path = `docs/${name}`
+    assert.ok(tracked.has(path), `Missing tracked documentation: ${path}`)
+    assert.ok(isPublicFile(path), `Excluded native documentation: ${path}`)
+    await readFile(join(root, path), 'utf8')
+  }
 })
 
 test('public copy ignores untracked secrets and rejects tracked symlinks', async () => temporary(async dir => {

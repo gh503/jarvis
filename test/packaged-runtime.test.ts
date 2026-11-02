@@ -81,6 +81,12 @@ test('native artifact verifies and starts/stops using only its bundled Node', { 
     const binary = join(bundle, 'runtime', process.platform === 'win32' ? 'node.exe' : 'node')
     const identity = JSON.parse(execFileSync(binary, ['-p', 'JSON.stringify({version:process.version,platform:process.platform,arch:process.arch})'], { env, encoding: 'utf8', timeout: 15_000 }))
     assert.equal(identity.version, manifest.runtime.version)
+    nextStage('bundled native management module imports with empty PATH')
+    const managementModules = ['install-native.ts', 'update-native.ts', 'native-state-snapshot.ts', 'native-config-snapshot.ts', 'native-recovery-set.ts', 'native-integration-snapshot.ts', 'native-install-diagnose.ts']
+    const importScript = `for (const url of ${JSON.stringify(managementModules.map(name => pathToFileURL(join(bundle, 'scripts', name)).href))}) await import(url)`
+    const managementImports = spawnSync(binary, ['--experimental-transform-types', '--input-type=module', '-e', importScript], { env, cwd: temporary, encoding: 'utf8', timeout: 30_000 })
+    assert.ifError(managementImports.error)
+    assert.equal(managementImports.status, 0, managementImports.stderr)
     nextStage('bundled native install diagnosis with empty PATH')
     const diagnosisCli = join(bundle, 'scripts', 'diagnose-native-install.ts')
     assert.ok((await lstat(diagnosisCli)).isFile())

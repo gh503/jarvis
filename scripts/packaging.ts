@@ -11,8 +11,26 @@ export function nativeTarget(platform: string, arch: string, version: string): N
   return platform as NativePlatform
 }
 
-const runtimeScripts = new Set(['app.ts', 'install-native.ts', 'update-native.ts', 'runtime-lifecycle.ts', 'asr_worker.py', 'ocr_worker.py', 'screen_capture.py', 'backup.ts', 'restore.ts', 'backup-archive.ts', 'gen-tls.sh', 'install-service.sh'])
-const publicDocs = new Set(['getting-started.md', 'native-install.md', 'native-update.md', 'distribution.md', 'security.md', 'providers-guide.md', 'voice-providers.md', 'operations.md', 'models.md', 'voice.md', 'providers.md'])
+const runtimeScripts = new Set([
+  'app.ts', 'install-native.ts', 'update-native.ts', 'runtime-lifecycle.ts',
+  'native-install-lock.ts', 'native-update-journal.ts',
+  'snapshot-native.ts', 'native-state-snapshot.ts',
+  'snapshot-native-config.ts', 'native-config-snapshot.ts', 'stopped-data-scope.ts',
+  'recovery-native.ts', 'native-recovery-set.ts',
+  'snapshot-native-integration.ts', 'native-integration-snapshot.ts',
+  'native-install-intent.ts', 'native-install-intent-store.ts', 'native-install-reconcile.ts',
+  'diagnose-native-install.ts', 'native-install-diagnose.ts',
+  'asr_worker.py', 'ocr_worker.py', 'screen_capture.py',
+  'backup.ts', 'restore.ts', 'backup-archive.ts', 'gen-tls.sh', 'install-service.sh',
+])
+const publicDocs = new Set([
+  'getting-started.md', 'native-install.md', 'native-update.md',
+  'native-state-snapshot.md', 'native-config-snapshot.md', 'stopped-data-scope.md',
+  'native-recovery-set.md', 'native-integration-snapshot.md', 'native-install-intent.md',
+  'native-release-pipeline.md',
+  'distribution.md', 'security.md', 'providers-guide.md', 'voice-providers.md',
+  'operations.md', 'models.md', 'voice.md', 'providers.md',
+])
 /** An allowlist of tracked public source; never recursively copy a working tree. */
 export function isPublicFile(path: string): boolean {
   const parts = path.split('/')
