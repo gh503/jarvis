@@ -1,6 +1,56 @@
 # Native integration snapshots
 
-Status: **upcoming source feature; no verified release yet**. The recommended release remains the [v2.0.49 unsigned preview](https://github.com/gh503/jarvis/releases/tag/v2.0.49), which does not include this API. The source module [native-integration-snapshot.ts](../scripts/native-integration-snapshot.ts) captures and verifies receipt-backed macOS or Windows native integration bytes. It provides no CLI, restore, activation, or writeback to installed integration locations.
+Status: **upcoming source feature; no verified release yet**. The recommended release remains the [v2.0.49 unsigned preview](https://github.com/gh503/jarvis/releases/tag/v2.0.49), which includes neither this API nor this CLI. The source module [native-integration-snapshot.ts](../scripts/native-integration-snapshot.ts) and source CLI [snapshot-native-integration.ts](../scripts/snapshot-native-integration.ts) capture and verify receipt-backed macOS or Windows native integration bytes. They provide no restore, activation, or writeback to installed integration locations.
+
+## Source CLI
+
+Run from a current source checkout with a trusted source-development Node 24 executable. Both `create` and `verify` require all of `--platform darwin|win32`, `--arch x64|arm64`, `--home ABS`, and `--root ABS`. Windows layout additionally requires `--app-data ABS` and `--local-app-data ABS`; macOS layout rejects both AppData flags. `create` requires `--destination ABS`; `verify` requires `--snapshot ABS` and `--manifest-sha256` with exactly 64 lowercase hexadecimal characters. Unknown, duplicate, missing, or action-inappropriate options are usage errors. There is no `restore` action.
+
+Every location is explicit: the CLI does not derive integration paths from ambient `HOME`, `USERPROFILE`, `APPDATA`, or `LOCALAPPDATA`. It parses and validates the complete argument list before importing the operational snapshot module. It does not load `.env` or external configuration, run the installer CLI, install integrations, or execute captured launchers or shortcuts. Native Windows privacy checks still use the system PowerShell program described below.
+
+`--platform` describes the integration layout only. It does not require the running Node platform to match or execute that platform's artifacts. The source API also permits simulated layouts. Paths use the running host's absolute-path syntax and filesystem rules; layout simulation is not a cross-platform filesystem or ACL guarantee. `--arch` is a required supported label, not a check of the running Node architecture or installed binary architecture. `--root` is syntactically validated, not proof of installed package identity; the receipt-bound root remains authoritative as described below.
+
+The following are **templates only**, using explicit placeholder user-home and temporary fixture paths. Replace every placeholder with reviewed canonical absolute paths, use a fresh destination beneath an existing private parent, and stop all source writers before capture. These examples do not prepare fixtures, install anything, or constitute real-user integration actions. `REPLACE_WITH_TRUSTED_MANIFEST_SHA256` must be replaced with the digest from successful creation, saved separately in a trusted private record; it is deliberately not a valid digest.
+
+POSIX shell, with a macOS layout and source Node 24 (replace `arm64` with `x64` if appropriate):
+
+```sh
+/absolute/path/to/source-node24/bin/node --experimental-transform-types scripts/snapshot-native-integration.ts create \
+  --platform darwin --arch arm64 \
+  --home /Users/EXAMPLE_USER/temporary-integration-fixture/home \
+  --root /Users/EXAMPLE_USER/temporary-integration-fixture/package \
+  --destination /Users/EXAMPLE_USER/private-snapshots/integration-001
+
+/absolute/path/to/source-node24/bin/node --experimental-transform-types scripts/snapshot-native-integration.ts verify \
+  --platform darwin --arch arm64 \
+  --home /Users/EXAMPLE_USER/temporary-integration-fixture/home \
+  --root /Users/EXAMPLE_USER/temporary-integration-fixture/package \
+  --snapshot /Users/EXAMPLE_USER/private-snapshots/integration-001 \
+  --manifest-sha256 REPLACE_WITH_TRUSTED_MANIFEST_SHA256
+```
+
+Windows PowerShell, with source Node 24 (replace `x64` with `arm64` if appropriate):
+
+```powershell
+& 'C:\absolute\path\to\source-node24\node.exe' --experimental-transform-types '.\scripts\snapshot-native-integration.ts' create `
+  --platform win32 --arch x64 `
+  --home 'C:\Users\EXAMPLE_USER\temporary-integration-fixture\home' `
+  --root 'C:\Users\EXAMPLE_USER\temporary-integration-fixture\package' `
+  --app-data 'C:\Users\EXAMPLE_USER\temporary-integration-fixture\home\AppData\Roaming' `
+  --local-app-data 'C:\Users\EXAMPLE_USER\temporary-integration-fixture\home\AppData\Local' `
+  --destination 'C:\Users\EXAMPLE_USER\private-snapshots\integration-001'
+
+& 'C:\absolute\path\to\source-node24\node.exe' --experimental-transform-types '.\scripts\snapshot-native-integration.ts' verify `
+  --platform win32 --arch x64 `
+  --home 'C:\Users\EXAMPLE_USER\temporary-integration-fixture\home' `
+  --root 'C:\Users\EXAMPLE_USER\temporary-integration-fixture\package' `
+  --app-data 'C:\Users\EXAMPLE_USER\temporary-integration-fixture\home\AppData\Roaming' `
+  --local-app-data 'C:\Users\EXAMPLE_USER\temporary-integration-fixture\home\AppData\Local' `
+  --snapshot 'C:\Users\EXAMPLE_USER\private-snapshots\integration-001' `
+  --manifest-sha256 REPLACE_WITH_TRUSTED_MANIFEST_SHA256
+```
+
+Success prints one minimal JSON receipt: creation returns `{ "snapshot": "…", "manifestSha256": "…" }`; verification returns `{ "verified": true, "snapshot": "…", "manifestSha256": "…" }`. Output includes the snapshot path and digest, never captured file contents or the full manifest. Keep this output private. Success exits with status `0`, usage errors with `2`, and operational failures with `1`. CLI error diagnostics are bounded to 1,024 characters and do not expose captured bytes or raw exception text; an operational failure emits a fixed generic message. A failure may leave partial output as described below.
 
 ## Source API and trust
 
@@ -57,4 +107,4 @@ Output files are created exclusively and individually flushed with file `fsync`.
 
 Integration snapshots are separate from [native recovery sets](native-recovery-set.md). Recovery-set v1 retains its exact existing root layout and baseline/config/data contract; do not insert an integration snapshot into it. Coupling integration capture to a recovery set requires a separately designed future format version and coordination contract.
 
-This primitive adds no restore command, permission/ACL restoration, installation transaction, activation, or automatic rollback. It does not establish compatibility between package code, configuration, and database schemas. Keep the original compatible bundle and private config/data recovery material separately, and follow the operator-controlled boundaries in [native update staging and recovery](native-update.md).
+The source API and CLI add no restore command, permission/ACL restoration, persistent recovery journal, installation transaction, activation, or automatic rollback. It does not establish compatibility between package code, configuration, and database schemas. Keep the original compatible bundle and private config/data recovery material separately, and follow the operator-controlled boundaries in [native update staging and recovery](native-update.md).
