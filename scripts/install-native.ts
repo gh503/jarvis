@@ -248,6 +248,17 @@ export function describeNativeIntegration(options: InstallOptions): { receiptPat
   return { receiptPath: state, artifactPaths: files }
 }
 
+/** Read one fixed integration location without requiring a receipt to exist.
+ * Uses legacy integration permission checks; Windows mode bits do not prove ACL privacy.
+ * Callers must coordinate writers and treat unsafe read failures as unverified state. */
+export async function readNativeIntegrationSlot(options: InstallOptions, path: string): Promise<{ bytes: Buffer; mode: number; identity: BigIntStats } | undefined> {
+  const { receiptPath, artifactPaths } = describeNativeIntegration(options)
+  if (path !== receiptPath && !artifactPaths.includes(path)) throw new Error('Unknown integration location')
+  const userRoots = [options.home, options.appData, options.localAppData].filter((value): value is string => value !== undefined).map(value => resolve(value))
+  const snapshot = await boundedIntegrationRead(path, path === receiptPath ? 64 * 1024 : 1024 * 1024, userRoots, path === receiptPath)
+  return snapshot && { bytes: Buffer.from(snapshot.bytes), mode: Number(snapshot.identity.mode & 0o7777n), identity: snapshot.identity }
+}
+
 /** Validate captured receipt bytes without accessing their original source paths. */
 export function parseNativeIntegrationReceipt(bytes: Buffer, options: InstallOptions): IntegrationReceipt {
   if (!Buffer.isBuffer(bytes) || bytes.length > 64 * 1024) throw new Error('Unsafe integration receipt size')
