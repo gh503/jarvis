@@ -2,7 +2,7 @@
 
 ## 原生便携预览包已发布
 
-[v2.0.20](https://github.com/gh503/jarvis/releases/tag/v2.0.20) 提供 Linux x64、Windows x64、macOS arm64 的未签名便携包，每个平台包含归档、SHA256 与 provenance，共九个资产文件。包内自带 Node 24；源码运行要求 Node.js >=24。
+[v2.0.27](https://github.com/gh503/jarvis/releases/tag/v2.0.27) 提供 Linux x64、Windows x64、macOS arm64 的未签名便携包，每个平台包含归档、SHA256 与 provenance，共九个资产文件。包内自带 Node 24；源码运行要求 Node.js >=24。
 
 三平台自动化发布门槛已通过，覆盖运行时生命周期、便携包以及打包后隐私、备份与更新检查，Windows 还验证 Unicode 快捷方式实际启动。这是预览交付与自动化证据，不是稳定生产保证、签名安装器或所有平台功能对齐。
 
@@ -10,7 +10,7 @@
 |---|---|---|
 | PWA 客户端 | 桌面浏览器 / Android / iOS | 先启动主机，再安装网页应用 |
 | 源码桌面窗口 | Windows / macOS / Linux | Git、Node >=24，`npm ci` 后 `npm run app` |
-| Node 24 便携预览包 | 与构建机相同的系统 / CPU | 从 v2.0.20 获取上述三种目标；无需另装 Node |
+| Node 24 便携预览包 | 与构建机相同的系统 / CPU | 从 v2.0.27 获取上述三种目标；无需另装 Node |
 | 原生桌面集成 | macOS `.app` / Windows 开始菜单 | 包内 `scripts/install-native.ts` 创建入口，仍需浏览器 |
 
 便携包与生成的 macOS wrapper 未签名、未公证；当前不提供已完成签名的 `.msi` / `.dmg` 安装器。首次启动按操作系统的受支持流程批准。
@@ -21,7 +21,7 @@
 
 发布开关 `JARVIS_NATIVE_RELEASE_PUBLISH` 已启用，自动附加资产仍要求三平台构建门槛全部通过。手动 dispatch 必须指定已有的稳定发布 tag，且永远只生成 unsigned preview artifacts，不附加 Release 资产；旧 tag 如果缺少所需脚本不能重建。详见 [原生发布流水线](native-release-pipeline.md)。CI 覆盖 hosted runner 的架构，不表示所有 x64/arm64 组合均已实机验证。
 
-面向普通用户的生产分发目标尚未完成：代表性机器上的 Finder / 开始菜单 / 登录启动与浏览器人工验收、签名／公证仍需完成。跨平台外部文件／技能／Shell、完整功能对齐和事务式更新激活也尚未实现。
+面向普通用户的生产分发目标尚未完成：代表性机器上的 Finder / 开始菜单 / 登录启动与浏览器人工验收、签名／公证仍需完成。macOS / Windows 外部文件工具（含修改）与 Shell 仍保持 fail-closed；只读 Markdown 技能已通过原生 helper 实现。完整功能对齐和事务式更新激活尚未完成。
 
 ---
 
@@ -85,6 +85,7 @@ jarvis-<version>-<os>-<arch>/
 ├── jarvis            # macOS 另有 Jarvis.command；Windows 有 Jarvis.cmd / Jarvis.ps1
 ├── PORTABLE.txt
 ├── runtime/node      # Windows 为 node.exe；附完整 Node LICENSE
+├── runtime/jarvis-scoped-fs  # Windows 为 .exe；编译好的 helper，无需运行时编译器
 ├── node_modules/     # 全新 npm ci --omit=dev --ignore-scripts 安装的锁定生产依赖
 ├── src/  web/  scripts/  docs/  # 仅 Git 跟踪的公开文件白名单
 ├── manifest.json     # 源 SHA/tag、运行时身份、每个其他文件的 SHA256/大小
@@ -95,7 +96,7 @@ jarvis-<version>-<os>-<arch>/
 要点：
 
 - **必须逐系统打包**：使用当前 Node 24 运行时，支持 Linux/macOS/Windows 的 x64/arm64，目标 OS 与架构必须匹配构建机。不能在 Linux 上产出 Windows 包。
-- 打包不启动服务器或浏览器，只执行运行时身份、生产依赖导入和内存 SQLite 检查。无需本地 `node_modules`；必须能访问 npm registry 和精确 Node 版本的官方 LICENSE。
+- 打包会从锁定源码编译原生 helper，需要 Rust 1.94+ 与本平台构建工具链；编译器不随运行时要求用户安装。打包不启动服务器或浏览器，并检查运行时身份、生产依赖导入和内存 SQLite。无需本地 `node_modules`；必须能访问 npm registry 和精确 Node 版本的官方 LICENSE。
 - 环境变量 `JARVIS_RELEASE_VERSION` 指定产物版本；`JARVIS_SOURCE_SHA` 必须等于当前 HEAD；`JARVIS_RELEASE_TAG` 必须为 `v<version>` 且已有本地标签指向 HEAD。提供 SHA 或 tag 时要求已跟踪文件无修改，供发布 CI 精确绑定来源。不提供时使用 package 版本、当前 HEAD，并在清单标记 dirty。
 - 新增运行时源文件必须先纳入 Git 跟踪。`.env`、私有数据目录、未跟踪文件、符号链接、开发依赖和环境中的 npm 配置不会进入应用包；依赖中的开发用点文件统一移除，避免 Windows 压缩工具遗漏后造成清单不一致。
 - 归档仍是**未签名便携包**。签名安装器需要平台工具链、证书与凭据；本命令不声称生成签名安装器。
@@ -125,7 +126,7 @@ macOS / Windows 使用包内 `scripts/install-native.ts --install --autostart`�
 
 ## 平台能力矩阵
 
-代码里由 `src/platform.ts` 探测，`/api/health` 返回，UI 据此禁用按钮并给出原因。
+下表描述当前实现边界。平台能力由 `src/platform.ts` 探测，`/api/health` 返回，UI 据此禁用按钮并给出原因。
 
 | 能力 | Linux | macOS | Windows | 备注 |
 |---|---|---|---|---|
@@ -134,12 +135,15 @@ macOS / Windows 使用包内 `scripts/install-native.ts --install --autostart`�
 | 浏览器屏幕／摄像头单帧预览 | 可用 | 可用 | 可用 | 需浏览器支持、安全上下文、显式授权；视觉分析 local-only，需本地视觉模型 |
 | OS 服务端屏幕捕获 | 可用 | 不提供 | 不提供 | Linux portal helper |
 | OS 服务端摄像头单帧 | 可用 | 不提供 | 不提供 | Linux ffmpeg / 视频设备 |
-| 外部授权文件与外部 Markdown 技能 | 按权限开启 | fail-closed | fail-closed | 非 Linux 保持拒绝执行 |
+| 外部授权文件工具（含修改） | 按权限开启 | fail-closed | fail-closed | 目录授权不能解除平台限制 |
+| 只读 Markdown 技能 | 显式配置目录 | 原生 helper | 原生 helper | 设置 → 系统配置技能目录；每文件最多 64 KiB，不可信指引，加载不执行代码 |
 | Shell | Bubblewrap + 逐次批准 | fail-closed | fail-closed | 默认关闭、无网络 |
 | 本地 ASR | 可选 | 可选 | 可选 | 自行安装 Python + faster-whisper，不随 Node 包提供 |
 | 本地 TTS | 依赖引擎与音色 | 依赖引擎与音色 | 依赖引擎与音色 | 云端 ASR / TTS 均须配置供应商 |
-| 桌面通知 | notify-send | 不提供 | 不提供 | 按系统能力启用 |
+| 桌面通知 | notify-send | osascript | Jarvis 自有 toast 身份 | Windows 须显式原生安装；可见投递未验证，系统设置与会话可抑制通知 |
 | 登录自启 | systemd 用户服务 | 原生脚本 LaunchAgent | 原生脚本 Startup 快捷方式 | 交互登录行为仍需人工验收 |
+
+macOS / Windows 的源码用户如需只读技能，可选运行 `npm run native:build`，需要 Rust 1.94+ 与本平台构建工具链。便携构建随包携带编译好的 helper，运行它不要求安装编译器；核心对话不依赖此可选技能构建。技能目录默认未配置，helper 不可用时技能保持关闭，加载指引不会运行 Shell、Python 或安装软件。
 
 可选的旧版 `npm run setup` 安装脚本仅支持 Linux x64；源码基础对话无需运行它。浏览器单帧入口与服务端系统捕获不同，不代表持续录屏或录像。此表描述实现边界，不等于每个环境和设备都已通过人工验收。
 

@@ -8,7 +8,7 @@ Start with [上手指南](docs/getting-started.md) for **native preview or sourc
 and [分发说明](docs/distribution.md) for platform limits and release gates.
 Windows, macOS and Linux have native runtime lifecycle support and Node 24 portable
 package matrices. **Unsigned native portable previews are published** for Linux x64, Windows x64
-and macOS arm64 at [v2.0.20](https://github.com/gh503/jarvis/releases/tag/v2.0.20). They are
+and macOS arm64 at [v2.0.27](https://github.com/gh503/jarvis/releases/tag/v2.0.27). They are
 not signed installers or a guarantee of stable production readiness or full feature parity.
 The in-app `/providers` and `/install` pages help configure models and browser clients.
 
@@ -53,7 +53,7 @@ and Windows Unicode shortcut activation. This covers the hosted runner targets,
 not every OS/CPU pair or interactive desktop environment.
 
 Download the archive matching your OS/CPU, its SHA256 and provenance from
-[v2.0.20](https://github.com/gh503/jarvis/releases/tag/v2.0.20), verify the archive,
+[v2.0.27](https://github.com/gh503/jarvis/releases/tag/v2.0.27), verify the archive,
 and extract into a stable writable folder. Each of the three targets has these
 three files. Other builds may be available as conditional unsigned CI previews in
 [Actions](https://github.com/gh503/jarvis/actions); source instructions remain below.
@@ -69,7 +69,10 @@ reinstallation into a separate folder is required; isolated readiness does not
 prove existing-data migration compatibility. See [native updates](docs/native-update.md).
 Production readiness still needs representative interactive native validation
 and signing/notarization; full platform
-parity and transactional update activation remain unfinished.
+parity and transactional update activation remain unfinished. Desktop notifications use
+`notify-send` on Linux and `osascript` on macOS. Windows toast support requires
+explicit native installation of Jarvis’s own identity; visible delivery remains
+unverified and can be suppressed by system settings or session policy.
 
 ## Native tools and local work
 
@@ -88,8 +91,9 @@ confirmation. Questions collect information and do not grant tool permissions.
 See [本地工具与权限说明](docs/ui.md#本地工具任务与目录授权) for the exact names,
 API routes, privacy boundaries and recurrence behavior.
 
-External scoped files, external Markdown skills and Shell remain fail-closed on
-macOS/Windows; core chat, memory, reminders and remote models work there.
+External scoped file tools (including modification) and Shell remain fail-closed
+on macOS/Windows. Read-only Markdown skills are implemented on all three platforms;
+macOS/Windows use the native filesystem helper.
 External file grants are empty by default; web and Shell are disabled, and no
 skill directory or external account is configured. File replacement requires
 the version returned by a prior read and creates private recovery history.
@@ -98,8 +102,9 @@ has read-only system binaries, a writable dedicated Jarvis output directory,
 no network, and no inherited host credentials. File-tool directory grants do
 not grant Shell access. Background jobs expose explicit pending/running/terminal
 states and bounded output; stopping does not undo writes, and a restart marks
-unfinished jobs interrupted rather than replaying commands. Skills are bounded,
-local, untrusted instructions; loading them executes nothing. Image inspection
+unfinished jobs interrupted rather than replaying commands. Skills require an explicitly
+configured folder in Settings → 系统, accept Markdown files up to 64 KiB, and
+are untrusted guidance that cannot grant permissions. Loading executes nothing. Image inspection
 requires a working local vision model. Long-term autonomous goals, subagents
 and browser automation are not provided.
 
@@ -191,7 +196,10 @@ installer; `npm start` alone still serves <http://127.0.0.1:3081>. First-run
 users who do not want to configure anything by hand should open
 <http://127.0.0.1:3081/providers>, pick a provider, and paste one API key.
 
-Source requires **Node.js >=24** and Git. Core chat with a configured remote
+Source requires **Node.js >=24** and Git. For optional native skills on macOS/Windows,
+run `npm run native:build` with Rust 1.94+ and the platform build toolchain.
+Portable builds bundle the compiled helper; users do not need a compiler to run it.
+Core chat with a configured remote
 model needs neither Python nor Ollama. Local models are optional; local ASR
 requires Python/faster-whisper, and local TTS requires an installed engine/voice.
 Cloud ASR and TTS each require provider configuration. The optional legacy
