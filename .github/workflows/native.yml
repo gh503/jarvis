@@ -21,6 +21,7 @@ jobs:
       - run: npm ci
       - run: npm run typecheck
       - name: Build pinned native filesystem helper
+        timeout-minutes: 30
         run: npm run native:build
       - name: Native filesystem protocol and handle acceptance
         timeout-minutes: 3
