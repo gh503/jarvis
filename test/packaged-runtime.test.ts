@@ -211,6 +211,78 @@ test('native artifact verifies and starts/stops using only its bundled Node', { 
       await assert.rejects(lstat(join(sourceData, 'runtime-instance.json')), { code: 'ENOENT' })
       await assert.rejects(lstat(data), { code: 'ENOENT' })
     }
+    nextStage('bundled integration snapshot create/verify/restore-copy with empty PATH')
+    {
+      const snapshotRoot = join(temporary, 'integration snapshot fixture 中文')
+      // Linux is a Darwin layout simulation; other runners use their native layout.
+      const platform = process.platform === 'linux' ? 'darwin' : process.platform
+      const integration = { platform, arch: process.arch, root: bundle, home: join(snapshotRoot, 'home'),
+        ...(platform === 'win32' ? { appData: join(snapshotRoot, 'roaming'), localAppData: join(snapshotRoot, 'local') } : {}) }
+      const snapshot = join(snapshotRoot, 'snapshot'), destination = join(snapshotRoot, 'recovery')
+      const options = { env, cwd: temporary, encoding: 'utf8' as const, timeout: 60_000, maxBuffer: 64 * 1024 }
+      // Inert synthetic artifacts exercise capture, not OS installation or activation.
+      // Bundled APIs supply the fixed layout, receipt validation, and private Windows ACLs.
+      const setupScript = `
+        import {mkdir, writeFile} from 'node:fs/promises';
+        import {dirname} from 'node:path';
+        import {createHash} from 'node:crypto';
+        import {describeNativeIntegration, parseNativeIntegrationReceipt} from ${JSON.stringify(pathToFileURL(join(bundle, 'scripts/install-native.ts')).href)};
+        import {WINDOWS_AUMID} from ${JSON.stringify(pathToFileURL(join(bundle, 'src/windows-notification.ts')).href)};
+        import {ensurePrivateDataDirectory} from ${JSON.stringify(pathToFileURL(join(bundle, 'src/private-directory.ts')).href)};
+        const integration = ${JSON.stringify(integration)};
+        await ensurePrivateDataDirectory(${JSON.stringify(snapshotRoot)});
+        const {receiptPath, artifactPaths} = describeNativeIntegration(integration);
+        const paths = artifactPaths.slice(0, -1), files = [];
+        for (const path of paths) {
+          await mkdir(dirname(path), {recursive:true, mode:0o700});
+          const bytes = Buffer.from('inert packaged integration fixture 中文: ' + path);
+          await writeFile(path, bytes, {mode:0o600});
+          files.push({path, sha256:createHash('sha256').update(bytes).digest('hex')});
+        }
+        await ensurePrivateDataDirectory(dirname(receiptPath));
+        const receipt = Buffer.from(JSON.stringify({schemaVersion:1, platform:integration.platform,
+          root:integration.root, autostart:false,
+          ...(integration.platform === 'win32' ? {notificationAumid:WINDOWS_AUMID} : {}), files}, null, 2) + '\\n');
+        parseNativeIntegrationReceipt(receipt, integration);
+        await writeFile(receiptPath, receipt, {mode:0o600});
+        console.log(JSON.stringify([receiptPath, ...paths]));`
+      const setup = spawnSync(binary, ['--experimental-transform-types', '--input-type=module', '-e', setupScript], options)
+      assert.ifError(setup.error)
+      assert.equal(setup.status, 0, setup.stderr)
+      const paths: string[] = JSON.parse(setup.stdout)
+      const before = await Promise.all(paths.map(async path => ({ bytes: await readFile(path), stat: await lstat(path, { bigint: true }) })))
+      const context = ['--platform', platform, '--arch', process.arch, '--home', integration.home, '--root', bundle,
+        ...(platform === 'win32' ? ['--app-data', integration.appData!, '--local-app-data', integration.localAppData!] : [])]
+      const runSnapshot = (args: string[]) => {
+        const result = spawnSync(binary, ['--experimental-transform-types', join(bundle, 'scripts/snapshot-native-integration.ts'), ...args, ...context], options)
+        assert.ifError(result.error)
+        assert.equal(result.status, 0, result.stderr)
+        return JSON.parse(result.stdout)
+      }
+      const receipt = runSnapshot(['create', '--destination', snapshot])
+      assert.deepEqual(Object.keys(receipt).sort(), ['manifestSha256', 'snapshot'])
+      assert.equal(receipt.snapshot, snapshot)
+      assert.match(receipt.manifestSha256, /^[a-f0-9]{64}$/)
+      const snapshotArgs = ['--snapshot', snapshot, '--manifest-sha256', receipt.manifestSha256]
+      assert.deepEqual(runSnapshot(['verify', ...snapshotArgs]), { verified: true, ...receipt })
+      assert.deepEqual(runSnapshot(['restore-copy', ...snapshotArgs, '--destination', destination]), { destination, manifestSha256: receipt.manifestSha256 })
+      assert.equal(await sha256(join(destination, 'manifest.json')), receipt.manifestSha256)
+      assert.deepEqual(await readFile(join(destination, 'receipt.bin')), before[0]!.bytes)
+      for (let index = 1; index < before.length; index++) assert.deepEqual(await readFile(join(destination, 'payload', `${index - 1}.bin`)), before[index]!.bytes)
+      assert.deepEqual((await readdir(destination)).sort(), ['manifest.json', 'payload', 'receipt.bin'])
+      for (const file of ['manifest.json', 'receipt.bin', ...(await readdir(join(snapshot, 'payload'))).map(name => join('payload', name))]) {
+        assert.deepEqual(await readFile(join(destination, file)), await readFile(join(snapshot, file)))
+        if (process.platform !== 'win32') assert.equal((await lstat(join(destination, file))).mode & 0o777, 0o600)
+      }
+      // Operational locking is allowed; original receipt/artifact bytes and metadata stay intact.
+      for (const [index, path] of paths.entries()) {
+        assert.deepEqual(await readFile(path), before[index]!.bytes)
+        const after = await lstat(path, { bigint: true })
+        for (const key of ['dev', 'ino', 'mode', 'mtimeNs', 'ctimeNs'] as const) assert.equal(after[key], before[index]!.stat[key])
+      }
+      assert.equal(await readFile(sentinel, 'utf8'), sentinelBytes)
+      await assert.rejects(lstat(data), { code: 'ENOENT' })
+    }
     nextStage('bundled native helper with empty PATH')
     const helperRoot = join(temporary, 'approved files')
     await mkdir(helperRoot)
