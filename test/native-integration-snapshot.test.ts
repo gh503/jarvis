@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict'
 import { createHash } from 'node:crypto'
-import { execFileSync } from 'node:child_process'
+import { execFileSync, spawn } from 'node:child_process'
+import { once } from 'node:events'
 import fsPromises, { chmod, lstat, mkdir, mkdtemp, readFile, readdir, realpath, rm, unlink, writeFile, symlink, link } from 'node:fs/promises'
 import { syncBuiltinESMExports } from 'node:module'
 import { tmpdir } from 'node:os'
@@ -49,6 +50,71 @@ for (const platform of ['darwin', 'win32'] as const) for (const autostart of [fa
   assert.deepEqual(await verifyIntegrationSnapshot({ snapshot: destination, manifestSha256: result.manifestSha256, integration }), result)
   await assert.rejects(verifyIntegrationSnapshot({ snapshot: destination, manifestSha256: result.manifestSha256, integration: { ...integration, home: join(temp, 'wrong'), appData: join(temp, 'wrong-roaming'), localAppData: join(temp, 'wrong-local') } }), /binding|path|receipt/)
 }))
+test('capture contends on the shared process lock before reading sources or creating destinations', { timeout: 120_000 }, async () => fixture('darwin', true, async ({ integration, destination, receiptPath, artifactPaths, temp }) => {
+  const captured = await createIntegrationSnapshot({ integration, destination })
+  const controlDirectory = join(dirname(receiptPath), 'native-install-control')
+  const moduleUrl = new URL('../scripts/native-install-lock.ts', import.meta.url).href
+  const child = spawn(process.execPath, ['--expose-gc', '--experimental-transform-types', '--input-type=module', '-e', `
+    import { withNativeInstallLock } from ${JSON.stringify(moduleUrl)};
+    await withNativeInstallLock({ controlDirectory: process.env.TEST_CONTROL }, async () => {
+      await new Promise((resolve, reject) => {
+        process.stdin.once('end', resolve);
+        process.stdin.once('error', reject);
+        process.stdin.on('data', () => { global.gc(); process.stdout.write('ALIVE\\n'); });
+        process.stdout.write('READY\\n');
+      });
+    });
+  `], { env: { ...process.env, NODE_NO_WARNINGS: '1', TEST_CONTROL: controlDirectory }, stdio: ['pipe', 'pipe', 'pipe'] })
+  let stderr = ''
+  child.stderr.on('data', data => { stderr += data })
+  const exited = once(child, 'exit')
+  function message(expected: string, request?: string) {
+    return new Promise<void>((resolve, reject) => {
+      let output = ''
+      const cleanup = () => { child.stdout.off('data', onData); child.off('exit', onExit); child.off('error', onError) }
+      const onData = (data: Buffer) => { output += data; if (output.includes(expected)) { cleanup(); resolve() } }
+      const onExit = () => { cleanup(); reject(new Error(`Lock holder exited: ${stderr}`)) }
+      const onError = (error: Error) => { cleanup(); reject(error) }
+      child.stdout.on('data', onData); child.once('exit', onExit); child.once('error', onError)
+      if (request) child.stdin.write(request)
+    })
+  }
+  try {
+    await message('READY')
+    await message('ALIVE', 'GC and acknowledge\n')
+    const original = fsPromises.lstat
+    let sourceReads = 0
+    fsPromises.lstat = (async (...args: Parameters<typeof original>) => {
+      if ([receiptPath, ...artifactPaths].includes(String(args[0]))) sourceReads++
+      return original(...args)
+    }) as typeof original
+    syncBuiltinESMExports()
+    const contended = join(temp, 'contended')
+    try { await assert.rejects(createIntegrationSnapshot({ integration, destination: contended }), /Another launcher is still working/) }
+    finally { fsPromises.lstat = original; syncBuiltinESMExports() }
+    assert.equal(sourceReads, 0)
+    await assert.rejects(lstat(contended), { code: 'ENOENT' })
+    await message('ALIVE', 'GC and acknowledge\n')
+    assert.deepEqual(await verifyIntegrationSnapshot({ snapshot: destination, manifestSha256: captured.manifestSha256, integration }), captured)
+    const recovery = await restoreIntegrationSnapshot({ snapshot: destination, manifestSha256: captured.manifestSha256, integration, destination: join(temp, 'recovery-while-locked') })
+    assert.equal(recovery.manifestSha256, captured.manifestSha256)
+    child.stdin.end()
+    assert.deepEqual(await exited, [0, null])
+    const retry = await createIntegrationSnapshot({ integration, destination: join(temp, 'retry') })
+    assert.equal(retry.manifestSha256, captured.manifestSha256)
+    assert.deepEqual(retry.manifest, captured.manifest)
+  } finally {
+    if (child.exitCode === null && child.signalCode === null) child.kill('SIGKILL')
+    await exited
+  }
+}))
+test('invalid capture options and destination syntax do not create control files', async () => fixture('darwin', true, async ({ integration, destination, receiptPath }) => {
+  const controlDirectory = join(dirname(receiptPath), 'native-install-control')
+  await assert.rejects(createIntegrationSnapshot({ integration: { ...integration, root: 'relative' }, destination }))
+  await assert.rejects(createIntegrationSnapshot({ integration, destination: 'relative' }), /canonical absolute/)
+  await assert.rejects(lstat(controlDirectory), { code: 'ENOENT' })
+  await assert.rejects(lstat(destination), { code: 'ENOENT' })
+}))
 test('missing owned artifacts persist as absence without a payload file', async () => fixture('darwin', true, async ({ integration, destination, artifactPaths }) => {
   await unlink(artifactPaths[0]!)
   const result = await createIntegrationSnapshot({ integration, destination })
@@ -64,7 +130,7 @@ test('unowned startup and missing receipt fail before destination creation', asy
   await assert.rejects(createIntegrationSnapshot({ integration, destination }), /receipt is required/)
 }))
 test('protected source overlap and existing destinations are rejected', async () => fixture('darwin', false, async ({ integration, destination, receiptPath, artifactPaths, temp }) => {
-  for (const path of [join(dirname(receiptPath), 'snapshot'), join(dirname(artifactPaths[0]!), 'snapshot'), join(integration.root, 'snapshot'), join(temp, 'config', 'snapshot'), join(temp, 'data', 'snapshot')]) await assert.rejects(createIntegrationSnapshot({ integration, destination: path }), /overlaps/)
+  for (const path of [join(dirname(receiptPath), 'snapshot'), join(dirname(receiptPath), 'native-install-control', 'snapshot'), join(dirname(artifactPaths[0]!), 'snapshot'), join(integration.root, 'snapshot'), join(temp, 'config', 'snapshot'), join(temp, 'data', 'snapshot')]) await assert.rejects(createIntegrationSnapshot({ integration, destination: path }), /overlaps/)
   await mkdir(destination)
   await assert.rejects(createIntegrationSnapshot({ integration, destination }), { code: 'EEXIST' })
 }))
@@ -111,7 +177,8 @@ test('capture detects original mutation during final snapshot verification', asy
   try { await assert.rejects(createIntegrationSnapshot({ integration, destination }), /changed during capture/); assert.ok(changed) }
   finally { fsPromises.open = original; syncBuiltinESMExports() }
 }))
-test('copy corruption fails before publishing the manifest', async () => fixture('darwin', true, async ({ integration, destination }) => {
+test('copy corruption fails before publishing the manifest and releases the capture lock', async () => fixture('darwin', true, async ({ integration, destination, temp }) => {
+  const baseline = await createIntegrationSnapshot({ integration, destination: join(temp, 'baseline') })
   const original = fsPromises.open
   let changed = false
   fsPromises.open = (async (...args: Parameters<typeof original>) => {
@@ -127,6 +194,9 @@ test('copy corruption fails before publishing the manifest', async () => fixture
     assert.ok(changed)
     await assert.rejects(lstat(join(destination, 'manifest.json')), { code: 'ENOENT' })
   } finally { fsPromises.open = original; syncBuiltinESMExports() }
+  const retry = await createIntegrationSnapshot({ integration, destination: join(temp, 'retry-after-failure') })
+  assert.equal(retry.manifestSha256, baseline.manifestSha256)
+  assert.deepEqual(retry.manifest, baseline.manifest)
 }))
 test('native Windows verification accepts readonly private ACLs and rejects shared ACLs without repair', { skip: process.platform !== 'win32' }, async () => fixture('win32', true, async ({ integration, destination }) => {
   const result = await createIntegrationSnapshot({ integration, destination })

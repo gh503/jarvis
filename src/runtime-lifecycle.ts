@@ -15,10 +15,13 @@ export function canonicalDataDir(dataDir: string): string {
 const lockSuffixes = ['', '-journal', '-wal', '-shm'] as const
 
 function checkLockStat(file: string, stat: BigIntStats, expected?: BigIntStats): void {
-  if (!stat.isFile() || stat.nlink !== 1n ||
-      (process.platform !== 'win32' && stat.uid !== BigInt(process.getuid!()))) {
-    throw new Error(`Unsafe lifecycle lock file: ${file}`)
-  }
+  // Fixed reasons distinguish unsafe metadata from a possible journal unlink
+  // race without disclosing account IDs or relaxing any rejection condition.
+  const reason = !stat.isFile() ? 'type'
+    : stat.nlink !== 1n ? (stat.nlink === 0n ? 'links-zero' : stat.nlink > 1n ? 'links-multiple' : 'links-invalid')
+    : process.platform !== 'win32' && stat.uid !== BigInt(process.getuid!()) ? 'owner'
+    : undefined
+  if (reason) throw new Error(`Unsafe lifecycle lock file: ${file} [${reason}]`)
   if (expected && (stat.dev !== expected.dev || stat.ino !== expected.ino)) {
     throw new Error(`Lifecycle lock file changed during validation: ${file}`)
   }

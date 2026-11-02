@@ -5,6 +5,7 @@ import { lstat, mkdir, open, opendir, realpath } from 'node:fs/promises'
 import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path'
 import { promisify } from 'node:util'
 import { ensurePrivateDataDirectory } from '../src/private-directory.ts'
+import { withNativeInstallLock } from './native-install-lock.ts'
 import { describeNativeIntegration, inspectNativeIntegration, parseNativeIntegrationReceipt, type InstallOptions } from './install-native.ts'
 
 /** Capture, verify, and export portable recovery copies only. Keep all writers
@@ -148,8 +149,17 @@ async function writeExclusive(path: string, bytes: Buffer) {
 async function identities(paths: string[]) {
   return Promise.all(paths.map(async path => { try { return await lstat(path, { bigint: true }) } catch (error) { if ((error as NodeJS.ErrnoException).code === 'ENOENT') return undefined; throw error } }))
 }
+/** Capture holds the shared native install lock and writes persistent operational
+ * control/SQLite files beside the receipt, even if the original receipt is absent.
+ * Other writers must remain quiescent. Verification and recovery export do not
+ * acquire this lock or write operational control files at the original source. */
 export async function createIntegrationSnapshot({ integration, destination }: { integration: InstallOptions; destination: string }): Promise<IntegrationSnapshotResult> {
+  integration = { ...integration }
   const layout = describeNativeIntegration(integration)
+  absolute(destination)
+  return withNativeInstallLock({ controlDirectory: join(dirname(layout.receiptPath), 'native-install-control') }, () => captureIntegrationSnapshot(integration, destination, layout))
+}
+async function captureIntegrationSnapshot(integration: InstallOptions, destination: string, layout: ReturnType<typeof describeNativeIntegration>): Promise<IntegrationSnapshotResult> {
   const sources = [layout.receiptPath, ...layout.artifactPaths]
   for (const path of sources) await canonical(path, true)
   const before = await identities(sources)
@@ -159,7 +169,6 @@ export async function createIntegrationSnapshot({ integration, destination }: { 
   validate(manifest, inventory.receipt, integration)
   const bytes = encode(manifest)
   assert(bytes.length <= INTEGRATION_SNAPSHOT_LIMITS.manifestBytes, 'Manifest size limit exceeded')
-  absolute(destination)
   const protectedRoots = protectedPaths(inventory)
   assert(protectedRoots.every(path => !overlaps(path, destination)), 'Snapshot destination overlaps protected source')
   await canonical(dirname(destination))

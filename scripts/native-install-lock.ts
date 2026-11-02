@@ -86,9 +86,10 @@ export async function verifyNativeInstallAncestors(directory: string): Promise<v
   }
 }
 
-/** Only cooperating install/uninstall writers use this lock. Inspectors and
- * snapshots still require writers stopped. Even an absent-receipt uninstall
- * creates persistent operational control/SQLite files, but no integration.
+/** Coordinates cooperating install/uninstall, intent writers, diagnosis, and
+ * integration snapshot capture. Direct inspectors remain unlocked, and external
+ * writers must stay stopped. Acquisition can create persistent operational
+ * control/SQLite files even when the requested integration is absent.
  * The caller derives this fixed directory from the validated receipt location,
  * never from package root, external configuration, or runtime data directory.
  */

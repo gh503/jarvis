@@ -4,7 +4,7 @@ import { chmodSync, chownSync, linkSync, lstatSync, mkdirSync, mkdtempSync, read
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { DatabaseSync } from 'node:sqlite'
-import { acquireLifecycleLock } from '../src/runtime-lifecycle.ts'
+import { acquireLifecycleLock, acquireVerifiedLifecycleLock } from '../src/runtime-lifecycle.ts'
 import { ensurePrivateDataDirectory } from '../src/private-directory.ts'
 
 const names = ['runtime', 'launcher'] as const
@@ -52,7 +52,7 @@ for (const kind of ['hardlink', 'symlink'] as const) {
         const before = snapshot(outside)
         const rootBefore = lstatSync(data, { bigint: true })
         const linkBefore = lstatSync(target, { bigint: true })
-        await assert.rejects(acquireLifecycleLock(data, name), /Unsafe lifecycle lock file/)
+        await assert.rejects(acquireLifecycleLock(data, name), kind === 'hardlink' ? /Unsafe lifecycle lock file: .* \[links-multiple\]$/ : /Unsafe lifecycle lock file: .* \[type\]$/)
         assert.deepEqual(snapshot(outside), before)
         const rootAfter = lstatSync(data, { bigint: true })
         assert.equal(rootAfter.mode, rootBefore.mode)
@@ -72,7 +72,7 @@ for (const name of names) {
       const { data } = fixture(t)
       mkdirSync(data)
       mkdirSync(join(data, `${name}.lock.sqlite${suffix}`))
-      await assert.rejects(acquireLifecycleLock(data, name), /Unsafe lifecycle lock file/)
+      await assert.rejects(acquireLifecycleLock(data, name), /Unsafe lifecycle lock file: .* \[type\]$/)
     })
   }
 
@@ -128,6 +128,45 @@ test('waits for a live SQLite writer whose journal disappears on commit', async 
   } finally { owner.close() }
 })
 
+test('accepts a cooperating SQLite journal removed and recreated during directory verification', async t => {
+  const { data } = fixture(t)
+  await ensurePrivateDataDirectory(data)
+  const file = join(data, 'runtime.lock.sqlite')
+  const journal = `${file}-journal`
+  createDatabase(file)
+  const main = lstatSync(file, { bigint: true })
+  const owner = new DatabaseSync(file)
+  const checkJournal = () => {
+    const stat = lstatSync(journal, { bigint: true })
+    assert.equal(stat.isFile(), true)
+    assert.equal(stat.nlink, 1n)
+    if (process.platform !== 'win32') assert.equal(stat.uid, BigInt(process.getuid!()))
+  }
+  try {
+    owner.exec("BEGIN IMMEDIATE; INSERT INTO sentinel VALUES ('first transaction')")
+    checkJournal()
+    let verified = false
+    const release = await acquireVerifiedLifecycleLock(data, 'runtime', async () => {
+      // The initial lock-family preflight has already observed the live journal.
+      await ensurePrivateDataDirectory(data)
+      owner.exec('COMMIT')
+      assert.throws(() => lstatSync(journal), { code: 'ENOENT' })
+      owner.exec("BEGIN IMMEDIATE; INSERT INTO sentinel VALUES ('second transaction')")
+      checkJournal()
+      owner.exec('COMMIT')
+      assert.throws(() => lstatSync(journal), { code: 'ENOENT' })
+      verified = true
+    })
+    try {
+      assert.equal(verified, true)
+      assert.equal(lstatSync(file, { bigint: true }).ino, main.ino)
+      await assert.rejects(acquireLifecycleLock(data, 'runtime'), /already owns/)
+    } finally { release() }
+    const rows = owner.prepare('SELECT value FROM sentinel').all()
+    assert.equal(rows.length, 3)
+  } finally { owner.close() }
+})
+
 test('rejects a POSIX lock owned by another account before chmod', { skip: process.platform === 'win32' || process.getuid?.() !== 0 }, async t => {
   const { data } = fixture(t)
   mkdirSync(data)
@@ -135,7 +174,7 @@ test('rejects a POSIX lock owned by another account before chmod', { skip: proce
   createDatabase(file)
   chownSync(file, 65534, 65534)
   const before = snapshot(file)
-  await assert.rejects(acquireLifecycleLock(data, 'runtime'), /Unsafe lifecycle lock file/)
+  await assert.rejects(acquireLifecycleLock(data, 'runtime'), /Unsafe lifecycle lock file: .* \[owner\]$/)
   assert.deepEqual(snapshot(file), before)
 })
 

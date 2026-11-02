@@ -14,7 +14,7 @@ Every location is explicit: the CLI does not derive integration paths from ambie
 
 `--platform` describes the integration layout only. It does not require the running Node platform to match or execute that platform's artifacts. The source API also permits simulated layouts. Paths use the running host's absolute-path syntax and filesystem rules; layout simulation is not a cross-platform filesystem or ACL guarantee. `--arch` is a required supported label, not a check of the running Node architecture or installed binary architecture. `--root` is syntactically validated, not proof of installed package identity; the receipt-bound root remains authoritative as described below.
 
-The following are **templates only**, using explicit placeholder user-home and temporary fixture paths. Replace every placeholder with reviewed canonical absolute paths, use a fresh destination beneath an existing private parent, and stop all source writers before capture. These examples do not prepare fixtures, install anything, or constitute real-user integration actions. `REPLACE_WITH_TRUSTED_MANIFEST_SHA256` must be replaced with the digest from successful creation, saved separately in a trusted private record; it is deliberately not a valid digest.
+The following are **templates only**, using explicit placeholder user-home and temporary fixture paths. Replace every placeholder with reviewed canonical absolute paths, use a fresh destination beneath an existing private parent, and stop noncooperating source writers before capture (all source writers with released versions). These examples do not prepare fixtures, install anything, or constitute real-user integration actions. `REPLACE_WITH_TRUSTED_MANIFEST_SHA256` must be replaced with the digest from successful creation, saved separately in a trusted private record; it is deliberately not a valid digest.
 
 POSIX shell, with a macOS layout and source Node 24 (replace `arm64` with `x64` if appropriate):
 
@@ -95,9 +95,13 @@ Verification reads the snapshot, not the original installation. The original pac
 
 ## Capture scope and stopped writers
 
-Stop all writers before capture and keep them stopped for the entire operation: installer/uninstaller invocations, integration editors, sync tools, and any other process that could change the sources. Inventory inspection and snapshot capture/verification do **not** acquire installer or lifecycle locks in this source change, stop no processes, and are not atomic filesystem snapshots.
+In the unreleased source, `createIntegrationSnapshot` acquires the [shared install/uninstall lock](native-install.md#unreleased-shared-installuninstall-lock) after pure integration-option and destination-path syntax validation and before the first source capture. It holds the lock continuously through copying, manifest publication, final snapshot verification, and the final source inspection/identity recheck, then releases it in `finally`, including on failure. The source CLI's `create` action calls this API and inherits the lock automatically. This change has no new native CI or verified-release claim; the released capture versions described above still require all source writers stopped.
 
-The unreleased [shared install/uninstall lock](native-install.md#unreleased-shared-installuninstall-lock) coordinates only cooperating `nativeIntegration` writers. It uses the existing SQLite launcher lifecycle lock under the fixed receipt parent's `native-install-control` child, independently of package/config/data paths, architecture, or autostart. It does not make snapshot operations safe alongside an active installer; keep writers quiescent. Lock preparation rejects unsafe existing private boundaries, but successful acquisition can reassert already-private permissions/ACLs and write operational files. Its Windows FullControl requirement applies to operational lock storage, not a broad ACL guarantee for captured source artifacts. OS lock release after a crash adds no persistent intent journal, ownership adoption, reconciliation, automatic rollback, or activation.
+The lock coordinates cooperating install/uninstall calls, the intent-storage writer, diagnosis calls, and snapshot creation. It uses the existing SQLite launcher lifecycle lock at `dirname(receipt)/native-install-control`, independently of package/config/data paths, architecture, or autostart. Stop legacy scripts, manual integration editors, sync tools, and every other noncooperating source writer for the entire capture. The lock stops no processes and provides no atomic filesystem snapshot or protection against intervening same-account mutation, including ABA replacement. Standalone `inspectNativeIntegration` remains unlocked and requires quiescent writers.
+
+Lock preparation may create the control directory, required parents, and operational SQLite files even when capture later fails or the receipt is absent. Creation is therefore not wholly read-only: original receipt/artifact contents and permissions remain read-only, while operational lock storage and the fresh snapshot destination can be written. Unsafe existing control boundaries are rejected; existing control directories are verified without resetting modes or ACLs. The Windows FullControl requirement applies to operational lock storage, not a broad ACL guarantee for captured source artifacts. OS lock release after a crash adds no persistent intent journal, ownership adoption, reconciliation, automatic rollback, or activation.
+
+`verifyIntegrationSnapshot` and `restoreIntegrationSnapshot` do not acquire this lock or inspect original integration contents. Their CLI `verify` and `restore-copy` actions are unchanged. Keep writers to the snapshot itself stopped throughout verification or recovery copy. Recovery copy retains its original-path boundary checks, but neither operation writes original integration locations or prepares installer control storage.
 
 Creation requires an existing valid ownership receipt; a missing receipt fails instead of inventing an empty backup. Every fixed integration location is represented, including missing artifacts. Present artifacts must be owned by and match the receipt. A present startup artifact not listed in the receipt is rejected. Source inspection retains the installer's bounded receipt validation, safe-path checks, and applicable ownership/permission checks.
 
@@ -109,7 +113,7 @@ Only raw native integration bytes and the original receipt are copied. External 
 
 ## Exact layout and bounds
 
-A complete snapshot contains exactly:
+The shared-lock addition preserves the existing schema, manifest bytes, and layout. A complete snapshot contains exactly:
 
 ```text
 manifest.json
