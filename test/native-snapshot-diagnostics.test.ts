@@ -1,11 +1,29 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
+import { spawnSync } from 'node:child_process'
+import { fileURLToPath } from 'node:url'
 import { sanitizeDiagnostic } from './fixtures/native-snapshot-diagnostic.ts'
 
 const secret = 'SECRET-DIAGNOSTIC-PAYLOAD'
 const privateText = `${secret} /home/private/account C:\\Users\\private\\token https://private.invalid/?token=${secret}`
 const unknown = { ok: false, kind: 'unknown' }
 const privacy = (stage: string) => `Cannot establish private Windows data permissions [${stage}]: use a dedicated current-account-owned local directory without links or explicit shared ACLs`
+
+test('real diagnostic subprocess rejects invalid secret-bearing input with fixed output', () => {
+  const script = fileURLToPath(new URL('./fixtures/native-snapshot-diagnostic.ts', import.meta.url))
+  for (const parameters of [privateText, JSON.stringify({ platform: privateText })]) {
+    const result = spawnSync(process.execPath, ['--experimental-transform-types', script], {
+      encoding: 'utf8', timeout: 10_000, maxBuffer: 4096, windowsHide: true,
+      env: { ...process.env, NODE_NO_WARNINGS: '1', JARVIS_TEST_SNAPSHOT_PARAMETERS: parameters },
+    })
+    // Never include raw output in assertion diagnostics if the protocol regresses.
+    assert.equal(result.error === undefined, true, 'Diagnostic subprocess execution failed')
+    assert.equal(result.signal, null, 'Diagnostic subprocess terminated')
+    assert.equal(result.status, 1)
+    assert.equal(result.stdout === '{"ok":false,"kind":"validation"}\n', true, 'Diagnostic output violated fixed privacy protocol')
+    assert.equal(result.stderr === '', true, 'Diagnostic stderr violated privacy protocol')
+  }
+})
 
 test('diagnostics discard secret messages, stacks, paths, streams and arbitrary codes', () => {
   for (const code of [privateText, 'ERR_SECRET', 'SIGINT', '', -1, 256, Infinity, NaN, 1.5, Number.MAX_SAFE_INTEGER, 71n, { toString() { throw new Error(secret) } }]) {
