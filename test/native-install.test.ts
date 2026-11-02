@@ -67,6 +67,23 @@ exec '/missing/中文 '\'' & $/runtime/node' '--experimental-transform-types' '/
   assert.notDeepEqual(renderNativeIntegration(options, true, config), plan, 'each render owns its bytes')
 })
 
+test('Windows render descriptors preserve drive paths and trailing backslash quoting', () => {
+  // The pure renderer does not read this synthetic path; path joins follow the host.
+  const root = String.raw`C:\Portable Apps\中文`, home = String.raw`C:\Users\fixture`
+  const options = { platform: 'win32' as const, root, home, appData: String.raw`C:\Users\fixture\AppData\Roaming`, localAppData: String.raw`C:\Users\fixture\AppData\Local` }
+  const config = 'D:\\配置 folder\\'
+  const plan = renderNativeIntegration(options, true, config)
+  assert.equal(plan.platform, 'win32')
+  if (plan.platform !== 'win32') return
+  const expectedArgs = '"--experimental-transform-types" "' + join(root, 'scripts', 'app.ts') + '" "--config" "D:\\配置 folder\\\\"'
+  assert.deepEqual(plan.shortcuts, [
+    { path: join(options.appData, 'Microsoft', 'Windows', 'Start Menu', 'Programs', 'Jarvis.lnk'), target: join(root, 'runtime', 'node.exe'), args: expectedArgs, cwd: root },
+    { path: join(options.appData, 'Microsoft', 'Windows', 'Start Menu', 'Programs', 'Startup', 'Jarvis.lnk'), target: join(root, 'runtime', 'node.exe'), args: expectedArgs + ' "--no-open"', cwd: root },
+  ])
+  assert.deepEqual(renderNativeIntegration(options, false, config), { platform: 'win32', shortcuts: plan.shortcuts.slice(0, 1) })
+  assert.ok(plan.shortcuts.every(shortcut => !('bytes' in shortcut) && !('sha256' in shortcut)))
+})
+
 for (const platform of ['darwin', 'win32'] as const) for (const autostart of [false, true]) for (const configured of [false, true]) test(`${platform} installer consumes render plan (${autostart}, config ${configured})`, async () => fixture(platform, async options => {
   const privateDir = join(dirname(options.root), 'external 配置')
   await ensurePrivateDataDirectory(privateDir)
