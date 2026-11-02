@@ -1,6 +1,7 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { chmodSync, chownSync, linkSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync } from 'node:fs'
+import fs, { chmodSync, chownSync, linkSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, type BigIntStats } from 'node:fs'
+import { syncBuiltinESMExports } from 'node:module'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { DatabaseSync } from 'node:sqlite'
@@ -25,6 +26,67 @@ function createDatabase(file: string) {
 function snapshot(file: string) {
   const { dev, ino, nlink, mode, uid, gid, size, mtimeNs, ctimeNs } = lstatSync(file, { bigint: true })
   return { dev, ino, nlink, mode, uid, gid, size, mtimeNs, ctimeNs, bytes: readFileSync(file) }
+}
+
+// Inject only one exact pathname's BigIntStats. The real file stays linked;
+// this covers defensive metadata rejection, not an actual unlink race.
+async function withInjectedStat(target: string, metadata: Pick<BigIntStats, 'nlink'>, check: () => Promise<void>) {
+  const mutableFs = fs as { lstatSync: typeof lstatSync }
+  const original = mutableFs.lstatSync
+  let injections = 0
+  try {
+    mutableFs.lstatSync = ((...args: Parameters<typeof lstatSync>) => {
+      const stat = Reflect.apply(original, fs, args) as BigIntStats
+      if (args[0] !== target) return stat
+      assert.equal(args[1]?.bigint, true)
+      injections++
+      // Inherit real mode and the Stats prototype so isFile() still works.
+      return Object.assign(Object.create(stat), metadata) as BigIntStats
+    }) as typeof lstatSync
+    syncBuiltinESMExports()
+    await check()
+    assert.equal(injections, 1, 'reject during the initial lock-family preflight')
+  } finally {
+    mutableFs.lstatSync = original
+    syncBuiltinESMExports()
+  }
+}
+
+for (const name of names) {
+  for (const suffix of ['', '-journal'] as const) {
+    for (const { metadata, reason } of [
+      { metadata: { nlink: 0n }, reason: 'links-zero' },
+      { metadata: { nlink: -1n }, reason: 'links-invalid' },
+    ]) {
+      test(`${name}${suffix || ' database'} rejects injected ${reason} metadata without changing SQLite sentinels`, async t => {
+        const { data } = fixture(t)
+        mkdirSync(data, { mode: 0o755 })
+        const main = join(data, `${name}.lock.sqlite`)
+        const target = main + suffix
+        createDatabase(main)
+        if (suffix) createDatabase(target)
+        if (process.platform !== 'win32') {
+          chmodSync(main, 0o644)
+          if (suffix) chmodSync(target, 0o644)
+        }
+        const mainBefore = snapshot(main)
+        const targetBefore = snapshot(target)
+        const rootBefore = lstatSync(data, { bigint: true })
+        assert.equal(targetBefore.nlink, 1n)
+        await withInjectedStat(target, metadata, async () => {
+          await assert.rejects(acquireLifecycleLock(data, name), {
+            message: `Unsafe lifecycle lock file: ${target} [${reason}]`,
+          })
+        })
+        // Read actual metadata only after restoring the native ESM export.
+        assert.deepEqual(snapshot(main), mainBefore)
+        assert.deepEqual(snapshot(target), targetBefore)
+        const rootAfter = lstatSync(data, { bigint: true })
+        assert.equal(rootAfter.mode, rootBefore.mode)
+        assert.equal(rootAfter.ctimeNs, rootBefore.ctimeNs)
+      })
+    }
+  }
 }
 
 for (const kind of ['hardlink', 'symlink'] as const) {
