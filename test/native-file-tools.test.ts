@@ -155,7 +155,8 @@ test('actual helper root handle rejects ABA registration before any read', async
     t.mock.method(opened.filesystem, 'disposeAsync', async () => { await dispose(); disposed = true })
     if (process.platform === 'win32') {
       // Windows intentionally denies directory relocation while the helper pins it.
-      // Verify the OS barrier, then let the identity mismatch reject registration.
+      // Verify the OS barrier; the post-init pathname identity check also rejects
+      // this unreverted substitution, while POSIX exercises a completed ABA.
       assert.throws(() => renameSync(f.root, replacement))
     } else {
       renameSync(f.root, replacement); renameSync(moved, f.root)
@@ -163,7 +164,7 @@ test('actual helper root handle rejects ABA registration before any read', async
     return opened
   })
   const result = await f.run('file_read', { path: join(f.root, 'file.txt') })
-  assert.equal(result.isError, true); assert.match(result.content, /registration/); assert.equal(reads, 0); assert.equal(disposed, true)
+  assert.equal(result.isError, true); assert.match(result.content, process.platform === 'win32' ? /Read root changed/ : /registration/); assert.equal(reads, 0); assert.equal(disposed, true)
 })
 
 test('settings revision and cancellation during native reads suppress content and dispose', async t => {

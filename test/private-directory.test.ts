@@ -130,7 +130,7 @@ $acl.AddAccessRule([Security.AccessControl.FileSystemAccessRule]::new([Security.
 Set-Acl -LiteralPath $env:JARVIS_TEST_DIRECTORY -AclObject $acl
 `, child)
   const before = await powershell('(Get-Acl -LiteralPath $env:JARVIS_TEST_DIRECTORY).Sddl', root)
-  await assert.rejects(ensurePrivateDataDirectory(root), /permissions/)
+  await assert.rejects(ensurePrivateDataDirectory(root), /permissions \[descendant-acl-policy\]/)
   assert.equal(await powershell('(Get-Acl -LiteralPath $env:JARVIS_TEST_DIRECTORY).Sddl', root), before)
 })
 
