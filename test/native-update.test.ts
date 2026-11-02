@@ -29,13 +29,8 @@ async function fixture(run: (root: string, old: string, next: string, oldHash: s
     assert.equal(dirname(root), temporaryRoot); await rm(root, { recursive: true, force: true })
   }
 }
-test('real packaged candidate starts with separate home and data and shuts down', { timeout: 120_000 }, async () => fixture(async (root, old, next, oldHash) => {
-  const source = dirname(dirname(fileURLToPath(import.meta.url)))
-  // Real application and runtime, copied into a fully hashed portable layout. No symlink to the checkout.
-  for (const directory of ['src', 'web', 'node_modules']) await cp(join(source, directory), join(next, directory), { recursive: true, dereference: true })
-  await copyFile(join(source, 'package.json'), join(next, 'package.json'))
-  await copyFile(process.execPath, join(next, 'runtime', process.platform === 'win32' ? 'node.exe' : 'node'))
-  const manifest = JSON.parse(await readFile(join(next, 'manifest.json'), 'utf8'))
+async function refreshManifest(root: string): Promise<string> {
+  const manifest = JSON.parse(await readFile(join(root, 'manifest.json'), 'utf8'))
   manifest.files = []
   async function inventory(directory: string, prefix = ''): Promise<void> {
     for (const name of await readdir(directory)) {
@@ -45,13 +40,87 @@ test('real packaged candidate starts with separate home and data and shuts down'
       else { const bytes = await readFile(path); manifest.files.push({ path: relative, bytes: bytes.length, sha256: digest(bytes) }) }
     }
   }
-  await inventory(next)
-  const text = JSON.stringify(manifest); await writeFile(join(next, 'manifest.json'), text)
+  await inventory(root)
+  const text = JSON.stringify(manifest); await writeFile(join(root, 'manifest.json'), text)
+  return digest(text)
+}
+
+// A real portable Node child using the shipped authenticated IPC and manifest version reader.
+async function childCandidate(root: string, mode: 'healthy' | 'wrong-version' | 'nonzero' | 'signal' | 'redirect' | 'oversized' | 'invalid-json' | 'wrong-source' | 'wrong-manifest' | 'missing-build'): Promise<string> {
+  const source = dirname(dirname(fileURLToPath(import.meta.url)))
+  for (const name of ['runtime-lifecycle.ts', 'private-directory.ts', 'version.ts']) await copyFile(join(source, 'src', name), join(root, 'src', name))
+  await copyFile(process.execPath, join(root, 'runtime', process.platform === 'win32' ? 'node.exe' : 'node'))
+  await readFile(join(root, 'src/main.ts'))
+  await writeFile(join(root, 'src/main.ts'), `
+import assert from 'node:assert/strict'
+import { createServer } from 'node:http'
+import { writeFile } from 'node:fs/promises'
+import { join } from 'node:path'
+import { acquireRuntimeLifecycle } from './runtime-lifecycle.ts'
+import { runtimeVersion, runtimeBuildIdentity } from './version.ts'
+const mode = ${JSON.stringify(mode)}
+const data = process.env.JARVIS_DATA_DIR
+assert.equal(process.cwd(), data)
+assert.notEqual(data, process.env.HOME)
+assert.notEqual(data, process.env.TMPDIR)
+assert.equal(process.env.JARVIS_OLLAMA_URL, 'http://127.0.0.1:1')
+assert.match(process.env.JARVIS_AUTH_TOKEN, /^[a-f0-9]{64}$/)
+const lifecycle = await acquireRuntimeLifecycle(data)
+const server = createServer((req, res) => {
+  if (req.url !== '/api/health' || req.headers.authorization !== 'Bearer ' + process.env.JARVIS_AUTH_TOKEN) { res.writeHead(401); res.end(); return }
+  if (mode === 'redirect') { res.writeHead(302, { location: '/redirect-target' }); res.end(); return }
+  res.writeHead(200, { 'content-type': 'application/json' })
+  if (mode === 'oversized') { res.end(' '.repeat(64 * 1024 + 1)); return }
+  if (mode === 'invalid-json') { res.end('secret-diagnostic-' + process.env.JARVIS_AUTH_TOKEN); return }
+  const build = runtimeBuildIdentity()
+  if (mode === 'wrong-source') build.sourceSha = 'b'.repeat(40)
+  if (mode === 'wrong-manifest') build.manifestSha256 = 'b'.repeat(64)
+  res.end(JSON.stringify({ ok: true, version: mode === 'wrong-version' ? '9.9.9' : runtimeVersion(), build: mode === 'missing-build' ? undefined : build }))
+})
+await new Promise(resolve => server.listen(Number(process.env.JARVIS_PORT), '127.0.0.1', resolve))
+lifecycle.onShutdown(async () => {
+  await writeFile(join(data, 'authenticated-shutdown'), 'acknowledged')
+  await new Promise(resolve => server.close(resolve))
+  await lifecycle.close()
+  if (mode === 'signal') process.kill(process.pid, 'SIGTERM')
+  process.exitCode = mode === 'nonzero' ? 23 : 0
+})
+lifecycle.setReady('http://127.0.0.1:' + process.env.JARVIS_PORT + '/')
+`)
+  return refreshManifest(root)
+}
+for (const mode of ['healthy', 'wrong-version', 'nonzero', 'signal', 'redirect', 'oversized', 'invalid-json', 'wrong-source', 'wrong-manifest', 'missing-build'] as const) {
+  test(`real portable candidate health: ${mode}`, { timeout: 30_000 }, async () => fixture(async (root, old, next, oldHash) => {
+    const nextHash = await childCandidate(next, mode)
+    const transaction = join(root, 'child-transaction')
+    await stage(transaction, old, oldHash, next, nextHash)
+    if (mode === 'healthy') assert.equal((await health(transaction)).status, 'healthy')
+    else {
+      const expected = { 'wrong-version': /HTTP health version mismatch/, redirect: /fetch failed/, nonzero: /shutdown failed/, signal: /shutdown failed/, oversized: /body exceeds limit/, 'invalid-json': /health JSON invalid/, 'wrong-source': /build identity mismatch/, 'wrong-manifest': /build identity mismatch/, 'missing-build': /build identity mismatch/ }
+      await assert.rejects(health(transaction), expected[mode])
+      const journal = await readFile(join(transaction, 'journal.json'), 'utf8')
+      assert.equal(JSON.parse(journal).status, 'failed')
+      assert.doesNotMatch(journal, /secret-diagnostic/)
+    }
+    if (['healthy', 'nonzero', 'signal'].includes(mode)) assert.equal(await readFile(join(transaction, 'health-data/authenticated-shutdown'), 'utf8'), 'acknowledged')
+    assert.equal((await rollback(transaction)).status, 'rolled-back')
+    assert.equal((await verifyBundle(next, nextHash)).version, '1.0.1')
+    assert.equal((await verifyBundle(old, oldHash)).version, '1.0.0')
+  }))
+}
+
+test('real packaged candidate starts with separate home and data and shuts down', { timeout: 120_000 }, async () => fixture(async (root, old, next, oldHash) => {
+  const source = dirname(dirname(fileURLToPath(import.meta.url)))
+  // Real application and runtime, copied into a fully hashed portable layout. No symlink to the checkout.
+  for (const directory of ['src', 'web', 'node_modules']) await cp(join(source, directory), join(next, directory), { recursive: true, dereference: true })
+  await copyFile(join(source, 'package.json'), join(next, 'package.json'))
+  await copyFile(process.execPath, join(next, 'runtime', process.platform === 'win32' ? 'node.exe' : 'node'))
+  const nextHash = await refreshManifest(next)
   // POSIX IPC must work even when the transaction exceeds sockaddr_un's path budget.
   const deep = process.platform === 'win32' ? root : join(root, 'deep-transaction-parent-'.repeat(5))
   if (deep !== root) await mkdir(deep)
   const transaction = join(deep, 'real-transaction')
-  await stage(transaction, old, oldHash, next, digest(text))
+  await stage(transaction, old, oldHash, next, nextHash)
   assert.equal((await health(transaction)).status, 'healthy')
   assert.equal((await rollback(transaction)).status, 'rolled-back')
   assert.ok((await stat(join(transaction, 'health-home'))).isDirectory())

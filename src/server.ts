@@ -2,6 +2,7 @@ import { createServer as createHttpServer, type IncomingMessage, type Server, ty
 import { createServer as createHttpsServer } from 'node:https'
 import { createHash, randomInt, timingSafeEqual } from 'node:crypto'
 import { buildDailyBrief } from './brief.ts'
+import { runtimeBuildIdentity } from './version.ts'
 import { MAX_BROWSER_CAPTURE_BYTES } from './senses/browser-capture.ts'
 import { DeviceStore } from './devices.ts'
 import type { SecureFiles } from './secure-files.ts'
@@ -560,6 +561,7 @@ export class JarvisServer {
       sendJson(response, 200, {
         ok: true,
         version: this.deps.config.version,
+        build: runtimeBuildIdentity(),
         uptimeMs: Date.now() - this.startedAt,
         status: this.deps.conversation.status(),
         platform: this.caps,

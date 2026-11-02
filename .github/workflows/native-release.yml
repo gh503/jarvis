@@ -73,7 +73,7 @@ jobs:
         env:
           JARVIS_NATIVE_HELPER_REQUIRED: '1'
       - name: Native and release acceptance
-        run: node --experimental-transform-types --test test/config.test.ts test/version.test.ts test/native-release.test.mjs test/runtime-lifecycle.test.ts test/native-actions.test.ts test/worker-utf8.test.ts test/packaging.test.ts test/private-directory.test.ts test/backup-portability.test.ts test/native-install.test.ts test/doctor.test.ts test/model-redirects.test.ts test/native-privacy.test.ts test/native-update.test.ts test/windows-notification.test.ts test/voice-runtime.test.ts test/browser-capture.test.ts test/browser-capture-frontend.test.ts test/browser-capture-integration.test.ts
+        run: node --experimental-transform-types --test test/config.test.ts test/version.test.ts test/native-release.test.mjs test/runtime-lifecycle.test.ts test/native-actions.test.ts test/worker-utf8.test.ts test/packaging.test.ts test/private-directory.test.ts test/backup-portability.test.ts test/native-install.test.ts test/doctor.test.ts test/model-redirects.test.ts test/native-privacy.test.ts test/native-update.test.ts test/native-update-journal.test.ts test/windows-notification.test.ts test/voice-runtime.test.ts test/browser-capture.test.ts test/browser-capture-frontend.test.ts test/browser-capture-integration.test.ts
       - name: Package exact clean tagged source
         run: npm run package
       - name: Verify extracted package with bundled runtime

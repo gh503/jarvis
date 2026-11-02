@@ -1,13 +1,14 @@
 #!/usr/bin/env node
-/** Explicit local-directory staging. Never downloads, extracts, migrates, or switches integrations. */
+/** Local-directory staging and isolated authenticated health checks. Never downloads, extracts, migrates, or activates. */
 import { createHash, randomBytes } from 'node:crypto'
 import { spawn } from 'node:child_process'
-import { lstat, readdir, readFile, mkdir, writeFile, rename, realpath } from 'node:fs/promises'
+import { lstat, readdir, readFile, mkdir, realpath } from 'node:fs/promises'
 import { createServer } from 'node:net'
 import { dirname, isAbsolute, join, relative, resolve } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import { acquireLifecycleLock, requestRuntime } from '../src/runtime-lifecycle.ts'
 import { ensurePrivateDataDirectory } from '../src/private-directory.ts'
+import { readUpdateJournal, writeUpdateJournal } from './native-update-journal.ts'
 
 const hash = (bytes: Buffer) => createHash('sha256').update(bytes).digest('hex')
 const sha256 = /^[a-f0-9]{64}$/
@@ -70,9 +71,7 @@ function overlaps(a: string, b: string): boolean {
   return inside(a, b) || inside(b, a)
 }
 async function save(transaction: string, journal: Journal): Promise<void> {
-  const temporary = join(transaction, `journal-${randomBytes(8).toString('hex')}.tmp`)
-  await writeFile(temporary, JSON.stringify(journal, null, 2) + '\n', { flag: 'wx', mode: 0o600 })
-  await rename(temporary, join(transaction, 'journal.json'))
+  writeUpdateJournal(transaction, journal)
 }
 export async function stage(transaction: string, baselineRoot: string, baselineHash: string, candidateRoot: string, candidateHash: string): Promise<Journal> {
   const baseline = await verifyBundle(baselineRoot, baselineHash), candidate = await verifyBundle(candidateRoot, candidateHash)
@@ -90,7 +89,7 @@ export async function stage(transaction: string, baselineRoot: string, baselineH
 async function load(transaction: string): Promise<Journal> {
   await safePath(transaction)
   await safePath(join(transaction, 'journal.json'))
-  const j = JSON.parse(await readFile(join(transaction, 'journal.json'), 'utf8')) as Journal
+  const j = readUpdateJournal(transaction) as Journal
   if (j.schemaVersion !== 1 || !['staged', 'checking', 'healthy', 'failed', 'rolled-back'].includes(j.status)) throw new Error('Invalid transaction journal')
   for (const identity of [j.baseline, j.candidate]) {
     const actual = await verifyBundle(identity.root, identity.manifestSha256)
@@ -129,25 +128,59 @@ async function probeCandidate(identity: Identity, data: string): Promise<void> {
   // Port reservation has a race: a collision must fail readiness, never reuse another instance.
   const env: NodeJS.ProcessEnv = { PATH: process.env.PATH, SystemRoot: process.env.SystemRoot, WINDIR: process.env.WINDIR, HOME: home, USERPROFILE: home, APPDATA: home, LOCALAPPDATA: home, TMPDIR: temporary, TMP: temporary, TEMP: temporary, JARVIS_DATA_DIR: data, JARVIS_HOST: '127.0.0.1', JARVIS_PORT: String(port), JARVIS_AUTH_TOKEN: randomBytes(32).toString('hex'), JARVIS_WEB_DIR: join(identity.root, 'web'), JARVIS_APP: '1', JARVIS_PYTHON: join(data, 'disabled-python'), JARVIS_WHISPER_BIN: join(data, 'disabled-whisper'), JARVIS_PIPER_BIN: join(data, 'disabled-piper'), JARVIS_OLLAMA_URL: 'http://127.0.0.1:1' }
   const child = spawn(join(identity.root, 'runtime', identity.platform === 'win32' ? 'node.exe' : 'node'), ['--experimental-transform-types', join(identity.root, 'src/main.ts')], { cwd: data, env, stdio: ['ignore', 'ignore', 'pipe'] })
-  let failure: Error | undefined, exited = false, exitDetail = 'unknown', diagnostic = ''
+  let failure: Error | undefined, exited = false, closed = false, exitCode: number | null = null, exitSignal: NodeJS.Signals | null = null, diagnostic = ''
   // Keep bounded stderr only in memory; expose allowlisted error codes, never child text/secrets.
   child.stderr.on('data', (chunk: Buffer) => { diagnostic = (diagnostic + chunk.toString()).slice(-8192) })
-  const done = new Promise<void>(ok => { child.once('error', error => { failure = error; exited = true; ok() }); child.once('exit', (code, signal) => { exitDetail = `code=${code}, signal=${signal}`; exited = true; ok() }) })
+  child.on('error', error => { failure = error })
+  child.once('exit', (code, signal) => { exitCode = code; exitSignal = signal; exited = true })
+  // exit alone does not mean inherited stdio has closed. Never leave an unbounded cleanup wait.
+  const done = new Promise<void>(ok => { child.once('close', (code, signal) => { exitCode = code; exitSignal = signal; closed = true; ok() }) })
+  async function waitForClose(): Promise<void> {
+    let timer: NodeJS.Timeout | undefined
+    try { await Promise.race([done, new Promise<void>(ok => { timer = setTimeout(ok, 5000) })]) }
+    finally { clearTimeout(timer) }
+  }
   try {
     const deadline = Date.now() + 45_000
     while (Date.now() < deadline) {
-      if (exited) {
+      if (failure || exited || closed) {
         const codes = [...new Set(diagnostic.match(/\b(?:EACCES|EPERM|EADDRINUSE|ENAMETOOLONG|ENOENT|EINVAL|ERR_[A-Z_]+)\b/g) ?? [])].slice(0, 8)
-        throw failure ?? new Error(`Candidate exited before readiness (${exitDetail}; error codes: ${codes.join(', ') || 'none'})`)
+        throw failure ?? new Error(`Candidate exited before readiness (code=${exitCode}, signal=${exitSignal}; error codes: ${codes.join(', ') || 'none'})`)
       }
       const status = await requestRuntime(data)
       if (status?.state === 'ready') {
-        if (status.url !== `http://127.0.0.1:${port}/`) throw new Error('Candidate health URL mismatch')
+        const expectedURL = `http://127.0.0.1:${port}/`
+        if (status.url !== expectedURL) throw new Error('Candidate health URL mismatch')
+        const response = await fetch(new URL('api/health', expectedURL), {
+          headers: { Authorization: `Bearer ${env.JARVIS_AUTH_TOKEN}` },
+          redirect: 'error', signal: AbortSignal.timeout(5000),
+        })
+        if (response.status !== 200) { await response.body?.cancel(); throw new Error('Candidate HTTP health failed') }
+        const reader = response.body?.getReader()
+        if (!reader) throw new Error('Candidate HTTP health body missing')
+        const chunks: Uint8Array[] = []
+        let size = 0
+        try {
+          while (true) {
+            const { done, value } = await reader.read()
+            if (done) break
+            size += value.byteLength
+            if (size > 64 * 1024) throw new Error('Candidate HTTP health body exceeds limit')
+            chunks.push(value)
+          }
+        } finally { await reader.cancel(); reader.releaseLock() }
+        let result: { ok?: unknown; version?: unknown; build?: { version?: unknown; sourceSha?: unknown; manifestSha256?: unknown } } | null
+        try { result = JSON.parse(Buffer.concat(chunks).toString('utf8')) }
+        catch { throw new Error('Candidate HTTP health JSON invalid') }
+        if (result?.ok !== true || result.version !== identity.version) throw new Error('Candidate HTTP health version mismatch')
+        if (result.build?.version !== identity.version || result.build.sourceSha !== identity.sourceSha || result.build.manifestSha256 !== identity.manifestSha256) throw new Error('Candidate HTTP health build identity mismatch')
+        if (failure || exited || closed) throw failure ?? new Error('Candidate exited before authenticated shutdown')
         const stopped = await requestRuntime(data, 'shutdown')
         if (stopped?.instanceId !== status.instanceId || stopped.state !== 'stopping') throw new Error('Candidate did not acknowledge shutdown')
-        let timer: NodeJS.Timeout | undefined
-        await Promise.race([done, new Promise<void>(ok => { timer = setTimeout(ok, 5000) })]); clearTimeout(timer)
-        if (!exited) throw new Error('Candidate did not exit after authenticated shutdown')
+        await waitForClose()
+        if (failure) throw failure
+        if (!closed) throw new Error('Candidate did not close after authenticated shutdown')
+        if (exitCode !== 0 || exitSignal !== null) throw new Error(`Candidate shutdown failed (code=${exitCode}, signal=${exitSignal})`)
         const releaseRuntime = await acquireLifecycleLock(data, 'runtime'); releaseRuntime()
         return
       }
@@ -156,10 +189,14 @@ async function probeCandidate(identity: Identity, data: string): Promise<void> {
     throw new Error('Candidate readiness timed out')
   } finally {
     // Only this invocation's ChildProcess handle is signalled; never a PID from disk.
-    if (!exited) {
-      let timer: NodeJS.Timeout | undefined
-      await Promise.race([done, new Promise<void>(ok => { timer = setTimeout(ok, 5000) })]); clearTimeout(timer)
-      if (!exited) { child.kill('SIGKILL'); await done }
+    if (!closed) {
+      if (!exited) child.kill('SIGKILL')
+      await waitForClose()
+      if (!closed) {
+        child.stderr.destroy()
+        child.unref()
+        throw new Error('Candidate process cleanup timed out')
+      }
     }
   }
 }
