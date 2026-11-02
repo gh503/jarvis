@@ -338,6 +338,25 @@ test('native artifact verifies and starts/stops using only its bundled Node', { 
       await assert.rejects(lstat(join(sourceData, 'runtime-instance.json')), { code: 'ENOENT' })
       await assert.rejects(lstat(data), { code: 'ENOENT' })
     }
+    nextStage('bundled updater rejects ineligible candidate with empty PATH')
+    {
+      const transaction = join(temporary, 'rejected update transaction 中文')
+      // Equal-version rejection precedes overlap checks; this does not test successful staging.
+      const result = spawnSync(binary, ['--experimental-transform-types', join(bundle, 'scripts/update-native.ts'),
+        'stage', transaction, bundle, manifestDigest, bundle, manifestDigest],
+      { env, cwd: temporary, encoding: 'utf8', timeout: 60_000, maxBuffer: 64 * 1024 })
+      assert.ifError(result.error)
+      assert.equal(result.signal, null)
+      assert.equal(result.status, 1, result.stderr)
+      assert.equal(result.stdout, '')
+      const released = manifest.dirty === false && manifest.sourceTag === `v${manifest.version}` && /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/.test(manifest.version)
+      assert.match(result.stderr, released ? /Candidate must have a strictly newer stable semver/ : /Incompatible release identity/)
+      await assert.rejects(lstat(transaction), { code: 'ENOENT' })
+      await assert.rejects(lstat(data), { code: 'ENOENT' })
+      assert.equal(await sha256(join(bundle, 'manifest.json')), manifestDigest)
+      assert.equal(await readFile(sentinel, 'utf8'), sentinelBytes)
+      console.log(`[artifact] updater rejected ${released ? 'equal-version candidate' : 'development identity'} without a transaction`)
+    }
     nextStage('bundled native helper with empty PATH')
     const helperRoot = join(temporary, 'approved files')
     await mkdir(helperRoot)
