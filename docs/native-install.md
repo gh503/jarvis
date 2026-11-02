@@ -32,7 +32,7 @@ Choose one install command. Existing integrations are never silently overwritten
 
 ## Optional private external configuration
 
-Use the recommended [v2.0.38 unsigned preview](https://github.com/gh503/jarvis/releases/tag/v2.0.38) for this optional binding. Installation without `--config` keeps the existing behavior.
+Use the recommended [v2.0.40 unsigned preview](https://github.com/gh503/jarvis/releases/tag/v2.0.40) for this optional binding. Installation without `--config` keeps the existing behavior.
 
 To bind shortcuts and optional login startup to a private config file outside the portable package, add `--config` with its canonical absolute filename:
 
@@ -108,7 +108,7 @@ Before installation, the manifest must match the platform, CPU architecture and 
 
 There is no install-time copy or in-place updater. For manual upgrades, stop Jarvis using the existing launcher's `--stop` command with the same config selection used to launch it, uninstall the old integrations, extract and verify the new package in a separate stable directory, and install its integrations. If using an external binding, explicitly supply `--config ABS` again at installation; uninstall does not take that flag. Review production data compatibility and recovery before launching a new release against existing data; see [Native update staging and recovery](native-update.md). Never extract a release over a running package. The installer itself leaves running servers alone, including during uninstall.
 
-For data recovery, v2.0.38 includes the offline [data-only snapshot CLI](native-state-snapshot.md): stop the runtime and all other writers, create and verify a snapshot, then restore only to a fresh directory. It preserves original secrets and application SQLite WAL within the selected data tree, subject to the documented root coordination-file exclusions. External config, external paths and installer integrations are not captured; restoration neither activates a release nor proves schema compatibility.
+For data recovery, v2.0.40 includes the offline [data-only snapshot CLI](native-state-snapshot.md): stop the runtime and all other writers, create and verify a snapshot, then restore only to a fresh directory. It preserves original secrets and application SQLite WAL within the selected data tree, subject to the documented root coordination-file exclusions. External config, external paths and installer integrations are not captured; restoration neither activates a release nor proves schema compatibility.
 
 An ownership receipt is kept at `~/Library/Application Support/Jarvis/native-install.json` on macOS or `%LOCALAPPDATA%\Jarvis\native-install.json` on Windows. Uninstall accepts only the known integration paths and removes only files whose hashes still match that receipt. Modified artifacts cause refusal before deletion; inspect them manually rather than deleting user changes blindly. Uninstall without a receipt is a no-op. It removes empty app-wrapper directories but preserves unrelated files, the portable package, configuration, conversations, models, browser profile and all other user data. If you lose the receipt, remove the documented integration files manually after reviewing them. Uninstall does not unload an already loaded LaunchAgent or stop the server; log out to clear the login-session registration.
 

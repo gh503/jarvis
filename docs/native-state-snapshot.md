@@ -1,12 +1,12 @@
 # Native data-only state snapshots
 
-Status: **released in [v2.0.38](https://github.com/gh503/jarvis/releases/tag/v2.0.38)**, including the offline CLI in portable packages. This is the data-filesystem snapshot prerequisite for native update recovery, not a complete installation snapshot or an automatic updater. See [Native update staging and recovery](native-update.md).
+Status: **first released in [v2.0.38](https://github.com/gh503/jarvis/releases/tag/v2.0.38)**, including the offline CLI in portable packages. The current recommended preview is [v2.0.40](https://github.com/gh503/jarvis/releases/tag/v2.0.40). This is the data-filesystem snapshot prerequisite for native update recovery, not a complete installation snapshot or an automatic updater. See [Native update staging and recovery](native-update.md).
 
 The snapshot copies the complete stopped data directory as raw files and directories, with only the nine root-level ownership/coordination files listed below excluded. It preserves empty directories, secrets, keys, tokens, and application SQLite database sidecars, including WAL. It does not export logical records, open application databases to migrate them, or promise logical/schema compatibility with another binary.
 
 ## Commands and trust
 
-Run this offline CLI from a trusted v2.0.38 portable package using its bundled Node 24. Stop the runtime and all other writers before creation; this command does not stop them for you. On Linux/macOS, from the extracted package directory:
+Run this offline CLI from a trusted v2.0.40 portable package using its bundled Node 24. Stop the runtime and all other writers before creation; this command does not stop them for you. On Linux/macOS, from the extracted package directory:
 
 ```sh
 ./runtime/node --experimental-transform-types scripts/snapshot-native.ts create --data /absolute/data --destination /absolute/new-snapshot
@@ -33,6 +33,8 @@ Verify and restore require the external digest; they never adopt a digest from i
 ## Stop writers before creating a snapshot
 
 Stop the runtime normally before invoking create. Create acquires the launcher lifecycle lock first and the runtime lifecycle lock second, with no wait for an active owner. An active runtime causes failure; create does not request shutdown or kill processes. Both locks are held while copying and checking the stopped tree.
+
+In v2.0.40, the shared lifecycle-lock guard checks the SQLite main database and journal/WAL/SHM sidecars, rejecting hardlinks, symlinks and nonregular entries before SQLite mutation. The main database identity must stay stable, while normal SQLite sidecar removal and recreation are allowed. These checks do not guarantee protection against hostile same-user filesystem races.
 
 The current offline memory/reminder/migration CLI participates in runtime locking. Older binaries and legacy Linux shell helpers, including `gen-tls`, `setup-models`, and `launch`, can bypass these locks. Stop all such helpers, external database tools, sync programs, and other writers before create, and keep the snapshot and restore destination protected against concurrent modification during verification and restore. Lifecycle locks coordinate participating programs only. Repeated tree inventories, file identity checks, and content hashes detect unstable trees; they are not an OS sandbox or a guarantee against hostile same-account writers racing filesystem operations.
 
