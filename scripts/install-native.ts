@@ -115,6 +115,22 @@ public static class JarvisShortcut {
       JarvisIdentity.Set(instance);
       ((IPersistFile)instance).Save(destination, true);
     } finally { Marshal.FinalReleaseComObject(instance); }
+    object verification = new JarvisShellLink();
+    try {
+      ((IPersistFile)verification).Load(destination, 0);
+      var saved = (JarvisShellLinkW)verification;
+      var actualTarget = new StringBuilder(32768);
+      var actualArguments = new StringBuilder(32768);
+      var actualDirectory = new StringBuilder(32768);
+      saved.GetPath(actualTarget, actualTarget.Capacity, IntPtr.Zero, 4);
+      saved.GetArguments(actualArguments, actualArguments.Capacity);
+      saved.GetWorkingDirectory(actualDirectory, actualDirectory.Capacity);
+      if (!String.Equals(actualTarget.ToString(), target, StringComparison.OrdinalIgnoreCase)
+          || !String.Equals(actualDirectory.ToString(), directory, StringComparison.OrdinalIgnoreCase)
+          || !String.Equals(actualArguments.ToString(), arguments, StringComparison.Ordinal)
+          || !String.Equals(JarvisIdentity.Read(verification), "${WINDOWS_AUMID}", StringComparison.Ordinal))
+        throw new InvalidOperationException("Saved shortcut fields differ from requested integration");
+    } finally { Marshal.FinalReleaseComObject(verification); }
   }
 }
 '@
