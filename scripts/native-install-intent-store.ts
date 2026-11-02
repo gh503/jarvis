@@ -3,7 +3,7 @@ import { lstat, open } from 'node:fs/promises'
 import { dirname, join } from 'node:path'
 import { describeNativeIntegration, type InstallOptions } from './install-native.ts'
 import { decodeNativeInstallIntent, encodeNativeInstallIntent, NATIVE_INSTALL_INTENT_MAX_BYTES, type NativeInstallIntent } from './native-install-intent.ts'
-import { verifyNativeInstallPrivatePath, verifyNativeInstallAncestors, withNativeInstallLock } from './native-install-lock.ts'
+import { assertNativeInstallLockHeld, runWithNativeInstallLockHeld, verifyNativeInstallPrivatePath, verifyNativeInstallAncestors, withNativeInstallLock, type NativeInstallLock } from './native-install-lock.ts'
 
 const unsafe = () => new Error('Unsafe native install intent store')
 const missing = (error: unknown) => (error as NodeJS.ErrnoException).code === 'ENOENT'
@@ -111,33 +111,46 @@ export async function writeNativeInstallIntent({ integration, intent }: { integr
   const preflight = await boundary(directory)
   if (await statOrMissing(path)) throw Object.assign(new Error('Native install intent already exists'), { code: 'EEXIST' })
   await verifyBoundary(directory, preflight)
-  return withNativeInstallLock({ controlDirectory: directory }, async () => {
-    const ancestors = await boundary(directory)
-    const file = await open(path, constants.O_RDWR | constants.O_CREAT | constants.O_EXCL | (constants.O_NOFOLLOW ?? 0), 0o600)
-    let failure: unknown
-    let failed = false
-    try {
-      const created = await file.stat({ bigint: true })
-      checkFile(created)
-      await verifyBoundary(directory, ancestors)
-      if (!await verifyNativeInstallPrivatePath(path, false)) throw unsafe()
-      const named = await statOrMissing(path)
-      if (!named || !sameFile(created, named)) throw unsafe()
-      await file.writeFile(bytes)
-      await file.sync()
-      const written = await file.stat({ bigint: true })
-      checkFile(written)
-      if (!sameIdentity(created, written) || written.size !== BigInt(bytes.length)) throw unsafe()
-      const stored = await readStored(options, created)
-      if (!stored || !stored.bytes.equals(bytes) || !sameFile(written, stored.stat)) throw unsafe()
-      await verifyBoundary(directory, ancestors)
-      return stored.intent
-    } catch (error) { failed = true; failure = error; throw error }
-    finally {
-      try { await file.close() } catch (error) {
-        if (failed) throw new AggregateError([failure, error], 'Native install intent write and close failed', { cause: failure })
-        throw error
-      }
+  return withNativeInstallLock({ controlDirectory: directory }, lock =>
+    runWithNativeInstallLockHeld(lock, directory, () => writeExclusive(options, bytes, directory, path)))
+}
+
+/** Compose publication into an existing lock scope at the fixed receipt-derived
+ * location. Registered work finishes before that scope releases its lock. */
+export function writeNativeInstallIntentUnderLock({ integration, intent, lock }: { integration: InstallOptions; intent: NativeInstallIntent; lock: NativeInstallLock }): Promise<NativeInstallIntent> {
+  const options = { ...integration }
+  const { directory, path } = location(options)
+  assertNativeInstallLockHeld(lock, directory)
+  const bytes = encodeNativeInstallIntent(intent, options)
+  return runWithNativeInstallLockHeld(lock, directory, () => writeExclusive(options, bytes, directory, path))
+}
+
+async function writeExclusive(options: InstallOptions, bytes: Buffer, directory: string, path: string): Promise<NativeInstallIntent> {
+  const ancestors = await boundary(directory)
+  const file = await open(path, constants.O_RDWR | constants.O_CREAT | constants.O_EXCL | (constants.O_NOFOLLOW ?? 0), 0o600)
+  let failure: unknown
+  let failed = false
+  try {
+    const created = await file.stat({ bigint: true })
+    checkFile(created)
+    await verifyBoundary(directory, ancestors)
+    if (!await verifyNativeInstallPrivatePath(path, false)) throw unsafe()
+    const named = await statOrMissing(path)
+    if (!named || !sameFile(created, named)) throw unsafe()
+    await file.writeFile(bytes)
+    await file.sync()
+    const written = await file.stat({ bigint: true })
+    checkFile(written)
+    if (!sameIdentity(created, written) || written.size !== BigInt(bytes.length)) throw unsafe()
+    const stored = await readStored(options, created)
+    if (!stored || !stored.bytes.equals(bytes) || !sameFile(written, stored.stat)) throw unsafe()
+    await verifyBoundary(directory, ancestors)
+    return stored.intent
+  } catch (error) { failed = true; failure = error; throw error }
+  finally {
+    try { await file.close() } catch (error) {
+      if (failed) throw new AggregateError([failure, error], 'Native install intent write and close failed', { cause: failure })
+      throw error
     }
-  })
+  }
 }

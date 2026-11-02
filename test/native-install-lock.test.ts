@@ -9,7 +9,7 @@ import { dirname, join } from 'node:path'
 import test from 'node:test'
 import { DatabaseSync } from 'node:sqlite'
 import { describeNativeIntegration, nativeIntegration, type InstallOptions } from '../scripts/install-native.ts'
-import { withNativeInstallLock } from '../scripts/native-install-lock.ts'
+import { assertNativeInstallLockHeld, runWithNativeInstallLockHeld, withNativeInstallLock, type NativeInstallLock } from '../scripts/native-install-lock.ts'
 import { acquireVerifiedLifecycleLock } from '../src/runtime-lifecycle.ts'
 
 function windowsAclScript(controlDirectory: string, script: string): string {
@@ -191,6 +191,37 @@ Set-Acl -LiteralPath $p -AclObject $acl
   assert.equal(powershell('(Get-Acl -LiteralPath $env:TEST_CONTROL).Sddl').trim(), before)
 })
 
+test('capabilities reject fabrication, copies, wrong boundaries and expired scopes', async t => {
+  const { controlDirectory } = await fixture(t)
+  for (const forged of [{}, null, undefined, 'lock', 1]) assert.throws(() => assertNativeInstallLockHeld(forged, controlDirectory), /capability/)
+  await assert.rejects(lstat(controlDirectory), { code: 'ENOENT' })
+  let saved: NativeInstallLock | undefined
+  await withNativeInstallLock({ controlDirectory }, async lock => {
+    saved = lock
+    assertNativeInstallLockHeld(lock, controlDirectory)
+    assert.throws(() => assertNativeInstallLockHeld({ ...lock }, controlDirectory), /capability/)
+    assert.throws(() => assertNativeInstallLockHeld(lock, join(controlDirectory, 'other')), /capability/)
+    assert.throws(() => assertNativeInstallLockHeld(lock, controlDirectory + '/.'), /capability/)
+  })
+  assert.throws(() => assertNativeInstallLockHeld(saved, controlDirectory), /capability/)
+  await withNativeInstallLock({ controlDirectory }, async lock => {
+    assert.notEqual(lock, saved)
+    assert.throws(() => assertNativeInstallLockHeld(saved, controlDirectory), /capability/)
+  })
+})
+
+test('unawaited registered failure is observed, propagated and releases the lock', async t => {
+  const { controlDirectory } = await fixture(t)
+  const failure = new Error('registered failure')
+  let saved: NativeInstallLock | undefined
+  await assert.rejects(withNativeInstallLock({ controlDirectory }, async lock => {
+    saved = lock
+    void runWithNativeInstallLockHeld(lock, controlDirectory, () => { throw failure })
+  }), error => error === failure)
+  assert.throws(() => assertNativeInstallLockHeld(saved, controlDirectory), /capability/)
+  await withNativeInstallLock({ controlDirectory }, async () => {})
+})
+
 test('operation failure releases the existing lock inode', async t => {
   const { controlDirectory } = await fixture(t)
   const failure = new Error('operation failed')
@@ -204,9 +235,13 @@ test('operation and release failures retain both errors with original cause', as
   const { controlDirectory } = await fixture(t)
   const operationError = new Error('operation sentinel'), releaseError = new Error('release sentinel')
   const originalClose = DatabaseSync.prototype.close
-  DatabaseSync.prototype.close = function () { originalClose.call(this); throw releaseError }
+  let saved: NativeInstallLock | undefined
+  DatabaseSync.prototype.close = function () {
+    if (saved) assert.throws(() => assertNativeInstallLockHeld(saved, controlDirectory), /capability/)
+    originalClose.call(this); throw releaseError
+  }
   try {
-    await assert.rejects(withNativeInstallLock({ controlDirectory }, async () => { throw operationError }), error => {
+    await assert.rejects(withNativeInstallLock({ controlDirectory }, async lock => { saved = lock; throw operationError }), error => {
       assert.ok(error instanceof AggregateError)
       assert.deepEqual(error.errors, [operationError, releaseError])
       assert.equal(error.cause, operationError)

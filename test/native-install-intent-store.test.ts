@@ -9,8 +9,8 @@ import { dirname, join } from 'node:path'
 import test from 'node:test'
 import { describeNativeIntegration, type InstallOptions } from '../scripts/install-native.ts'
 import { createNativeInstallIntent, encodeNativeInstallIntent, NATIVE_INSTALL_INTENT_MAX_BYTES } from '../scripts/native-install-intent.ts'
-import { readNativeInstallIntent, writeNativeInstallIntent } from '../scripts/native-install-intent-store.ts'
-import { withNativeInstallLock } from '../scripts/native-install-lock.ts'
+import { readNativeInstallIntent, writeNativeInstallIntent, writeNativeInstallIntentUnderLock } from '../scripts/native-install-intent-store.ts'
+import { withNativeInstallLock, type NativeInstallLock } from '../scripts/native-install-lock.ts'
 
 async function fixture(t: test.TestContext, platform: 'darwin' | 'win32' = 'darwin') {
   const root = await fs.mkdtemp(join(await fs.realpath(tmpdir()), 'intent-store-'))
@@ -46,6 +46,79 @@ for (const platform of ['darwin', 'win32'] as const) test(`${platform}: exclusiv
   await assert.rejects(writeNativeInstallIntent(f), { code: 'EEXIST' })
   assert.deepEqual(await snapshot(f.root), original)
 })
+test('under-lock writer refuses forged, wrong-boundary and expired capabilities without writes', async t => {
+  const f = await fixture(t), other = await fixture(t)
+  const before = await snapshot(f.root)
+  assert.throws(() => writeNativeInstallIntentUnderLock({ ...f, lock: {} as NativeInstallLock }), /capability/)
+  assert.deepEqual(await snapshot(f.root), before)
+  let saved: NativeInstallLock | undefined
+  await withNativeInstallLock({ controlDirectory: other.directory }, async lock => {
+    saved = lock
+    assert.throws(() => writeNativeInstallIntentUnderLock({ ...f, lock }), /capability/)
+    assert.deepEqual(await snapshot(f.root), before)
+  })
+  const expiredBefore = await snapshot(other.root)
+  assert.throws(() => writeNativeInstallIntentUnderLock({ ...other, lock: saved! }), /capability/)
+  assert.deepEqual(await snapshot(other.root), expiredBefore)
+  await assert.rejects(fs.lstat(f.directory), { code: 'ENOENT' })
+  await assert.rejects(fs.lstat(other.path), { code: 'ENOENT' })
+})
+
+for (const platform of ['darwin', 'win32'] as const) test(`${platform}: writer composes without nested acquisition and preserves exclusive publication`, async t => {
+  const f = await fixture(t, platform)
+  await withNativeInstallLock({ controlDirectory: f.directory }, async lock => {
+    assert.deepEqual(await writeNativeInstallIntentUnderLock({ ...f, lock }), f.intent)
+    const before = await snapshot(f.root)
+    await assert.rejects(writeNativeInstallIntentUnderLock({ ...f, lock }), { code: 'EEXIST' })
+    assert.deepEqual(await snapshot(f.root), before)
+  }).then(() => assert.fail('registered refusal must propagate'), error => assert.equal(error.code, 'EEXIST'))
+  await withNativeInstallLock({ controlDirectory: f.directory }, async () => {})
+  assert.deepEqual(await readNativeInstallIntent(f), f.intent)
+  for (const path of [f.receiptPath, ...f.artifactPaths]) await assert.rejects(fs.lstat(path), { code: 'ENOENT' })
+})
+
+test('composed publication snapshots intent before yielding', async t => {
+  const f = await fixture(t)
+  f.intent = structuredClone(f.intent)
+  const expected = structuredClone(f.intent)
+  await withNativeInstallLock({ controlDirectory: f.directory }, async lock => {
+    const pending = writeNativeInstallIntentUnderLock({ ...f, lock })
+    Object.assign(f.intent.binding, { root: join(f.root, 'changed-after-call') })
+    assert.deepEqual(await pending, expected)
+  })
+  assert.deepEqual(await readNativeInstallIntent(f), expected)
+})
+
+test('unawaited publication drains before release and refuses new work while closing', { timeout: 60_000 }, async t => {
+  const f = await fixture(t), original = fs.open
+  let unblock!: () => void, entered!: () => void
+  const gate = new Promise<void>(resolve => { unblock = resolve })
+  const started = new Promise<void>(resolve => { entered = resolve })
+  let saved: NativeInstallLock | undefined, completed = false
+  fs.open = (async (...args: Parameters<typeof fs.open>) => {
+    if (args[0] === f.path && ((args[1] as number) & constants.O_CREAT) !== 0) { entered(); await gate }
+    return original(...args)
+  }) as typeof fs.open
+  syncBuiltinESMExports()
+  const pending = withNativeInstallLock({ controlDirectory: f.directory }, async lock => {
+    saved = lock
+    void writeNativeInstallIntentUnderLock({ ...f, lock })
+  }).then(() => { completed = true })
+  try {
+    await started
+    assert.equal(completed, false)
+    assert.throws(() => writeNativeInstallIntentUnderLock({ ...f, lock: saved! }), /scope is closing/)
+    await assert.rejects(withNativeInstallLock({ controlDirectory: f.directory }, async () => assert.fail('lock released early')), /Another launcher is still working/)
+    await assert.rejects(fs.lstat(f.path), { code: 'ENOENT' })
+  } finally {
+    unblock()
+    try { await pending } finally { fs.open = original; syncBuiltinESMExports() }
+  }
+  assert.equal(completed, true)
+  assert.deepEqual(await readNativeInstallIntent(f), f.intent)
+  await withNativeInstallLock({ controlDirectory: f.directory }, async () => {})
+})
+
 test('invalid plan and invalid layout cause no control preparation', async t => {
   const f = await fixture(t), before = await snapshot(f.root)
   await assert.rejects(writeNativeInstallIntent({ ...f, intent: { ...f.intent, scope: { ...f.intent.scope, execution: true } } as never }))

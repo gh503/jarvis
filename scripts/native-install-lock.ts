@@ -46,6 +46,30 @@ function verifyPrivateWindowsPath(path: string): void {
 import { ensurePrivateDataDirectory } from '../src/private-directory.ts'
 import { acquireVerifiedLifecycleLock } from '../src/runtime-lifecycle.ts'
 
+declare const nativeInstallLockBrand: unique symbol
+/** Opaque authority valid only for the lifetime of its installation lock scope. */
+export type NativeInstallLock = { readonly [nativeInstallLockBrand]: true }
+type LockState = { active: boolean; acceptingOperations: boolean; controlDirectory: string; operations: Promise<unknown>[] }
+const heldLocks = new WeakMap<NativeInstallLock, LockState>()
+
+export function assertNativeInstallLockHeld(capability: unknown, directory: string): asserts capability is NativeInstallLock {
+  const state = typeof capability === 'object' && capability !== null ? heldLocks.get(capability as NativeInstallLock) : undefined
+  if (!state?.active || state.controlDirectory !== directory) throw new Error('Native install lock capability is invalid, expired, or for another control boundary')
+}
+
+/** Register work before yielding so even an unawaited caller cannot outlive the
+ * lock. New work is refused once the owning callback has settled. */
+export function runWithNativeInstallLockHeld<T>(capability: NativeInstallLock, directory: string, operation: () => Promise<T>): Promise<T> {
+  assertNativeInstallLockHeld(capability, directory)
+  const state = heldLocks.get(capability)!
+  if (!state.acceptingOperations) throw new Error('Native install lock scope is closing')
+  const pending = Promise.resolve().then(operation)
+  state.operations.push(pending)
+  // Observe immediately; the owner drains and propagates every failure below.
+  void pending.catch(() => {})
+  return pending
+}
+
 const unsafe = () => new Error('Unsafe native install control boundary or permissions')
 function validateControlPath(path: string): void {
   if (typeof path !== 'string' || !isAbsolute(path) || resolve(path) !== path || /[\x00-\x1f\x7f\ud800-\udfff]/u.test(path)) throw unsafe()
@@ -94,7 +118,7 @@ export async function verifyNativeInstallAncestors(directory: string): Promise<v
  * never from package root, external configuration, or runtime data directory.
  */
 export async function withNativeInstallLock<T>(
-  { controlDirectory }: { controlDirectory: string }, operation: () => Promise<T>,
+  { controlDirectory }: { controlDirectory: string }, operation: (lock: NativeInstallLock) => Promise<T>,
 ): Promise<T> {
   await verifyNativeInstallAncestors(controlDirectory)
   if (!await verifyNativeInstallPrivatePath(controlDirectory, true)) {
@@ -119,10 +143,26 @@ export async function withNativeInstallLock<T>(
     await verifyNativeInstallAncestors(controlDirectory)
     if (!await verifyNativeInstallPrivatePath(controlDirectory, true)) throw unsafe()
   })
+  const capability = Object.freeze({}) as NativeInstallLock
+  const state: LockState = { active: true, acceptingOperations: true, controlDirectory: resolve(controlDirectory), operations: [] }
+  heldLocks.set(capability, state)
   let failure: unknown
   let failed = false
-  try { return await operation() } catch (error) { failed = true; failure = error; throw error }
+  try {
+    let result: T | undefined
+    const failures: unknown[] = []
+    try { result = await operation(capability) } catch (error) { failures.push(error) }
+    finally { state.acceptingOperations = false }
+    for (const outcome of await Promise.allSettled(state.operations)) {
+      if (outcome.status === 'rejected' && !failures.includes(outcome.reason)) failures.push(outcome.reason)
+    }
+    if (failures.length === 1) throw failures[0]
+    if (failures.length > 1) throw new AggregateError(failures, 'Native installation operations failed', { cause: failures[0] })
+    return result as T
+  } catch (error) { failed = true; failure = error; throw error }
   finally {
+    state.active = false
+    state.acceptingOperations = false
     try { release() } catch (error) {
       if (failed) throw new AggregateError([failure, error], 'Native installation and lock release failed', { cause: failure })
       throw error
