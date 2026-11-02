@@ -1,6 +1,7 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { chmodSync, linkSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
+import { execFileSync } from 'node:child_process'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { loadConfig } from '../src/config.ts'
@@ -146,6 +147,50 @@ test('POSIX file and immediate parent require owner-only permissions, never repa
     assert.equal(lstatSync(dir).mode & 0o777, 0o750)
   })
 })
+
+// Fixed script and native executable: test paths travel only in the environment.
+function windowsAcl(target: string, share = false): string {
+  const script = String.raw`
+$ErrorActionPreference = 'Stop'
+$ProgressPreference = 'SilentlyContinue'
+$env:PSModulePath = "$PSHOME\Modules"
+Import-Module "$PSHOME\Modules\Microsoft.PowerShell.Security\Microsoft.PowerShell.Security.psd1" -ErrorAction Stop
+$p = $env:JARVIS_TEST_ACL_TARGET
+if ($env:JARVIS_TEST_ACL_SHARE -eq '1') {
+  $acl = Get-Acl -LiteralPath $p
+  $everyone = [Security.Principal.SecurityIdentifier]::new('S-1-1-0')
+  $rule = [Security.AccessControl.FileSystemAccessRule]::new($everyone, [Security.AccessControl.FileSystemRights]::Read, [Security.AccessControl.InheritanceFlags]::None, [Security.AccessControl.PropagationFlags]::None, [Security.AccessControl.AccessControlType]::Allow)
+  $acl.AddAccessRule($rule)
+  Set-Acl -LiteralPath $p -AclObject $acl
+}
+$verified = Get-Acl -LiteralPath $p
+[Console]::Write($verified.GetSecurityDescriptorSddlForm([Security.AccessControl.AccessControlSections]::All))
+`
+  assert.ok(process.env.SystemRoot)
+  return execFileSync(join(process.env.SystemRoot, 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe'), [
+    '-NoLogo', '-NoProfile', '-NonInteractive', '-EncodedCommand', Buffer.from(script, 'utf16le').toString('base64'),
+  ], {
+    env: { ...process.env, JARVIS_TEST_ACL_TARGET: target, JARVIS_TEST_ACL_SHARE: share ? '1' : '0' },
+    encoding: 'utf8', windowsHide: true, timeout: 10_000, maxBuffer: 64 * 1024,
+  })
+}
+
+for (const target of ['file', 'parent'] as const) {
+  test(`Windows rejects shared ${target} ACL without changing file or parent permissions`, { skip: process.platform !== 'win32' }, async () => {
+    await fixture((dir, file) => {
+      assert.doesNotThrow(() => loadExternalConfig(file))
+      const shared = target === 'file' ? file : dir
+      const privateAcl = windowsAcl(shared)
+      const sharedAcl = windowsAcl(shared, true)
+      assert.notEqual(sharedAcl, privateAcl)
+      const beforeFile = windowsAcl(file)
+      const beforeParent = windowsAcl(dir)
+      assert.throws(() => loadExternalConfig(file), /Invalid JARVIS_CONFIG_FILE/)
+      assert.equal(windowsAcl(file), beforeFile)
+      assert.equal(windowsAcl(dir), beforeParent)
+    })
+  })
+}
 
 test('configuration validation diagnostics never include supplied values', async () => {
   await fixture((dir, file) => {

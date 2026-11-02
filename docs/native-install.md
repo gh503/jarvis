@@ -28,7 +28,61 @@ Windows PowerShell:
 & '.\runtime\node.exe' --experimental-transform-types '.\scripts\install-native.ts' --uninstall
 ```
 
-Choose one install command. Existing integrations are never silently overwritten: uninstall before reinstalling, enabling/disabling startup, or pointing shortcuts to a different package. Missing or ambiguous actions and unknown flags fail. `--autostart` is valid only with `--install`.
+Choose one install command. Existing integrations are never silently overwritten: uninstall before reinstalling, enabling/disabling startup, or pointing shortcuts to a different package or config file. Missing or ambiguous actions and unknown flags fail. `--autostart` and `--config ABS` are valid only with `--install`; they can be used together. `--uninstall` rejects both options.
+
+## Optional private external configuration (unreleased)
+
+The optional binding described here is implemented in the working tree and is not yet released. Do not assume an already downloaded release supports these flags. Installation without `--config` keeps the existing behavior.
+
+To bind shortcuts and optional login startup to a private config file outside the portable package, add `--config` with its canonical absolute filename:
+
+```sh
+./runtime/node --experimental-transform-types scripts/install-native.ts --install --autostart --config /absolute/private/jarvis.env
+```
+
+```powershell
+& '.\runtime\node.exe' --experimental-transform-types '.\scripts\install-native.ts' --install --autostart --config 'C:\absolute\private\jarvis.env'
+```
+
+The launcher also accepts `--config ABS`, including with `--no-open` or `--stop`. For example, stop the instance selected by that configuration before a manual upgrade:
+
+```sh
+./runtime/node --experimental-transform-types scripts/app.ts --config /absolute/private/jarvis.env --stop
+```
+
+For direct runtime use, `JARVIS_CONFIG_FILE` selects the same file; the launcher's explicit `--config` takes precedence over that inherited selector. The file must exist and pass validation; an empty or invalid selector fails rather than falling back to the package's `.env`.
+
+Use UTF-8 text of at most 64 KiB, with one recognized `JARVIS_*` configuration assignment per line. Blank lines and lines starting with `#` are allowed; optional matching single or double quotes surround literal values. There is no shell execution or variable expansion. Duplicate keys, unknown keys, generic environment variables such as `PATH` or `NODE_OPTIONS`, invalid UTF-8, and NUL bytes are rejected. This is a finite allowlist of Jarvis settings, not a general environment loader; even `JARVIS_CONFIG_FILE` is a selector, not an allowed file entry.
+
+`JARVIS_DATA_DIR` is required and must be an explicit absolute path. Every supplied nonempty path setting must also be absolute, including executable overrides such as `JARVIS_PYTHON` and `JARVIS_FFMPEG`; do not use `~`, `$HOME`, relative paths, or bare executable names for these overrides. Omitted settings retain the existing defaults, including bare command fallbacks such as `python3`/`python`, `ffmpeg`, and `arecord`. The file's recognized settings plus defaults replace inherited values for all recognized configuration keys, and the package-local `.env` is skipped. Other inherited process environment is not a sandboxed or fully cleared environment.
+
+A minimal file is:
+
+```dotenv
+JARVIS_DATA_DIR=/absolute/private/jarvis-data
+```
+
+On Windows, use an absolute Windows path as the value, for example `JARVIS_DATA_DIR=C:\Users\YourName\JarvisData`. Put secrets in the private file, never in command-line arguments. Generated integrations carry only the config filename; the ownership receipt records the config filename and selected data directory alongside its existing integration metadata, not config contents or secrets.
+
+### Create and protect the file
+
+The config filename must be canonical and absolute, with no symbolic links in it or its ancestor directories. The file must be regular and have exactly one hard link. Windows reparse points are rejected. Both the file and its immediate parent must be private. Validation checks permissions without repairing them.
+
+On POSIX, both must belong to the current user with no group or other access. Use mode `0700` for the parent and `0600` for the file. For a **new** directory under your home, these commands create the private location before editing:
+
+```sh
+mkdir -m 700 "$HOME/.jarvis-private"
+(umask 077; touch "$HOME/.jarvis-private/jarvis.env")
+chmod 600 "$HOME/.jarvis-private/jarvis.env"
+vi "$HOME/.jarvis-private/jarvis.env"
+chmod 600 "$HOME/.jarvis-private/jarvis.env"
+```
+
+If the directory already exists, inspect its ownership and permissions before using it. Replace the example data directory in the file with your actual absolute path. Pass the real canonical filename to `--config`; a home path reached through a symlink is not accepted. Keep editor backup and temporary files private too, and recheck permissions after an editor replaces the file.
+
+On Windows, prepare a private directory **before** creating the UTF-8 file, then verify the DACL on both the directory and the file. Allowed access entries are restricted to the current user, SYSTEM, and Administrators, and the current user must have read access. Ownership must be the current user (or Administrators for an elevated current user). A directory inside your user profile does not by itself guarantee an acceptable file ACL: inherited entries, editor-created replacements, and explicit file permissions must be checked. Use your trusted Windows permissions tooling to establish and verify these requirements; the installer will refuse an unsafe file or parent rather than change its ACL.
+
+The binding is an editable config **path**, not an immutable digest pin. The file is validated again when loaded; edits affect subsequent launches, not an already running server. Review changes to `JARVIS_DATA_DIR` especially carefully: a later `--stop` using the edited file selects the newly configured directory. Binding a file does not activate a staged update, switch releases, snapshot data, or establish schema compatibility.
 
 ## What is installed
 
@@ -36,7 +90,7 @@ On macOS, `~/Applications/Jarvis.app` contains a shell launcher and an Info.plis
 
 On Windows, `%APPDATA%\Microsoft\Windows\Start Menu\Programs\Jarvis.lnk` points directly to the bundled `node.exe`. With `--autostart`, another shortcut is written in that directory's `Startup` subdirectory with `--no-open`. Windows PowerShell with `Add-Type` and the Unicode `IShellLinkW` COM shortcut API must be available. A fixed PowerShell program compiles a small fixed C# interface and receives paths and quoted argv as environment data; package paths are never interpolated into PowerShell or C# code. The Unicode API avoids WScript.Shell target-setting failures for paths outside the Windows ANSI code page. Windows may show a console window for the Node launcher. A browser is required for the UI.
 
-Both integrations use the package directory as their working directory, so a package-local `.env` is resolved there. No command-line environment overrides are persisted by this installer. Spaces, Unicode, shell metacharacters and apostrophes are supported. NUL and line breaks are rejected in integration paths.
+Both integrations use the package directory as their working directory. Without an external config selector, configuration retains the existing package-local `.env` and inherited-environment behavior. With `--config`, the generated launcher arguments persist the explicit private config filename and the package-local `.env` is skipped. The installer does not persist arbitrary command-line environment overrides. Spaces, Unicode, shell metacharacters and apostrophes are supported. NUL and line breaks are rejected in integration paths.
 
 ## Windows notifications
 
@@ -50,7 +104,7 @@ Windows notification settings, Focus Assist, organization policies and desktop/s
 
 Before installation, the manifest must match the platform, CPU architecture and Node 24 runtime metadata. Every listed payload file is checked for size and SHA-256, paths must remain within the package, and symlink payloads are rejected. Runtime, launcher, native installer and server entry point must be listed. This catches corruption; it does **not** authenticate an attacker-modified manifest. Verify the downloaded release archive's published SHA-256 through a trusted channel before executing any included runtime or installer. Validation cannot protect the installer before it is first executed, nor protect a package modified after installation.
 
-There is no install-time copy or in-place updater. For upgrades, stop Jarvis using the existing launcher's `--stop` command, uninstall the old integrations, extract and verify the new package in a separate stable directory, and install its integrations. Never extract a release over a running package. The installer itself leaves running servers alone, including during uninstall.
+There is no install-time copy or in-place updater. For manual upgrades, stop Jarvis using the existing launcher's `--stop` command with the same config selection used to launch it, uninstall the old integrations, extract and verify the new package in a separate stable directory, and install its integrations. If using an external binding, explicitly supply `--config ABS` again at installation; uninstall does not take that flag. Review production data compatibility and recovery before launching a new release against existing data; see [Native update staging and recovery](native-update.md). Never extract a release over a running package. The installer itself leaves running servers alone, including during uninstall.
 
 An ownership receipt is kept at `~/Library/Application Support/Jarvis/native-install.json` on macOS or `%LOCALAPPDATA%\Jarvis\native-install.json` on Windows. Uninstall accepts only the known integration paths and removes only files whose hashes still match that receipt. Modified artifacts cause refusal before deletion; inspect them manually rather than deleting user changes blindly. Uninstall without a receipt is a no-op. It removes empty app-wrapper directories but preserves unrelated files, the portable package, configuration, conversations, models, browser profile and all other user data. If you lose the receipt, remove the documented integration files manually after reviewing them. Uninstall does not unload an already loaded LaunchAgent or stop the server; log out to clear the login-session registration.
 

@@ -49,6 +49,41 @@ function Check-Boundaries {
     $cursor = $parent.FullName
   }
 }
+# Only the FileSystem provider's explicit missing-item errors are eligible for
+# disappearance handling. Access denied, sharing violations and all other errors
+# remain fatal; diagnostic codes never contain paths or exception messages.
+function Is-MissingItem($failure) {
+  return ($failure.Exception -is [System.Management.Automation.ItemNotFoundException] -and $failure.FullyQualifiedErrorId -in @(
+    'PathNotFound,Microsoft.PowerShell.Commands.GetItemCommand',
+    'GetAcl_PathNotFound,Microsoft.PowerShell.Commands.GetAclCommand',
+    'GetAcl_PathNotFound_Exception,Microsoft.PowerShell.Commands.GetAclCommand',
+    'PathNotFound,Microsoft.PowerShell.Commands.GetChildItemCommand'
+  ))
+}
+function Confirm-Vanished($path, $failure) {
+  if (!(Is-MissingItem $failure)) {
+    if ($failure.Exception -is [UnauthorizedAccessException] -or $failure.CategoryInfo.Category -eq 'PermissionDenied') { $script:stage = 56 }
+    elseif (($failure.Exception.HResult -band 65535) -in @(32, 33)) { $script:stage = 57 }
+    throw $failure
+  }
+  $script:stage = 55
+  # A replacement (including a junction) must never be mistaken for absence.
+  try { $null = Get-Item -LiteralPath $path -Force -ErrorAction Stop }
+  catch {
+    if (!(Is-MissingItem $_)) { throw }
+    if (Test-Path -LiteralPath $path -ErrorAction Stop) { throw 'Descendant reappeared' }
+    # Absence is tolerated only inside an already private, trusted root. This
+    # deliberately fails closed during migration of a not-yet-private root.
+    $script:stage = 58
+    Check-Boundaries
+    $rootSecurity = Get-Acl -LiteralPath $p -ErrorAction Stop
+    $rootOwner = $rootSecurity.GetOwner([Security.Principal.SecurityIdentifier]).Value
+    if ($rootOwner -ne $user.Value -and !($rootOwner -eq $admins -and $elevated)) { throw 'Untrusted root owner' }
+    Check-PrivateEntries $rootSecurity
+    return
+  }
+  throw 'Descendant reappeared'
+}
 # Walk without following reparse points. Bound startup work and fail closed;
 # no descendant ACL is rewritten to accommodate an unsafe legacy tree.
 function Check-Descendants {
@@ -61,14 +96,34 @@ function Check-Descendants {
     $directory = $queue.Dequeue()
     # Fixed diagnostic codes only; never disclose descendant paths or ACL values.
     $script:stage = 50
-    $children = @(Get-ChildItem -LiteralPath $directory -Force)
+    try {
+      # Queued directory metadata may have changed since it was enqueued.
+      $currentDirectory = Get-Item -LiteralPath $directory -Force -ErrorAction Stop
+      if (!$currentDirectory.PSIsContainer -or ($currentDirectory.Attributes -band [IO.FileAttributes]::ReparsePoint)) { throw 'Unsafe queued directory' }
+      $children = @(Get-ChildItem -LiteralPath $directory -Force -ErrorAction Stop)
+    } catch {
+      if ($directory -eq $p) { throw }
+      Confirm-Vanished $directory $_
+      continue
+    }
     foreach ($child in $children) {
       $script:stage = 51
       $count++
       if ($count -gt 100000) { throw 'Data tree exceeds private permission preflight limit' }
+      $childPath = $child.FullName
+      try { $child = Get-Item -LiteralPath $childPath -Force -ErrorAction Stop }
+      catch { Confirm-Vanished $childPath $_; continue }
       if ($child.Attributes -band [IO.FileAttributes]::ReparsePoint) { throw 'Unsafe descendant reparse point' }
       $script:stage = 52
-      $security = Get-Acl -LiteralPath $child.FullName
+      try { $security = Get-Acl -LiteralPath $childPath -ErrorAction Stop }
+      catch { Confirm-Vanished $childPath $_; continue }
+      # Check again after the ACL read so a replacement's cached attributes are
+      # never used to enqueue a reparse point. Same-account malicious mutation
+      # is outside the filesystem preflight's trust boundary.
+      $script:stage = 51
+      try { $child = Get-Item -LiteralPath $childPath -Force -ErrorAction Stop }
+      catch { Confirm-Vanished $childPath $_; continue }
+      if ($child.Attributes -band [IO.FileAttributes]::ReparsePoint) { throw 'Unsafe descendant reparse point' }
       $script:stage = 53
       $childOwner = $security.GetOwner([Security.Principal.SecurityIdentifier]).Value
       if ($childOwner -ne $user.Value -and !($childOwner -eq $admins -and $elevated)) { exit 48 }
@@ -173,7 +228,7 @@ export async function ensurePrivateDataDirectory(dir: string): Promise<void> {
       ], { env: { ...process.env, JARVIS_PRIVATE_DIRECTORY: root }, windowsHide: true, timeout: 30_000, maxBuffer: 64 * 1024 })
     } catch (error) {
       // Report only our allowlisted stage codes, never stderr or exception text.
-      const stages: Record<number, string> = { 41: 'native-module', 42: 'path-boundary', 43: 'descendant-preflight', 44: 'root-preflight', 45: 'create-root', 46: 'apply-acl', 47: 'verify-acl', 48: 'descendant-owner', 49: 'root-owner', 50: 'descendant-enumeration', 51: 'descendant-boundary', 52: 'descendant-acl-read', 53: 'descendant-owner-read', 54: 'descendant-acl-policy' }
+      const stages: Record<number, string> = { 41: 'native-module', 42: 'path-boundary', 43: 'descendant-preflight', 44: 'root-preflight', 45: 'create-root', 46: 'apply-acl', 47: 'verify-acl', 48: 'descendant-owner', 49: 'root-owner', 50: 'descendant-enumeration', 51: 'descendant-boundary', 52: 'descendant-acl-read', 53: 'descendant-owner-read', 54: 'descendant-acl-policy', 55: 'descendant-missing-recheck', 56: 'descendant-access-denied', 57: 'descendant-sharing-violation', 58: 'descendant-missing-root-recheck' }
       const code = (error as { code?: unknown }).code
       const stage = typeof code === 'number' ? stages[code] ?? 'native-process' : 'native-process'
       throw new Error(`Cannot establish private Windows data permissions [${stage}]: use a dedicated current-account-owned local directory without links or explicit shared ACLs`)

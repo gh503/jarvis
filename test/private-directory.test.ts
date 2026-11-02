@@ -134,6 +134,120 @@ Set-Acl -LiteralPath $env:JARVIS_TEST_DIRECTORY -AclObject $acl
   assert.equal(await powershell('(Get-Acl -LiteralPath $env:JARVIS_TEST_DIRECTORY).Sddl', root), before)
 })
 
+// Instrument a copy of the exact fixed production program, never the production
+// API/environment. All filesystem and ACL operations still run on native Windows.
+async function scanWithMutation(root: string, marker: string, mutation: string): Promise<string> {
+  const source = await readFile(new URL('../src/private-directory.ts', import.meta.url), 'utf8')
+  const match = source.match(/const windowsScript = String\.raw`([\s\S]*?)`/)
+  assert.ok(match, 'fixed native script must remain discoverable')
+  assert.equal(match[1].split(marker).length, 2, 'mutation point must be unique')
+  const script = match[1].replace(marker, `${mutation}\n${marker}`)
+  return powershell('$env:JARVIS_PRIVATE_DIRECTORY = $env:JARVIS_TEST_DIRECTORY\n' + script, root)
+}
+
+for (const point of ['metadata', 'acl', 'queued-directory'] as const) {
+  test(`Windows tolerates a genuinely vanished descendant at ${point}`, { skip: !windows }, async t => {
+    const root = join(await fixture(t), 'data')
+    await ensurePrivateDataDirectory(root)
+    const child = join(root, 'ephemeral')
+    if (point === 'queued-directory') await mkdir(child)
+    else await writeFile(child, 'temporary')
+    const marker = point === 'metadata' ? '      $childPath = $child.FullName'
+      : point === 'acl' ? '      try { $security = Get-Acl -LiteralPath $childPath -ErrorAction Stop }'
+        : '    $directory = $queue.Dequeue()'
+    const mutation = point === 'queued-directory'
+      ? "if ($queue.Peek() -ne $p) { Remove-Item -LiteralPath $queue.Peek() -Force -ErrorAction Stop }"
+      : "if (!$script:removed) { Remove-Item -LiteralPath (Join-Path $p 'ephemeral') -Force -ErrorAction Stop; $script:removed = $true }"
+    await scanWithMutation(root, marker, mutation)
+    await assert.rejects(lstat(child), { code: 'ENOENT' })
+    await ensurePrivateDataDirectory(root)
+  })
+}
+
+for (const point of ['before-metadata', 'after-acl', 'queued-directory'] as const) {
+  test(`Windows rejects a descendant replaced by a junction ${point}`, { skip: !windows }, async t => {
+    const parent = await fixture(t)
+    const root = join(parent, 'data')
+    await ensurePrivateDataDirectory(root)
+    await mkdir(join(root, 'ephemeral'))
+    await mkdir(join(parent, 'target'))
+    const marker = point === 'before-metadata' ? '      $childPath = $child.FullName'
+      : point === 'after-acl' ? '      # Check again after the ACL read so a replacement\'s cached attributes are'
+        : '    $directory = $queue.Dequeue()'
+    const condition = point === 'queued-directory' ? '$queue.Peek() -ne $p' : '!$script:replaced'
+    const mutation = `if (${condition}) {
+      $victim = Join-Path $p 'ephemeral'
+      Remove-Item -LiteralPath $victim -Force -ErrorAction Stop
+      New-Item -ItemType Junction -Path $victim -Target (Join-Path (Split-Path $p) 'target') -ErrorAction Stop | Out-Null
+      $script:replaced = $true
+    }`
+    await assert.rejects(scanWithMutation(root, marker, mutation), { code: point === 'queued-directory' ? 50 : 51 })
+  })
+}
+
+test('Windows rejects fresh shared ACL after enumeration', { skip: !windows }, async t => {
+  const root = join(await fixture(t), 'data')
+  await ensurePrivateDataDirectory(root)
+  await writeFile(join(root, 'ephemeral'), 'temporary')
+  await assert.rejects(scanWithMutation(root,
+    '      try { $security = Get-Acl -LiteralPath $childPath -ErrorAction Stop }', `
+    $shared = Get-Acl -LiteralPath $childPath
+    $shared.AddAccessRule([Security.AccessControl.FileSystemAccessRule]::new([Security.Principal.SecurityIdentifier]::new('S-1-1-0'), 'Read', 'Allow'))
+    Set-Acl -LiteralPath $childPath -AclObject $shared
+  `), { code: 54 })
+})
+
+test('Windows missing-item recovery refuses a name that reappears', { skip: !windows }, async t => {
+  const root = join(await fixture(t), 'data')
+  await ensurePrivateDataDirectory(root)
+  await writeFile(join(root, 'ephemeral'), 'temporary')
+  // Remove at the actual Get-Acl call, then restore the name before its recheck.
+  const marker = '      try { $security = Get-Acl -LiteralPath $childPath -ErrorAction Stop }'
+  await assert.rejects(scanWithMutation(root, marker, `
+    Remove-Item -LiteralPath $childPath -Force -ErrorAction Stop
+    try { Get-Acl -LiteralPath $childPath -ErrorAction Stop }
+    catch {
+      [IO.File]::WriteAllText($childPath, 'replacement')
+      Confirm-Vanished $childPath $_
+    }
+  `), { code: 55 })
+})
+
+test('Windows missing-item recovery requires a private root', { skip: !windows }, async t => {
+  const root = join(await fixture(t), 'data')
+  await ensurePrivateDataDirectory(root)
+  await writeFile(join(root, 'ephemeral'), 'temporary')
+  const before = await powershell('(Get-Acl -LiteralPath $env:JARVIS_TEST_DIRECTORY).Sddl', root)
+  await assert.rejects(scanWithMutation(root,
+    '      try { $security = Get-Acl -LiteralPath $childPath -ErrorAction Stop }', `
+    $shared = Get-Acl -LiteralPath $p
+    $shared.AddAccessRule([Security.AccessControl.FileSystemAccessRule]::new([Security.Principal.SecurityIdentifier]::new('S-1-1-0'), 'Read', 'Allow'))
+    Set-Acl -LiteralPath $p -AclObject $shared
+    Remove-Item -LiteralPath $childPath -Force -ErrorAction Stop
+  `), { code: 58 })
+  assert.notEqual(await powershell('(Get-Acl -LiteralPath $env:JARVIS_TEST_DIRECTORY).Sddl', root), before)
+})
+
+for (const [exception, code] of [
+  ["[UnauthorizedAccessException]::new('fixture')", 56],
+  ["[IO.IOException]::new('fixture', -2147024864)", 57],
+  ["[IO.IOException]::new('fixture')", 52],
+] as const) {
+  test(`Windows descendant errors fail closed with diagnostic ${code}`, { skip: !windows }, async t => {
+    const root = join(await fixture(t), 'data')
+    await ensurePrivateDataDirectory(root)
+    await writeFile(join(root, 'ephemeral'), 'temporary')
+    // Classification-only fault injection; real disappearance tests above use
+    // native cmdlets. Even an absent name cannot excuse a non-missing error.
+    await assert.rejects(scanWithMutation(root,
+      '      try { $security = Get-Acl -LiteralPath $childPath -ErrorAction Stop }', `
+      Remove-Item -LiteralPath $childPath -Force -ErrorAction Stop
+      $failure = [Management.Automation.ErrorRecord]::new(${exception}, 'Fixture', [Management.Automation.ErrorCategory]::NotSpecified, $null)
+      Confirm-Vanished $childPath $failure
+    `), { code })
+  })
+}
+
 test('Windows refuses explicit shared ACL without revoking it', { skip: !windows }, async t => {
   const root = join(await fixture(t), 'shared')
   await mkdir(root)
