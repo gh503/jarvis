@@ -4,7 +4,7 @@ import { mkdir, open } from 'node:fs/promises'
 import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path'
 import { readExternalConfig, readPrivateConfigurationFile } from '../src/external-config.ts'
 import { ensurePrivateDataDirectory } from '../src/private-directory.ts'
-import { acquireLifecycleLock } from '../src/runtime-lifecycle.ts'
+import { withStoppedDataScope, withScopeOperation, type StoppedDataScope } from './stopped-data-scope.ts'
 
 /** Prerequisite config-only copy, never activation or a unified data backup.
  * Stop all configuration editors and other writers first: they do not participate
@@ -86,39 +86,43 @@ function inspectSnapshot(snapshot: string, manifestSha256: string) {
   same(before, lstatSync(snapshot, { bigint: true }))
   return { manifest, bytes }
 }
-export async function createConfigSnapshot({ configFile, dataDir, destination }: { configFile: string; dataDir: string; destination: string }) {
-  canonical(dataDir)
-  const initial = readExternalConfig(configFile)
-  canonical(initial.values.JARVIS_DATA_DIR)
-  assert(initial.values.JARVIS_DATA_DIR === dataDir, 'Configuration data directory mismatch')
-  assert(!overlaps(dirname(configFile), dataDir), 'Configuration private parent must be separate from data directory')
-  fresh(destination, [dirname(configFile), dataDir])
-  const releaseLauncher = await acquireLifecycleLock(dataDir, 'launcher')
-  try {
-    const releaseRuntime = await acquireLifecycleLock(dataDir, 'runtime')
-    try {
-      const before = lstatSync(configFile, { bigint: true })
-      const source = readExternalConfig(configFile)
-      assert(source.bytes.equals(initial.bytes), 'Configuration changed before copy')
-      fresh(destination, [dirname(configFile), dataDir])
-      await createDirectory(destination)
-      await writeExclusive(join(destination, 'config.env'), source.bytes)
-      const copied = readExternalConfig(join(destination, 'config.env'))
-      assert(copied.bytes.equals(source.bytes), 'Copied configuration changed')
-      same(before, lstatSync(configFile, { bigint: true }))
-      assert(readExternalConfig(configFile).bytes.equals(source.bytes), 'Configuration changed during copy')
-      same(before, lstatSync(configFile, { bigint: true }))
-      const manifest: ConfigSnapshotManifest = { schemaVersion: 1, sourceConfigFile: configFile, dataDir, bytes: source.bytes.length, sha256: digest(source.bytes), scope: SCOPE }
-      const raw = encode(manifest)
-      assert(raw.length <= 16384, 'Manifest exceeds size bound')
-      await writeExclusive(join(destination, 'manifest.json'), raw)
-      const manifestSha256 = digest(raw)
-      inspectSnapshot(destination, manifestSha256)
-      assert(readExternalConfig(configFile).bytes.equals(source.bytes), 'Configuration changed before completion')
-      same(before, lstatSync(configFile, { bigint: true }))
-      return { snapshot: destination, manifestSha256, manifest }
-    } finally { releaseRuntime() }
-  } finally { releaseLauncher() }
+export function createConfigSnapshot({ configFile, dataDir, destination, scope }: { configFile: string; dataDir: string; destination: string; scope?: StoppedDataScope }) {
+  let initial: ReturnType<typeof readExternalConfig>
+  function preflight() {
+    canonical(dataDir)
+    initial = readExternalConfig(configFile)
+    canonical(initial.values.JARVIS_DATA_DIR)
+    assert(initial.values.JARVIS_DATA_DIR === dataDir, 'Configuration data directory mismatch')
+    assert(!overlaps(dirname(configFile), dataDir), 'Configuration private parent must be separate from data directory')
+    fresh(destination, [dirname(configFile), dataDir])
+  }
+  async function copy() {
+    const before = lstatSync(configFile, { bigint: true })
+    const source = readExternalConfig(configFile)
+    assert(source.bytes.equals(initial.bytes), 'Configuration changed before copy')
+    fresh(destination, [dirname(configFile), dataDir])
+    await createDirectory(destination)
+    await writeExclusive(join(destination, 'config.env'), source.bytes)
+    const copied = readExternalConfig(join(destination, 'config.env'))
+    assert(copied.bytes.equals(source.bytes), 'Copied configuration changed')
+    same(before, lstatSync(configFile, { bigint: true }))
+    assert(readExternalConfig(configFile).bytes.equals(source.bytes), 'Configuration changed during copy')
+    same(before, lstatSync(configFile, { bigint: true }))
+    const manifest: ConfigSnapshotManifest = { schemaVersion: 1, sourceConfigFile: configFile, dataDir, bytes: source.bytes.length, sha256: digest(source.bytes), scope: SCOPE }
+    const raw = encode(manifest)
+    assert(raw.length <= 16384, 'Manifest exceeds size bound')
+    await writeExclusive(join(destination, 'manifest.json'), raw)
+    const manifestSha256 = digest(raw)
+    inspectSnapshot(destination, manifestSha256)
+    assert(readExternalConfig(configFile).bytes.equals(source.bytes), 'Configuration changed before completion')
+    same(before, lstatSync(configFile, { bigint: true }))
+    return { snapshot: destination, manifestSha256, manifest }
+  }
+  if (scope !== undefined) return withScopeOperation(scope, dataDir, async () => { preflight(); return copy() })
+  return (async () => {
+    preflight()
+    return withStoppedDataScope(dataDir, owned => withScopeOperation(owned, dataDir, copy))
+  })()
 }
 export async function verifyConfigSnapshot({ snapshot, manifestSha256 }: { snapshot: string; manifestSha256: string }) {
   const { manifest } = inspectSnapshot(snapshot, manifestSha256)

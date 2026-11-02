@@ -5,7 +5,7 @@ import { promisify } from 'node:util'
 import { createHash } from 'node:crypto'
 import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path'
 import { ensurePrivateDataDirectory } from '../src/private-directory.ts'
-import { acquireLifecycleLock } from '../src/runtime-lifecycle.ts'
+import { withStoppedDataScope, withScopeOperation, type StoppedDataScope } from './stopped-data-scope.ts'
 
 /** Raw stopped-state copies, not logical backups or a schema compatibility promise.
  * Only dataDir is covered; external configuration and files are out of scope.
@@ -264,51 +264,54 @@ async function verify(snapshot: string, manifestSha256: string, ctx: Context) {
 export async function verifyStateSnapshot(options: { snapshot: string; manifestSha256: string }) {
   return verify(options.snapshot, options.manifestSha256, context())
 }
-export async function createStateSnapshot({ dataDir, destination }: { dataDir: string; destination: string }) {
+export function createStateSnapshot({ dataDir, destination, scope }: { dataDir: string; destination: string; scope?: StoppedDataScope }) {
   const ctx = context()
-  // Validate before the lifecycle helper, whose normal startup API creates roots.
-  await canonical(dataDir, ctx)
-  await fresh(destination, [dataDir], ctx)
-  await ensurePrivateDataDirectory(dataDir)
-  await windowsBoundaries(dataDir, ctx)
-  // Reject hard-linked lock databases before SQLite can modify them. The walk
-  // also rejects unsafe non-lock entries before lifecycle acquisition.
-  await walk(dataDir, ctx, { exclude: true })
-  const releaseLauncher = await acquireLifecycleLock(dataDir, 'launcher', 0)
-  try {
-    const releaseRuntime = await acquireLifecycleLock(dataDir, 'runtime', 0)
+  async function preflight() {
+    // Validate before the lifecycle helper, whose normal startup API creates roots.
+    await canonical(dataDir, ctx)
+    await fresh(destination, [dataDir], ctx)
+    await ensurePrivateDataDirectory(dataDir)
+    await windowsBoundaries(dataDir, ctx)
+    // Reject hard-linked lock databases before SQLite can modify them. The walk
+    // also rejects unsafe non-lock entries before lifecycle acquisition.
+    await walk(dataDir, ctx, { exclude: true })
+  }
+  async function copy() {
+    check(ctx)
+    await fresh(destination, [dataDir], ctx)
+    await mkdir(destination, { mode: 0o700 })
+    await ensurePrivateDataDirectory(destination)
+    const payload = join(destination, 'payload'); await mkdir(payload, { mode: 0o700 })
+    const inventory = await walk(dataDir, ctx, { copyTo: payload, exclude: true })
+    compare(await walk(dataDir, ctx, { exclude: true }), inventory)
+    compare(await walk(payload, ctx), inventory)
+    const manifest: StateSnapshotManifest = { schemaVersion: 1, sourceDataDir: dataDir, createdAt: new Date().toISOString(), scope: SCOPE, excluded: [...EXCLUDED], ...inventory }
+    validateManifest(manifest)
+    const bytes = encode(manifest); assert(bytes.length <= STATE_SNAPSHOT_LIMITS.manifestBytes, 'Manifest size limit exceeded')
+    check(ctx)
+    // Commit last. Failures deliberately leave private partial data in place;
+    // no cleanup deletes evidence and no manifest is created before verification.
+    const pending = join(destination, '.snapshot-manifest.pending')
+    const file = await open(pending, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | (constants.O_NOFOLLOW ?? 0), 0o600)
     try {
-      check(ctx)
-      await fresh(destination, [dataDir], ctx)
-      await mkdir(destination, { mode: 0o700 })
-      await ensurePrivateDataDirectory(destination)
-      const payload = join(destination, 'payload'); await mkdir(payload, { mode: 0o700 })
-      const inventory = await walk(dataDir, ctx, { copyTo: payload, exclude: true })
-      compare(await walk(dataDir, ctx, { exclude: true }), inventory)
-      compare(await walk(payload, ctx), inventory)
-      const manifest: StateSnapshotManifest = { schemaVersion: 1, sourceDataDir: dataDir, createdAt: new Date().toISOString(), scope: SCOPE, excluded: [...EXCLUDED], ...inventory }
-      validateManifest(manifest)
-      const bytes = encode(manifest); assert(bytes.length <= STATE_SNAPSHOT_LIMITS.manifestBytes, 'Manifest size limit exceeded')
-      check(ctx)
-      // Commit last. Failures deliberately leave private partial data in place;
-      // no cleanup deletes evidence and no manifest is created before verification.
-      const pending = join(destination, '.snapshot-manifest.pending')
-      const file = await open(pending, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | (constants.O_NOFOLLOW ?? 0), 0o600)
-      try {
-        const before = await file.stat({ bigint: true }); regular(before)
-        for (let offset = 0; offset < bytes.length;) {
-          check(ctx)
-          const result = await file.write(bytes, offset, Math.min(STATE_SNAPSHOT_LIMITS.chunkBytes, bytes.length - offset), null)
-          assert(result.bytesWritten > 0, 'Short manifest write'); offset += result.bytesWritten
-        }
-        await file.sync()
-        const after = await file.stat({ bigint: true }); identity(before, after, false); identity(after, await lstat(pending, { bigint: true }))
-      } finally { await file.close() }
-      check(ctx)
-      await rename(pending, join(destination, MANIFEST))
-      return { snapshot: destination, manifestSha256: createHash('sha256').update(bytes).digest('hex'), manifest }
-    } finally { releaseRuntime() }
-  } finally { releaseLauncher() }
+      const before = await file.stat({ bigint: true }); regular(before)
+      for (let offset = 0; offset < bytes.length;) {
+        check(ctx)
+        const result = await file.write(bytes, offset, Math.min(STATE_SNAPSHOT_LIMITS.chunkBytes, bytes.length - offset), null)
+        assert(result.bytesWritten > 0, 'Short manifest write'); offset += result.bytesWritten
+      }
+      await file.sync()
+      const after = await file.stat({ bigint: true }); identity(before, after, false); identity(after, await lstat(pending, { bigint: true }))
+    } finally { await file.close() }
+    check(ctx)
+    await rename(pending, join(destination, MANIFEST))
+    return { snapshot: destination, manifestSha256: createHash('sha256').update(bytes).digest('hex'), manifest }
+  }
+  if (scope !== undefined) return withScopeOperation(scope, dataDir, async () => { await preflight(); return copy() })
+  return (async () => {
+    await preflight()
+    return withStoppedDataScope(dataDir, owned => withScopeOperation(owned, dataDir, copy))
+  })()
 }
 export async function restoreStateSnapshot({ snapshot, manifestSha256, destination }: { snapshot: string; manifestSha256: string; destination: string }) {
   const ctx = context()
