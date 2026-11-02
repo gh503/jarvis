@@ -301,7 +301,7 @@ foreach ($p in (ConvertFrom-Json $env:JARVIS_TEST_PATHS)) {
     await verifyIntegrationSnapshot({ snapshot: destination, manifestSha256: result.manifestSha256, integration })
     assert.equal(run('read'), before)
     // Isolate each kind: a shared directory must not mask an unchecked file ACL.
-    for (const path of [join(destination, 'payload', '0.bin'), join(destination, 'manifest.json'), join(destination, 'payload'), destination]) {
+    for (const path of paths.toReversed()) {
       run('shared', [path])
       const shared = run('read')
       await assert.rejects(verifyIntegrationSnapshot({ snapshot: destination, manifestSha256: result.manifestSha256, integration }))
@@ -309,6 +309,8 @@ foreach ($p in (ConvertFrom-Json $env:JARVIS_TEST_PATHS)) {
       run('private', [path])
       assert.equal(run('read'), before)
     }
+    await verifyIntegrationSnapshot({ snapshot: destination, manifestSha256: result.manifestSha256, integration })
+    assert.equal(run('read'), before)
   } finally { run('restore') }
 }))
 test('private snapshots remain bounded when manifests are oversized', async () => fixture('win32', false, async ({ integration, destination }) => {
