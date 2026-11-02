@@ -11,7 +11,8 @@ import { acquireLifecycleLock } from '../src/runtime-lifecycle.ts'
 import { ensurePrivateDataDirectory } from '../src/private-directory.ts'
 
 async function fixture(run: (f: { root: string; dataDir: string; configFile: string }) => Promise<void>) {
-  const root = realpathSync(mkdtempSync(join(tmpdir(), 'jarvis-stopped-scope-')))
+  // Expand Windows 8.3 TEMP aliases to match the state snapshot's native realpath check.
+  const root = realpathSync.native(mkdtempSync(join(tmpdir(), 'jarvis-stopped-scope-')))
   try {
     await ensurePrivateDataDirectory(root)
     const dataDir = join(root, 'data'), configDir = join(root, 'config')
