@@ -135,7 +135,7 @@ for (const platform of ['darwin', 'win32'] as const) test(`${platform} direct sn
     const value = response as Record<string, unknown>
     // Reconstruct from primitive allowlisted fields; never pass through child JSON.
     const safe = sanitizeDiagnostic({ code: value.code, killed: value.killed, signal: value.signal,
-      message: typeof value.stage === 'string' ? `Cannot establish private Windows data permissions [${value.stage}]: use a dedicated current-account-owned local directory without links or explicit shared ACLs` : undefined })
+      message: value.stage === 'integration-permission-check' ? 'Native integration snapshot permission verification failed' : typeof value.stage === 'string' ? `Cannot establish private Windows data permissions [${value.stage}]: use a dedicated current-account-owned local directory without links or explicit shared ACLs` : undefined })
     if (safe.kind === 'unknown' && value.kind === 'validation') safe.kind = 'validation'
     assert.fail(JSON.stringify({ origin: 'child-report', ...timing, diagnostic: safe }))
   }

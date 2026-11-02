@@ -46,7 +46,11 @@ export function sanitizeDiagnostic(error: unknown): Diagnostic {
     if (typeof message === 'string' && message.length <= 512) {
       const match = privacyStage.exec(message)
       const stage = match?.[0] === message ? match[1] : undefined
-      if (stage) { result.stage = stage; if (result.kind === 'unknown') result.kind = 'validation' }
+      if (message === 'Native integration snapshot permission verification failed') {
+        result.stage = 'integration-permission-check'
+        if (result.kind === 'unknown') result.kind = 'validation'
+      }
+      else if (stage) { result.stage = stage; if (result.kind === 'unknown') result.kind = 'validation' }
       else if (result.kind === 'unknown' && validationMessages.has(message)) result.kind = 'validation'
     }
     return result

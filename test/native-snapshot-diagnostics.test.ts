@@ -46,6 +46,13 @@ test('diagnostics accept only complete known privacy messages and fixed validati
   assert.deepEqual(sanitizeDiagnostic(new Error('Invalid diagnostic parameters')), { ok: false, kind: 'validation' })
 })
 
+test('integration permission provenance requires the exact sanitized production message', () => {
+  const message = 'Native integration snapshot permission verification failed'
+  assert.deepEqual(sanitizeDiagnostic(new Error(message)), { ok: false, kind: 'validation', stage: 'integration-permission-check' })
+  assert.deepEqual(sanitizeDiagnostic({ message, killed: true, signal: 'SIGTERM' }), { ok: false, kind: 'terminated', killed: true, signal: 'SIGTERM', stage: 'integration-permission-check' })
+  for (const value of [message + '\n', message + secret, secret + message]) assert.deepEqual(sanitizeDiagnostic({ message: value }), unknown)
+})
+
 test('diagnostics never invoke hostile getters, coercions, prototypes or proxy traps', () => {
   let invoked = 0
   const hostile = () => { invoked++; throw new Error(privateText) }
