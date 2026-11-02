@@ -308,7 +308,9 @@ foreach ($p in (ConvertFrom-Json $env:JARVIS_TEST_PATHS)) {
     const cases = paths.toReversed().map(path => ({ path, action: 'shared' }))
     cases.push({ path: join(destination, 'payload', '0.bin'), action: 'deny-write' })
     for (const { path, action } of cases) {
+      const readable = action === 'deny-write' ? await readFile(path) : undefined
       run(action, [path])
+      if (readable) assert.deepEqual(await readFile(path), readable, 'Deny fixture remains readable; rejection must enforce ACL policy')
       const shared = run('read')
       await assert.rejects(verifyIntegrationSnapshot({ snapshot: destination, manifestSha256: result.manifestSha256, integration }), (error: unknown) => {
         assert.ok(error instanceof Error)
