@@ -45,7 +45,10 @@ test('native settings register normalized read roots with the real helper and re
   const reset=await reopened.reset();assert.deepEqual(reset.readRoots,[]);assert.equal(reset.revision,2)
 })
 
-for(const platform of ['darwin','win32'] as const)test(`native settings on ${platform} allow empty defaults and reject invalid roots before startup`,async t=>{
+// Linux can simulate both private-storage branches. Native hosts must keep
+// their actual platform: e.g. Darwin directory fsync is unsupported on Windows.
+const validationPlatforms:NodeJS.Platform[]=host==='linux'?['darwin','win32']:[host]
+for(const platform of validationPlatforms)test(`native settings on ${platform} allow empty defaults and reject invalid roots before startup`,async t=>{
   const f=fixture(t,platform);await f.settings.load()
   let starts=0;t.mock.method(NativeFilesystem,'start',async()=>{starts++;throw new Error('must not start')})
   const before=f.settings.snapshot(),bytes=readFileSync(f.file)

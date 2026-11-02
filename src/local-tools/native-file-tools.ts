@@ -59,7 +59,14 @@ export function nativeFileDefinitions(deps: { settings: LocalToolSettings; stora
     return fold(target) === fold(root) || fold(target).startsWith(fold(root.endsWith(path.sep) ? root : root + path.sep))
   }
   const protectedPath = (target: string) => components(target).some(p => secret.test(p)) || privateExclusions.some(root => privateWithin(root, target)) || ['/proc', '/sys', '/dev'].some(root => within(root, target))
-  const initial = snapshot.readRoots.map(configured => { try { return inspect(configured) } catch { return null } })
+  const rootErrors: string[] = []
+  const initial = snapshot.readRoots.map((configured, index) => {
+    try { return inspect(configured) } catch (error) {
+      // Surface validation categories without disclosing raw filesystem paths.
+      rootErrors[index] = error instanceof Error && ['Expected an absolute ordinary path', 'Unsafe path component', 'Root components must be real directories', 'Root is not canonical'].includes(error.message) ? error.message : 'Directory metadata is unavailable'
+      return null
+    }
+  })
   const assertCurrent = () => {
     if (JSON.stringify(deps.settings.snapshot()) !== settingsKey) throw new Error('File settings changed; refresh tool definitions')
     for (let i = 0; i < privateInitial.length; i++) {
@@ -70,7 +77,7 @@ export function nativeFileDefinitions(deps: { settings: LocalToolSettings; stora
     }
     for (let i = 0; i < initial.length; i++) {
       const expected = initial[i]
-      if (!expected) throw new Error('Configured read root is unavailable or unsafe')
+      if (!expected) throw new Error(`Configured read root is unavailable or unsafe: ${rootErrors[i]}`)
       const now = inspect(snapshot.readRoots[i]!)
       if (now.root !== expected.root || now.identity !== expected.identity) throw new Error('Read root changed; refresh tool definitions')
     }

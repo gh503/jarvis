@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import { execFileSync, spawnSync } from 'node:child_process'
-import { closeSync, openSync, readFileSync } from 'node:fs'
+import { closeSync, openSync, readFileSync, realpathSync } from 'node:fs'
 import { mkdir, mkdtemp, readFile, readdir, realpath, rm, writeFile } from 'node:fs/promises'
 import { pathToFileURL } from 'node:url'
 import { createServer } from 'node:net'
@@ -30,7 +30,7 @@ test('native artifact verifies and starts/stops using only its bundled Node', { 
   const archive = archiveInput === 'auto' ? resolve('dist', filename) : resolve(archiveInput!)
   const expectedDigest = (await readFile(`${archive}.sha256`, 'utf8')).split(/\s+/)[0]
   assert.equal(await sha256(archive), expectedDigest)
-  const tempRoot = await realpath(tmpdir())
+  const tempRoot = process.platform === 'win32' ? realpathSync.native(tmpdir()) : await realpath(tmpdir())
   const temporary = await mkdtemp(join(tempRoot, 'Jarvis artifact 中文 '))
   const extracted = join(temporary, 'extracted app 空间')
   const data = join(temporary, 'private data 数据')

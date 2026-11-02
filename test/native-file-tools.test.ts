@@ -12,7 +12,7 @@ import { FileTools } from '../src/local-tools/files.ts'
 const nativePlatform: NodeJS.Platform = process.platform === 'win32' ? 'win32' : 'darwin'
 
 async function fixture(t: TestContext) {
-  const base = realpathSync(mkdtempSync(join(tmpdir(), 'jarvis-native-files-')))
+  const base = realpathSync.native(mkdtempSync(join(tmpdir(), 'jarvis-native-files-')))
   t.after(() => rmSync(base, { recursive: true, force: true }))
   const root = join(base, 'read'), sibling = join(base, 'read-other'), privateDir = join(base, 'private'), output = join(base, 'output'), write = join(base, 'write')
   for (const dir of [root, sibling, privateDir, output, write]) mkdirSync(dir)
@@ -39,7 +39,7 @@ test('native file definitions preserve readonly schemas, read result and explici
   for (const d of f.defs) { assert.equal(d.permission, 'allow'); assert.equal(d.effect, 'read'); assert.equal(d.destination, 'local') }
   assert.deepEqual(f.defs.map(d => d.definitionHash), f.definitions().map(d => d.definitionHash))
   const result = await f.run('file_read', { path: file, offset: 2, limit: 1 })
-  assert.equal(result.isError, undefined)
+  assert.equal(result.isError, undefined, result.content)
   assert.deepEqual(JSON.parse(result.content), { path: file, content: 'second', offset: 2, endLine: 2, totalLines: 3, size: Buffer.byteLength(content), version: createHash('sha256').update(content).digest('hex') })
   for (const dir of [f.sibling, f.write, f.output, f.privateDir]) {
     writeFileSync(join(dir, 'ordinary.txt'), 'hidden value')
@@ -71,7 +71,7 @@ test('FileTools dispatch exposes only native readonly definitions', async t => {
 
 test('canonical private directories under symlink ancestors remain protected and identity-bound', async t => {
   if (!requireHelper(t)) return
-  const base = realpathSync(mkdtempSync(join(tmpdir(), 'jarvis-native-alias-')))
+  const base = realpathSync.native(mkdtempSync(join(tmpdir(), 'jarvis-native-alias-')))
   t.after(() => rmSync(base, { recursive: true, force: true }))
   const actual = join(base, 'actual'), alias = join(base, 'alias'), output = join(base, 'output')
   mkdirSync(actual); mkdirSync(join(actual, 'private')); mkdirSync(output)
