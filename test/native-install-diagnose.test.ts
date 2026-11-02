@@ -58,6 +58,11 @@ for (const platform of ['darwin', 'win32'] as const) {
     for (const object of [report.receipt, report.artifacts, ...report.artifacts]) assert.ok(Object.isFrozen(object))
     assert.ok(!JSON.stringify(report).includes('sha256'))
     assert.ok(!JSON.stringify(report).includes(f.integration.root))
+    // Consistency is observational: it must not grant mutation/retirement authority.
+    await assert.rejects(nativeIntegration(f.integration, ['--uninstall']), /Existing native install intent requires review/)
+    await assert.rejects(nativeIntegration(f.integration, ['--install']), /Existing native install intent requires review/)
+    assert.deepEqual(await diagnoseNativeInstallIntent(f), report)
+    assert.deepEqual(await Promise.all(paths.map(fileSnapshot)), before)
   })
   test(`${platform}: missing intent with orphan artifacts is explicitly no-intent`, async t => {
     const f = await fixture(t, platform)
