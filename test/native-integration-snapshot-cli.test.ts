@@ -11,6 +11,7 @@ import { nativeIntegration, type InstallOptions } from '../scripts/install-nativ
 import { parseIntegrationSnapshotArgs } from '../scripts/snapshot-native-integration.ts'
 import { ensurePrivateDataDirectory } from '../src/private-directory.ts'
 import { sanitizeDiagnostic } from './fixtures/native-snapshot-diagnostic.ts'
+import { sanitizePermissionPhases } from './fixtures/native-snapshot-phases.ts'
 
 const cli = fileURLToPath(new URL('../scripts/snapshot-native-integration.ts', import.meta.url))
 const absolute = join(tmpdir(), 'integration-cli-parser')
@@ -118,7 +119,7 @@ for (const platform of ['darwin', 'win32'] as const) test(`${platform} direct sn
   const result = await new Promise<{ error: unknown; stdout: string; stderr: string }>(resolve => {
     execFile(process.execPath, ['--experimental-transform-types', diagnostic], {
       timeout: childTimeout, maxBuffer: 64 * 1024, encoding: 'utf8', windowsHide: true,
-      env: { ...process.env, NODE_NO_WARNINGS: '1', JARVIS_TEST_SNAPSHOT_PARAMETERS: JSON.stringify(parameters),
+      env: { ...process.env, NODE_NO_WARNINGS: '1', JARVIS_TEST_SNAPSHOT_PHASES: '1', JARVIS_TEST_SNAPSHOT_PARAMETERS: JSON.stringify(parameters),
         JARVIS_CONFIG_FILE: join(root, 'missing.env'), JARVIS_DATA_DIR: join(root, 'missing-data'), JARVIS_PORT: 'invalid' },
     }, (error, stdout, stderr) => resolve({ error, stdout, stderr }))
   })
@@ -137,7 +138,8 @@ for (const platform of ['darwin', 'win32'] as const) test(`${platform} direct sn
     const safe = sanitizeDiagnostic({ code: value.code, killed: value.killed, signal: value.signal,
       message: value.stage === 'integration-permission-check' ? 'Native integration snapshot permission verification failed' : typeof value.stage === 'string' ? `Cannot establish private Windows data permissions [${value.stage}]: use a dedicated current-account-owned local directory without links or explicit shared ACLs` : undefined })
     if (safe.kind === 'unknown' && value.kind === 'validation') safe.kind = 'validation'
-    assert.fail(JSON.stringify({ origin: 'child-report', ...timing, diagnostic: safe }))
+    const permissionPhases = safe.stage === 'integration-permission-check' ? sanitizePermissionPhases(value.permissionPhases) : undefined
+    assert.fail(JSON.stringify({ origin: 'child-report', ...timing, diagnostic: safe, ...(permissionPhases ? { permissionPhases } : {}) }))
   }
   if (result.error) assert.fail(JSON.stringify({ origin: 'parent-process', ...timing, diagnostic: sanitizeDiagnostic(result.error) }))
   assert.ok(response && typeof response === 'object' && Object.keys(response).length === 1 && (response as { ok: unknown }).ok === true, 'Invalid diagnostic success receipt')

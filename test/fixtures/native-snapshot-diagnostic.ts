@@ -3,6 +3,7 @@ import { isAbsolute, resolve } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import { types } from 'node:util'
 import type { InstallOptions } from '../../scripts/install-native.ts'
+import { installPermissionPhaseProbe, type PermissionPhases } from './native-snapshot-phases.ts'
 
 const filesystemCodes = ['ENOENT', 'EACCES', 'EPERM', 'EEXIST', 'ENOTDIR', 'EISDIR', 'ENOSPC', 'EMFILE', 'ENFILE', 'EIO', 'EBUSY', 'EROFS', 'ENAMETOOLONG', 'ELOOP'] as const
 const privacyStage = /^Cannot establish private Windows data permissions \[(native-module|path-boundary|descendant-preflight|root-preflight|create-root|apply-acl|verify-acl|descendant-owner|root-owner|descendant-enumeration|descendant-boundary|descendant-acl-read|descendant-owner-read|descendant-acl-policy|descendant-missing-recheck|descendant-access-denied|descendant-sharing-violation|descendant-missing-root-recheck|native-process)\]: use a dedicated current-account-owned local directory without links or explicit shared ACLs$/
@@ -78,15 +79,21 @@ function parameters(raw: string | undefined): { integration: InstallOptions; des
 }
 
 async function main(): Promise<void> {
-  let result: Diagnostic | { ok: true }
+  let result: (Diagnostic & { permissionPhases?: PermissionPhases }) | { ok: true }
+  let probe: ReturnType<typeof installPermissionPhaseProbe> | undefined
   try {
     if (process.argv.length !== 2) throw new Error('Invalid diagnostic parameters')
     const options = parameters(process.env.JARVIS_TEST_SNAPSHOT_PARAMETERS)
+    if (process.env.JARVIS_TEST_SNAPSHOT_PHASES === '1') probe = installPermissionPhaseProbe()
     const { createIntegrationSnapshot } = await import('../../scripts/native-integration-snapshot.ts')
     const receipt = await createIntegrationSnapshot(options)
     if (!/^[a-f0-9]{64}$/.test(receipt.manifestSha256)) throw new Error('Invalid diagnostic receipt')
     result = { ok: true }
-  } catch (error) { result = sanitizeDiagnostic(error); process.exitCode = 1 }
+  } catch (error) {
+    result = sanitizeDiagnostic(error)
+    if (result.stage === 'integration-permission-check' && probe?.latest()) result.permissionPhases = probe.latest()
+    process.exitCode = 1
+  } finally { probe?.restore() }
   process.stdout.write(JSON.stringify(result) + '\n')
 }
 

@@ -17,7 +17,9 @@ jobs:
           cache: npm
       - run: npm ci --ignore-scripts
       - name: Run isolated snapshot boundary, CLI and bounded diagnostics
-        run: node --experimental-transform-types --test --test-concurrency=1 test/native-snapshot-diagnostics.test.ts test/native-integration-snapshot.test.ts test/native-integration-snapshot-cli.test.ts
+        env:
+          JARVIS_TEST_SNAPSHOT_PHASES: '1'
+        run: node --experimental-transform-types --test --test-concurrency=1 test/native-snapshot-diagnostics.test.ts test/native-snapshot-phases.test.ts test/native-integration-snapshot.test.ts test/native-integration-snapshot-cli.test.ts
   production-shortcut:
     name: Production Unicode shortcut creation and activation
     runs-on: windows-latest
