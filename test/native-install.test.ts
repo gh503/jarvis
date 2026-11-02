@@ -205,6 +205,159 @@ test('failed shortcut creation rolls back owned files', async () => fixture('win
   assert.equal(existsSync(join(options.appData!, 'Microsoft', 'Windows', 'Start Menu', 'Programs', 'Jarvis.lnk')), false)
 }))
 
+for (const scenario of ['second output', 'receipt', 'replacement', 'modification', 'unlink failure', 'partial write', 'partial receipt'] as const) test(`install rollback protects ownership after ${scenario}`, async t => fixture('darwin', async options => {
+  const first = join(options.home, 'Applications', 'Jarvis.app', 'Contents', 'Info.plist')
+  const second = join(options.home, 'Applications', 'Jarvis.app', 'Contents', 'MacOS', 'Jarvis')
+  const state = join(options.home, 'Library', 'Application Support', 'Jarvis', 'native-install.json')
+  const originalOpen = fsPromises.open, originalUnlink = fsPromises.unlink
+  const failure = new Error('injected publication failure')
+  const cleanupFailure = new Error('injected unlink failure')
+  let replacementIdentity: Awaited<ReturnType<typeof lstat>> | undefined
+  const attempted: string[] = []
+  t.mock.method(fsPromises, 'open', async (...args: Parameters<typeof open>) => {
+    const [path, flags] = args
+    if (flags === 'wx' && path === (scenario === 'receipt' || scenario === 'partial receipt' || scenario === 'unlink failure' ? state : second)) {
+      assert.ok(existsSync(first), 'first artifact must actually have been published')
+      if (scenario === 'replacement') {
+        const bytes = await readFile(first)
+        await rename(first, join(options.root, 'saved-first'))
+        await writeFile(first, bytes, { mode: 0o600 })
+        replacementIdentity = await lstat(first)
+      }
+      if (scenario === 'modification') await writeFile(first, 'foreign modification')
+      if (scenario === 'partial write' || scenario === 'partial receipt') {
+        const handle = await originalOpen(...args)
+        t.mock.method(handle, 'writeFile', async () => {
+          await handle.write('uncertain partial')
+          throw failure
+        })
+        return handle
+      }
+      throw failure
+    }
+    return originalOpen(...args)
+  })
+  t.mock.method(fsPromises, 'unlink', async (path: Parameters<typeof unlink>[0]) => {
+    attempted.push(String(path))
+    if (scenario === 'unlink failure' && path === second) throw cleanupFailure
+    return originalUnlink(path)
+  })
+  syncBuiltinESMExports()
+  try {
+    await assert.rejects(nativeIntegration(options, ['--install']), (error: unknown) => {
+      if (['replacement', 'modification', 'unlink failure', 'partial write', 'partial receipt'].includes(scenario)) {
+        assert.ok(error instanceof AggregateError)
+        assert.equal(error.cause, failure)
+        assert.equal(error.errors[0], failure)
+        assert.match(error.message, /injected publication failure/)
+        assert.ok(error.message.includes(scenario === 'partial receipt' ? state : scenario === 'partial write' || scenario === 'unlink failure' ? second : first))
+        assert.ok(error.message.length < 5000)
+      } else assert.equal(error, failure)
+      return true
+    })
+    assert.equal(existsSync(state), scenario === 'partial receipt')
+    if (scenario === 'partial receipt') {
+      assert.equal(await readFile(state, 'utf8'), 'uncertain partial')
+      assert.ok(!attempted.includes(state))
+    }
+    if (scenario === 'replacement') assert.equal((await lstat(first)).ino, replacementIdentity!.ino)
+    else if (scenario === 'modification') assert.equal(await readFile(first, 'utf8'), 'foreign modification')
+    else assert.equal(existsSync(first), false)
+    if (scenario === 'unlink failure') {
+      assert.deepEqual(attempted, [second, first], 'rollback continues after the first unlink failure')
+      assert.ok(existsSync(second))
+    } else if (scenario === 'partial write') {
+      assert.equal(await readFile(second, 'utf8'), 'uncertain partial')
+      assert.ok(!attempted.includes(second), 'unknown partial bytes must never be unlinked')
+      if (process.platform !== 'win32') assert.equal((await lstat(second)).mode & 0o077, 0)
+    } else assert.equal(existsSync(second), false)
+  } finally { t.mock.restoreAll(); syncBuiltinESMExports() }
+}))
+
+for (const scenario of ['second shortcut', 'partial shortcut publication'] as const) test(`Windows rollback handles ${scenario} failure`, async t => fixture('win32', async options => {
+  const menu = join(options.appData!, 'Microsoft', 'Windows', 'Start Menu', 'Programs')
+  const first = join(menu, 'Jarvis.lnk'), second = join(menu, 'Startup', 'Jarvis.lnk')
+  let calls = 0
+  const failure = new Error('injected shortcut failure')
+  options.runPowerShell = (_script, env) => {
+    if (++calls === 2 && scenario === 'second shortcut') throw failure
+    writeFileSync(env.JARVIS_LINK_PATH!, 'shortcut', { mode: 0o644 })
+  }
+  const originalOpen = fsPromises.open
+  t.mock.method(fsPromises, 'open', async (...args: Parameters<typeof open>) => {
+    const handle = await originalOpen(...args)
+    if (args[0] === second && args[1] === 'wx' && scenario === 'partial shortcut publication') {
+      t.mock.method(handle, 'writeFile', async () => {
+        await handle.write('uncertain copy')
+        throw failure
+      })
+    }
+    return handle
+  })
+  syncBuiltinESMExports()
+  try {
+    await assert.rejects(nativeIntegration(options, ['--install', '--autostart']), (error: unknown) => {
+      if (scenario === 'partial shortcut publication') {
+        assert.ok(error instanceof AggregateError)
+        assert.equal(error.cause, failure)
+        assert.ok(error.message.includes(second))
+      } else assert.equal(error, failure)
+      return true
+    })
+    assert.equal(calls, 2)
+    assert.equal(existsSync(first), false)
+    assert.equal(existsSync(join(options.localAppData!, 'Jarvis', 'native-install.json')), false)
+    if (scenario === 'partial shortcut publication') assert.equal(await readFile(second, 'utf8'), 'uncertain copy')
+    else assert.equal(existsSync(second), false)
+  } finally { t.mock.restoreAll(); syncBuiltinESMExports() }
+}))
+
+for (const stage of ['sync', 'close'] as const) test(`descriptor ${stage} failure preserves original error and safe cleanup`, async t => fixture('darwin', async options => {
+  const first = join(options.home, 'Applications', 'Jarvis.app', 'Contents', 'Info.plist')
+  const originalOpen = fsPromises.open
+  const failure = new Error(`injected ${stage} failure`)
+  t.mock.method(fsPromises, 'open', async (...args: Parameters<typeof open>) => {
+    const handle = await originalOpen(...args)
+    if (args[0] === first && args[1] === 'wx') {
+      if (stage === 'sync') t.mock.method(handle, 'sync', async () => { throw failure })
+      else {
+        const close = handle.close.bind(handle)
+        t.mock.method(handle, 'close', async () => { await close(); throw failure })
+      }
+    }
+    return handle
+  })
+  syncBuiltinESMExports()
+  try {
+    await assert.rejects(nativeIntegration(options, ['--install']), (error: unknown) => {
+      if (stage === 'sync') {
+        assert.ok(error instanceof AggregateError)
+        assert.equal(error.cause, failure)
+        assert.equal(error.errors[0], failure)
+        assert.ok(error.message.includes(first))
+      } else assert.equal(error, failure)
+      return true
+    })
+    assert.equal(existsSync(first), stage === 'sync')
+  } finally { t.mock.restoreAll(); syncBuiltinESMExports() }
+}))
+
+test('shortcut staging cleanup failure does not mask COM failure', async t => fixture('win32', async options => {
+  const failure = new Error('injected COM failure'), cleanup = new Error('injected staging cleanup failure')
+  options.runPowerShell = () => { throw failure }
+  t.mock.method(fsPromises, 'rmdir', async () => { throw cleanup })
+  syncBuiltinESMExports()
+  try {
+    await assert.rejects(nativeIntegration(options, ['--install']), (error: unknown) => {
+      assert.ok(error instanceof AggregateError)
+      assert.equal(error.cause, failure)
+      assert.deepEqual(error.errors, [failure, cleanup])
+      assert.match(error.message, /injected COM failure/)
+      return true
+    })
+  } finally { t.mock.restoreAll(); syncBuiltinESMExports() }
+}))
+
 test('tampered runtime and unsafe manifest prevent integration writes', async () => fixture('darwin', async options => {
   await writeFile(join(options.root, 'runtime', 'node'), 'changed')
   await assert.rejects(nativeIntegration(options, ['--install']), /checksum/)

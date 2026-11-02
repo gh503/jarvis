@@ -124,6 +124,12 @@ On POSIX, files and per-user integration ancestors must belong to the current ac
 
 All available artifacts must pass preflight before removal begins. A later filesystem change or deletion failure can still leave a partial uninstall; the receipt is removed last, but there is no persistent recovery journal or atomic multi-file transaction. This work does not add integration snapshots, automatic rollback, activation, or Windows ACL migration.
 
+### Unreleased installation-failure cleanup
+
+The source installer is also being hardened to track completed outputs by file identity and content digest, rather than by path alone. Failure cleanup removes only outputs that still match those records. Changed, replaced, or uncertain partial outputs are retained for inspection, and one cleanup error must not prevent attempts to clean other verified outputs. The original installation failure and cleanup failures remain reportable together.
+
+These are in-process failure safeguards, not a persistent recovery journal. A crash can still leave partial integrations. Path validation and unlink are separate operations; this is not protection against hostile same-account pathname races, and it does not provide a recoverable version switch or automatic activation.
+
 ## Signing and platform validation
 
 These portable packages and the generated macOS app wrapper are unsigned and not notarized. Download quarantine and Gatekeeper can block the wrapper or bundled executable. The installer neither clears quarantine nor changes Gatekeeper policy, signs binaries, invokes an execution-policy bypass, or promises a warning-free first launch. Follow your organization's policy and Apple's supported approval process for software you trust; releases need a separate signing/notarization process for normal trusted distribution. Windows SmartScreen, antivirus or organization policy may also block unsigned downloads or PowerShell COM access.

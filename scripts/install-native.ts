@@ -3,7 +3,7 @@
 import { createHash } from 'node:crypto'
 import { execFileSync } from 'node:child_process'
 import { constants, type BigIntStats } from 'node:fs'
-import { copyFile, lstat, mkdir, mkdtemp, open, readFile, realpath, rmdir, unlink, writeFile } from 'node:fs/promises'
+import { lstat, mkdir, mkdtemp, open, readFile, realpath, rmdir, unlink } from 'node:fs/promises'
 import { homedir } from 'node:os'
 import { dirname, isAbsolute, join, resolve } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
@@ -264,11 +264,41 @@ export async function nativeIntegration(options: InstallOptions, args: string[])
   for (const path of files) await absent(path)
   const runtime = join(root, 'runtime', options.platform === 'win32' ? 'node.exe' : 'node')
   const argv = ['--experimental-transform-types', join(root, 'scripts', 'app.ts'), ...(binding.configFile ? ['--config', binding.configFile] : [])]
-  const created: string[] = []
-  async function output(path: string, content: string, mode = 0o600) {
+  interface CreatedRecord { path: string; identity?: BigIntStats; sha256?: string; limit: number }
+  const created: CreatedRecord[] = []
+  const userRoots = [options.home, options.appData, options.localAppData].filter((path): path is string => path !== undefined).map(path => resolve(path))
+  const cleanupErrors: unknown[] = []
+  const retained = (path: string) => new Error(`Retained unverified installation artifact: ${JSON.stringify(path).slice(0, 1024)}`)
+  async function removeOwned(record: CreatedRecord) {
+    if (!record.identity || !record.sha256) throw retained(record.path)
+    const current = await boundedIntegrationRead(record.path, record.limit, userRoots, record.path === state)
+    if (!current) return
+    if (!sameIdentity(record.identity, current.identity) || digest(current.bytes) !== record.sha256) throw retained(record.path)
+    // Portable pathname unlink cannot be atomic with the preceding validation.
+    await unlink(record.path)
+  }
+  async function output(path: string, content: string | Buffer, mode = 0o600) {
     await mkdir(dirname(path), { recursive: true, mode: 0o755 })
-    await writeFile(path, content, { flag: 'wx', mode })
-    created.push(path)
+    await safeAncestors(path, userRoots)
+    const handle = await open(path, 'wx', mode)
+    // Register immediately: failed writes may leave bytes whose ownership is uncertain.
+    const record: CreatedRecord = { path, limit: path === state ? 64 * 1024 : 1024 * 1024 }
+    created.push(record)
+    let failure: unknown
+    let failed = false
+    try {
+      record.identity = await handle.stat({ bigint: true })
+      const initial = record.identity
+      await handle.writeFile(content)
+      await handle.sync()
+      const completed = await handle.stat({ bigint: true })
+      const snapshot = await boundedIntegrationRead(path, record.limit, userRoots, path === state)
+      if (!snapshot || initial.dev !== completed.dev || initial.ino !== completed.ino || !sameIdentity(completed, snapshot.identity) || digest(snapshot.bytes) !== digest(content)) throw new Error('Integration changed during publication')
+      record.identity = completed
+      record.sha256 = digest(content)
+    } catch (error) { failed = true; failure = error }
+    try { await handle.close() } catch (error) { if (failed) cleanupErrors.push(error); else { failed = true; failure = error } }
+    if (failed) throw failure
   }
   try {
     if (options.platform === 'darwin') {
@@ -283,28 +313,38 @@ export async function nativeIntegration(options: InstallOptions, args: string[])
         // Publish exclusively after generation, so existing final links are never replaced.
         const staging = await mkdtemp(join(dirname(path), '.jarvis-link-'))
         const temporaryLink = join(staging, 'Jarvis.lnk')
+        let staged: CreatedRecord | undefined
+        let failure: unknown
+        let failed = false
         try {
           ;(options.runPowerShell ?? runPowerShell)(POWERSHELL_LINK, { JARVIS_LINK_PATH: temporaryLink, JARVIS_LINK_TARGET: runtime, JARVIS_LINK_ARGS: [...argv, ...(index === 1 ? ['--no-open'] : [])].map(windowsQuote).join(' '), JARVIS_LINK_CWD: root })
-          if (!(await lstat(temporaryLink)).size) throw new Error('PowerShell did not create a shortcut')
-          await copyFile(temporaryLink, path, constants.COPYFILE_EXCL)
-          created.push(path)
-        } finally {
+          const source = await boundedIntegrationRead(temporaryLink, 1024 * 1024, userRoots)
+          if (!source?.bytes.length) throw new Error('PowerShell did not create a shortcut')
+          staged = { path: temporaryLink, identity: source.identity, sha256: digest(source.bytes), limit: 1024 * 1024 }
+          // Use an exclusive descriptor for publication: copyFile provides no destination
+          // identity and cannot safely establish ownership after a partial failure.
+          await output(path, source.bytes)
+        } catch (error) { failed = true; failure = error }
+        try {
           if (dirname(staging) !== dirname(path) || dirname(temporaryLink) !== staging) throw new Error('Unsafe shortcut staging cleanup')
-          try { await unlink(temporaryLink) } catch (cleanup) { if ((cleanup as NodeJS.ErrnoException).code !== 'ENOENT') throw cleanup }
+          if (staged) await removeOwned(staged)
+          else if (await lstat(temporaryLink).catch(error => { if (error.code === 'ENOENT') return undefined; throw error })) throw retained(temporaryLink)
           await rmdir(staging)
-        }
+        } catch (error) { if (failed) cleanupErrors.push(error); else { failed = true; failure = error } }
+        if (failed) throw failure
       }
     }
-    const records = []
-    for (const path of created) records.push({ path, sha256: digest(await readFile(path)) })
+    const records = created.map(({ path, sha256 }) => ({ path, sha256 }))
     await output(state, JSON.stringify({ schemaVersion: 1, platform: options.platform, root, autostart, ...binding, ...(options.platform === 'win32' ? { notificationAumid: WINDOWS_AUMID } : {}), files: records }, null, 2) + '\n')
-    return created
+    return created.map(record => record.path)
   } catch (error) {
-    // Only exact paths created by this invocation, never package or user data trees.
-    for (const path of created.reverse()) { await safeAncestors(path); await unlink(path) }
-    if (options.platform === 'darwin') for (const directory of [join(app, 'Contents', 'MacOS'), join(app, 'Contents'), app]) {
-      try { await rmdir(directory) } catch (cleanup) { if (!['ENOENT', 'ENOTEMPTY', 'EEXIST'].includes((cleanup as NodeJS.ErrnoException).code ?? '')) throw cleanup }
+    for (const record of created.toReversed()) {
+      try { await removeOwned(record) } catch (cleanup) { cleanupErrors.push(new Error(`Installation cleanup retained ${JSON.stringify(record.path).slice(0, 1024)}`, { cause: cleanup })) }
     }
+    if (options.platform === 'darwin') for (const directory of [join(app, 'Contents', 'MacOS'), join(app, 'Contents'), app]) {
+      try { await safeAncestors(directory, userRoots); await rmdir(directory) } catch (cleanup) { if (!['ENOENT', 'ENOTEMPTY', 'EEXIST'].includes((cleanup as NodeJS.ErrnoException).code ?? '')) cleanupErrors.push(cleanup) }
+    }
+    if (cleanupErrors.length) throw new AggregateError([error, ...cleanupErrors], `Native installation failed (${error instanceof Error ? error.message.slice(0, 512) : 'unknown error'}); cleanup incomplete. ${cleanupErrors.map(cleanup => cleanup instanceof Error ? cleanup.message : 'Cleanup failed').join('; ').slice(0, 4096)}`, { cause: error })
     throw error
   }
 }
