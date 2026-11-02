@@ -278,7 +278,7 @@ test('Windows permission process failures are sanitized at the public snapshot b
 test('native Windows verification accepts readonly private ACLs and rejects shared ACLs without repair', { skip: process.platform !== 'win32' }, async () => fixture('win32', true, async ({ integration, destination }) => {
   const result = await createIntegrationSnapshot({ integration, destination })
   const paths = [destination, join(destination, 'payload'), join(destination, 'manifest.json'), join(destination, 'receipt.bin'), join(destination, 'payload', '0.bin'), join(destination, 'payload', '1.bin')]
-  const run = (action: string) => execFileSync(join(process.env.SystemRoot!, 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe'), ['-NoLogo', '-NoProfile', '-NonInteractive', '-EncodedCommand', Buffer.from(String.raw`$ErrorActionPreference='Stop'
+  const run = (action: string, selectedPaths = paths) => execFileSync(join(process.env.SystemRoot!, 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe'), ['-NoLogo', '-NoProfile', '-NonInteractive', '-EncodedCommand', Buffer.from(String.raw`$ErrorActionPreference='Stop'
 $env:PSModulePath="$PSHOME\Modules"
 Import-Module "$PSHOME\Modules\Microsoft.PowerShell.Security\Microsoft.PowerShell.Security.psd1"
 $user=[Security.Principal.WindowsIdentity]::GetCurrent().User
@@ -294,16 +294,21 @@ foreach ($p in (ConvertFrom-Json $env:JARVIS_TEST_PATHS)) {
  if ($env:JARVIS_TEST_ACTION -eq 'shared') { $acl.AddAccessRule([Security.AccessControl.FileSystemAccessRule]::new([Security.Principal.SecurityIdentifier]::new('S-1-1-0'),'Read','Allow')) }
  if ($env:JARVIS_TEST_ACTION -eq 'restore') { $acl.AddAccessRule([Security.AccessControl.FileSystemAccessRule]::new($user,'FullControl','Allow')) }
  Set-Acl -LiteralPath $p -AclObject $acl
-}`, 'utf16le').toString('base64')], { env: { ...process.env, JARVIS_TEST_PATHS: JSON.stringify(paths), JARVIS_TEST_ACTION: action }, encoding: 'utf8', timeout: 10_000, windowsHide: true })
+}`, 'utf16le').toString('base64')], { env: { ...process.env, JARVIS_TEST_PATHS: JSON.stringify(selectedPaths), JARVIS_TEST_ACTION: action }, encoding: 'utf8', timeout: 10_000, windowsHide: true })
   try {
     run('private')
     const before = run('read')
     await verifyIntegrationSnapshot({ snapshot: destination, manifestSha256: result.manifestSha256, integration })
     assert.equal(run('read'), before)
-    run('shared')
-    const shared = run('read')
-    await assert.rejects(verifyIntegrationSnapshot({ snapshot: destination, manifestSha256: result.manifestSha256, integration }))
-    assert.equal(run('read'), shared)
+    // Isolate each kind: a shared directory must not mask an unchecked file ACL.
+    for (const path of [join(destination, 'payload', '0.bin'), join(destination, 'manifest.json'), join(destination, 'payload'), destination]) {
+      run('shared', [path])
+      const shared = run('read')
+      await assert.rejects(verifyIntegrationSnapshot({ snapshot: destination, manifestSha256: result.manifestSha256, integration }))
+      assert.equal(run('read'), shared)
+      run('private', [path])
+      assert.equal(run('read'), before)
+    }
   } finally { run('restore') }
 }))
 test('private snapshots remain bounded when manifests are oversized', async () => fixture('win32', false, async ({ integration, destination }) => {
