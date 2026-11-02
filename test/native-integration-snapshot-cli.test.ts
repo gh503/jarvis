@@ -10,6 +10,7 @@ import test from 'node:test'
 import { nativeIntegration, type InstallOptions } from '../scripts/install-native.ts'
 import { parseIntegrationSnapshotArgs } from '../scripts/snapshot-native-integration.ts'
 import { ensurePrivateDataDirectory } from '../src/private-directory.ts'
+import { sanitizeDiagnostic } from './fixtures/native-snapshot-diagnostic.ts'
 
 const cli = fileURLToPath(new URL('../scripts/snapshot-native-integration.ts', import.meta.url))
 const absolute = join(tmpdir(), 'integration-cli-parser')
@@ -105,6 +106,38 @@ async function fixture(platform: 'darwin' | 'win32', body: (value: { root: strin
     await rm(root, { recursive: true, force: true })
   }
 }
+
+// Independent first-class invocation: never retry a failing black-box CLI operation.
+for (const platform of ['darwin', 'win32'] as const) test(`${platform} direct snapshot API subprocess reports bounded native diagnostics`, { timeout: childTimeout * 2 }, async () => fixture(platform, async ({ root, integration }) => {
+  const destination = join(root, 'diagnostic-snapshot')
+  owned(root, destination)
+  const parameters = { platform, arch: integration.arch, home: integration.home, root: integration.root, destination,
+    ...(platform === 'win32' ? { appData: integration.appData, localAppData: integration.localAppData } : {}) }
+  const diagnostic = fileURLToPath(new URL('./fixtures/native-snapshot-diagnostic.ts', import.meta.url))
+  const result = await new Promise<{ error: unknown; stdout: string; stderr: string }>(resolve => {
+    execFile(process.execPath, ['--experimental-transform-types', diagnostic], {
+      timeout: childTimeout, maxBuffer: 64 * 1024, encoding: 'utf8', windowsHide: true,
+      env: { ...process.env, NODE_NO_WARNINGS: '1', JARVIS_TEST_SNAPSHOT_PARAMETERS: JSON.stringify(parameters),
+        JARVIS_CONFIG_FILE: join(root, 'missing.env'), JARVIS_DATA_DIR: join(root, 'missing-data'), JARVIS_PORT: 'invalid' },
+    }, (error, stdout, stderr) => resolve({ error, stdout, stderr }))
+  })
+  // Protocol failures also use fixed diagnostics; assertions must not echo child output.
+  if (result.stderr !== '' || Buffer.byteLength(result.stdout) > 512 || !/^\{[^\r\n]*\}\n$/.test(result.stdout)) {
+    assert.fail(JSON.stringify(result.error ? sanitizeDiagnostic(result.error) : { ok: false, kind: 'unknown' }))
+  }
+  let response: unknown
+  try { response = JSON.parse(result.stdout) } catch { assert.fail(JSON.stringify({ ok: false, kind: 'unknown' })) }
+  if (response && typeof response === 'object' && Object.hasOwn(response, 'ok') && (response as { ok: unknown }).ok === false) {
+    const value = response as Record<string, unknown>
+    // Reconstruct from primitive allowlisted fields; never pass through child JSON.
+    const safe = sanitizeDiagnostic({ code: value.code, killed: value.killed, signal: value.signal,
+      message: typeof value.stage === 'string' ? `Cannot establish private Windows data permissions [${value.stage}]: use a dedicated current-account-owned local directory without links or explicit shared ACLs` : undefined })
+    if (safe.kind === 'unknown' && value.kind === 'validation') safe.kind = 'validation'
+    assert.fail(JSON.stringify(safe))
+  }
+  if (result.error) assert.fail(JSON.stringify(sanitizeDiagnostic(result.error)))
+  assert.ok(response && typeof response === 'object' && Object.keys(response).length === 1 && (response as { ok: unknown }).ok === true, 'Invalid diagnostic success receipt')
+}))
 
 for (const platform of ['darwin', 'win32'] as const) test(`${platform} CLI captures, verifies and restores a private recovery copy offline without activation`, { timeout: childTimeout * 6 }, async () => fixture(platform, async ({ root, created }) => {
   const snapshot = join(root, 'snapshot'), destination = join(root, 'recovery')
