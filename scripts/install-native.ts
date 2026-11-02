@@ -2,8 +2,8 @@
 /** Per-user integrations only: the verified portable package stays in place. */
 import { createHash } from 'node:crypto'
 import { execFileSync } from 'node:child_process'
-import { constants } from 'node:fs'
-import { copyFile, lstat, mkdir, mkdtemp, readFile, realpath, rmdir, unlink, writeFile } from 'node:fs/promises'
+import { constants, type BigIntStats } from 'node:fs'
+import { copyFile, lstat, mkdir, mkdtemp, open, readFile, realpath, rmdir, unlink, writeFile } from 'node:fs/promises'
 import { homedir } from 'node:os'
 import { dirname, isAbsolute, join, resolve } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
@@ -149,14 +149,78 @@ async function absent(path: string): Promise<void> {
   throw new Error(`Integration already exists; uninstall it first: ${path}`)
 }
 /** Refuse symlink ancestors before writes or deletes; home itself may be canonicalized by caller. */
-async function safeAncestors(path: string): Promise<void> {
+async function safeAncestors(path: string, userRoots: string[] = []): Promise<void> {
   let current = resolve(path)
   while (true) {
-    try { if ((await lstat(current)).isSymbolicLink()) throw new Error(`Integration symlink rejected: ${current}`) } catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error }
+    try {
+      const info = await lstat(current, { bigint: true })
+      if (info.isSymbolicLink()) throw new Error(`Integration symlink rejected: ${current}`)
+      if (current !== resolve(path) && !info.isDirectory()) throw new Error('Unsafe integration ancestor type')
+      if (userRoots.some(root => current === root || current.startsWith(root + (process.platform === 'win32' ? '\\' : '/')))) checkPermissions(info)
+    } catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error }
     const parent = dirname(current)
     if (parent === current) return
     current = parent
   }
+}
+
+function checkPermissions(info: BigIntStats, privateFile = false): void {
+  // Windows mode bits do not establish ACL privacy. Keep legacy producers compatible.
+  if (process.platform !== 'win32' && (info.uid !== BigInt(process.getuid!()) || (info.mode & (privateFile ? 0o077n : 0o022n)) !== 0n)) throw new Error('Unsafe integration permissions')
+}
+function sameIdentity(a: BigIntStats, b: BigIntStats): boolean {
+  return (['dev', 'ino', 'mode', 'nlink', 'uid', 'gid', 'rdev', 'size', 'mtimeNs', 'ctimeNs', 'birthtimeNs'] as const).every(key => a[key] === b[key])
+}
+interface Snapshot { bytes: Buffer; identity: BigIntStats }
+async function boundedIntegrationRead(path: string, limit: number, userRoots: string[], privateFile = false): Promise<Snapshot | undefined> {
+  await safeAncestors(path, userRoots)
+  let before: BigIntStats
+  try { before = await lstat(path, { bigint: true }) } catch (error) { if ((error as NodeJS.ErrnoException).code === 'ENOENT') return; throw error }
+  const validate = (info: BigIntStats) => {
+    if (!info.isFile() || info.nlink !== 1n || info.size > BigInt(limit)) throw new Error('Unsafe integration file type, links or size')
+    checkPermissions(info, privateFile)
+  }
+  validate(before)
+  const handle = await open(path, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0) | (constants.O_NONBLOCK ?? 0))
+  try {
+    const initial = await handle.stat({ bigint: true })
+    validate(initial)
+    if (!sameIdentity(before, initial)) throw new Error('Integration changed during read')
+    // Allocate only after the size check, with one byte reserved to prove EOF.
+    const bytes = Buffer.alloc(Number(initial.size) + 1)
+    let length = 0
+    while (length < bytes.length) {
+      const result = await handle.read(bytes, length, bytes.length - length, length)
+      if (!result.bytesRead) break
+      length += result.bytesRead
+    }
+    const after = await handle.stat({ bigint: true })
+    await safeAncestors(path, userRoots)
+    const named = await lstat(path, { bigint: true })
+    if (length !== Number(initial.size) || !sameIdentity(initial, after) || !sameIdentity(initial, named)) throw new Error('Integration changed during read')
+    return { bytes: bytes.subarray(0, length), identity: initial }
+  } finally { await handle.close() }
+}
+interface IntegrationReceipt { files: { path: string; sha256: string }[] }
+function parseReceipt(bytes: Buffer, platform: Platform, files: string[]): IntegrationReceipt {
+  const invalid = () => new Error('Unsafe integration receipt')
+  const object = (value: unknown): value is Record<string, unknown> => value !== null && typeof value === 'object' && !Array.isArray(value)
+  const absolute = (value: unknown): value is string => typeof value === 'string' && !value.includes('\0') && isAbsolute(value)
+  let receipt: unknown
+  try { receipt = JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(bytes)) } catch { throw invalid() }
+  // Accept the producer's JSON encoding only, rejecting duplicate keys and lossy encodings.
+  if (!object(receipt) || !bytes.equals(Buffer.from(JSON.stringify(receipt, null, 2) + '\n'))) throw invalid()
+  const allowed = ['schemaVersion', 'platform', 'root', 'autostart', 'configFile', 'dataDir', 'notificationAumid', 'files']
+  if (Object.keys(receipt).some(key => !allowed.includes(key)) || receipt.schemaVersion !== 1 || receipt.platform !== platform || !absolute(receipt.root) || /[\r\n]/.test(receipt.root) || resolve(receipt.root) !== receipt.root || typeof receipt.autostart !== 'boolean' || !Array.isArray(receipt.files)) throw invalid()
+  const hasConfig = Object.hasOwn(receipt, 'configFile'), hasData = Object.hasOwn(receipt, 'dataDir')
+  if (hasConfig !== hasData || (hasConfig && (!absolute(receipt.configFile) || !absolute(receipt.dataDir)))) throw invalid()
+  if (platform === 'win32' ? receipt.notificationAumid !== WINDOWS_AUMID : Object.hasOwn(receipt, 'notificationAumid')) throw invalid()
+  const expected = new Set(receipt.autostart ? files : files.slice(0, -1))
+  if (receipt.files.length !== expected.size) throw invalid()
+  for (const entry of receipt.files) {
+    if (!object(entry) || Object.keys(entry).length !== 2 || typeof entry.path !== 'string' || !expected.delete(entry.path) || typeof entry.sha256 !== 'string' || !/^[a-f0-9]{64}$/.test(entry.sha256)) throw invalid()
+  }
+  return receipt as unknown as IntegrationReceipt
 }
 
 export async function nativeIntegration(options: InstallOptions, args: string[]): Promise<string[]> {
@@ -167,23 +231,31 @@ export async function nativeIntegration(options: InstallOptions, args: string[])
   const { app, state, files } = locations(options)
   for (const path of [state, ...files]) await safeAncestors(path)
   if (action === 'uninstall') {
-    let receipt
-    try { receipt = JSON.parse(await readFile(state, 'utf8')) } catch (error) { if ((error as NodeJS.ErrnoException).code === 'ENOENT') return []; throw error }
-    if (receipt.schemaVersion !== 1 || receipt.platform !== options.platform || !Array.isArray(receipt.files)) throw new Error('Invalid integration receipt')
-    const seen = new Set<string>()
+    const userRoots = [options.home, options.appData, options.localAppData].filter((path): path is string => path !== undefined).map(path => resolve(path))
+    const receiptSnapshot = await boundedIntegrationRead(state, 64 * 1024, userRoots, true)
+    if (!receiptSnapshot) return []
+    const receipt = parseReceipt(receiptSnapshot.bytes, options.platform, files)
+    const preflight = new Map<string, Snapshot | undefined>()
     for (const entry of receipt.files) {
-      if (!files.includes(entry.path) || seen.has(entry.path) || !/^[a-f0-9]{64}$/.test(entry.sha256)) throw new Error('Unsafe integration receipt')
-      seen.add(entry.path)
-      try { if (digest(await readFile(entry.path)) !== entry.sha256) throw new Error(`Integration changed; refusing to remove: ${entry.path}`) } catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error }
+      const snapshot = await boundedIntegrationRead(entry.path, 1024 * 1024, userRoots)
+      if (snapshot && digest(snapshot.bytes) !== entry.sha256) throw new Error('Integration changed; refusing to remove')
+      preflight.set(entry.path, snapshot)
     }
+    // These checks narrow races; portable pathname unlink is not atomic with validation.
     for (const entry of receipt.files) {
-      try { await unlink(entry.path) } catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error }
+      const before = preflight.get(entry.path)
+      const current = await boundedIntegrationRead(entry.path, 1024 * 1024, userRoots)
+      if (!current) continue
+      if (!before || !sameIdentity(before.identity, current.identity) || digest(current.bytes) !== entry.sha256) throw new Error('Integration changed; refusing to remove')
+      await unlink(entry.path)
     }
+    const currentReceipt = await boundedIntegrationRead(state, 64 * 1024, userRoots, true)
+    if (!currentReceipt || !sameIdentity(receiptSnapshot.identity, currentReceipt.identity) || !receiptSnapshot.bytes.equals(currentReceipt.bytes)) throw new Error('Integration receipt changed; refusing to remove')
     await unlink(state)
     if (options.platform === 'darwin') for (const directory of [join(app, 'Contents', 'MacOS'), join(app, 'Contents'), app]) {
       try { await rmdir(directory) } catch (error) { if (!['ENOENT', 'ENOTEMPTY', 'EEXIST'].includes((error as NodeJS.ErrnoException).code ?? '')) throw error }
     }
-    return [...seen]
+    return receipt.files.map(entry => entry.path)
   }
   const root = await realpath(options.root)
   await validatePackage(root, options.platform, options.arch)
@@ -194,7 +266,7 @@ export async function nativeIntegration(options: InstallOptions, args: string[])
   const argv = ['--experimental-transform-types', join(root, 'scripts', 'app.ts'), ...(binding.configFile ? ['--config', binding.configFile] : [])]
   const created: string[] = []
   async function output(path: string, content: string, mode = 0o600) {
-    await mkdir(dirname(path), { recursive: true })
+    await mkdir(dirname(path), { recursive: true, mode: 0o755 })
     await writeFile(path, content, { flag: 'wx', mode })
     created.push(path)
   }
@@ -206,7 +278,7 @@ export async function nativeIntegration(options: InstallOptions, args: string[])
     } else {
       for (const [index, path] of files.entries()) {
         if (index === 1 && !autostart) continue
-        await mkdir(dirname(path), { recursive: true })
+        await mkdir(dirname(path), { recursive: true, mode: 0o755 })
         // COM must see a nonexistent path: a zero-byte reservation is not a valid .lnk.
         // Publish exclusively after generation, so existing final links are never replaced.
         const staging = await mkdtemp(join(dirname(path), '.jarvis-link-'))

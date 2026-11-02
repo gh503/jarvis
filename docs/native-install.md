@@ -114,6 +114,14 @@ For data recovery, v2.0.45 includes the offline [data-only snapshot CLI](native-
 
 An ownership receipt is kept at `~/Library/Application Support/Jarvis/native-install.json` on macOS or `%LOCALAPPDATA%\Jarvis\native-install.json` on Windows. Uninstall accepts only the known integration paths and removes only files whose hashes still match that receipt. Modified artifacts cause refusal before deletion; inspect them manually rather than deleting user changes blindly. Uninstall without a receipt is a no-op. It removes empty app-wrapper directories but preserves unrelated files, the portable package, configuration, conversations, models, browser profile and all other user data. If you lose the receipt, remove the documented integration files manually after reviewing them. Uninstall does not unload an already loaded LaunchAgent or stop the server; log out to clear the login-session registration.
 
+### Unreleased receipt-validation hardening
+
+The source implementation is being extended with bounded receipt (64 KiB) and artifact (1 MiB each) reads, strict UTF-8 and producer-format receipt validation, and regular-file identity checks before removal. These checks are not yet a claim about the recommended v2.0.45 package. The ownership receipt remains mutable local metadata, not publisher authentication. Original package/config/data paths need not exist for uninstall, and missing integration artifacts remain permitted.
+
+On POSIX, files and per-user integration ancestors must belong to the current account and reject group/other write access; the receipt additionally requires owner-only permissions. New integration directories explicitly request mode 0755, subject to umask. Existing unsafe directories are refused without permission repair, including older installations created under a group-writable umask. Windows mode bits do not prove ACL privacy; this change does not add Windows ACL validation.
+
+All available artifacts must pass preflight before removal begins. A later filesystem change or deletion failure can still leave a partial uninstall; the receipt is removed last, but there is no persistent recovery journal or atomic multi-file transaction. This work does not add integration snapshots, automatic rollback, activation, or Windows ACL migration.
+
 ## Signing and platform validation
 
 These portable packages and the generated macOS app wrapper are unsigned and not notarized. Download quarantine and Gatekeeper can block the wrapper or bundled executable. The installer neither clears quarantine nor changes Gatekeeper policy, signs binaries, invokes an execution-policy bypass, or promises a warning-free first launch. Follow your organization's policy and Apple's supported approval process for software you trust; releases need a separate signing/notarization process for normal trusted distribution. Windows SmartScreen, antivirus or organization policy may also block unsigned downloads or PowerShell COM access.

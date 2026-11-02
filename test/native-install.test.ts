@@ -2,7 +2,8 @@ import assert from 'node:assert/strict'
 import { createHash } from 'node:crypto'
 import { execFileSync } from 'node:child_process'
 import { existsSync, writeFileSync } from 'node:fs'
-import { mkdtemp, mkdir, readFile, realpath, rm, writeFile, symlink } from 'node:fs/promises'
+import fsPromises, { chmod, link, lstat, mkdtemp, mkdir, open, readFile, realpath, rename, rm, truncate, unlink, writeFile, symlink } from 'node:fs/promises'
+import { syncBuiltinESMExports } from 'node:module'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { test } from 'node:test'
@@ -60,7 +61,7 @@ for (const platform of ['darwin', 'win32'] as const) test(`${platform} config bi
     assert.equal(script, POWERSHELL_LINK)
     assert.ok(!script.includes(file))
     calls.push(env)
-    writeFileSync(env.JARVIS_LINK_PATH!, JSON.stringify(env))
+    writeFileSync(env.JARVIS_LINK_PATH!, JSON.stringify(env), { mode: 0o644 })
   }
   const created = await nativeIntegration(options, ['--install', '--config', file, '--autostart'])
   const receipt = JSON.parse(await readFile(created.at(-1)!, 'utf8'))
@@ -105,7 +106,7 @@ test('quoting preserves shell and Windows argument boundaries and safe XML', () 
 
 test('macOS install is inert, absolute, opt-in and uninstall preserves package/data', async () => fixture('darwin', async options => {
   const data = join(options.home, 'Library', 'Application Support', 'Jarvis', 'memory.db')
-  await mkdir(join(data, '..'), { recursive: true }); await writeFile(data, 'private')
+  await mkdir(join(data, '..'), { recursive: true, mode: 0o755 }); await writeFile(data, 'private')
   const created = await nativeIntegration(options, ['--install'])
   assert.equal(created.length, 3)
   const app = join(options.home, 'Applications', 'Jarvis.app')
@@ -136,7 +137,7 @@ test('Windows links use fixed PowerShell with data env and startup opt-in', asyn
     assert.ok(!script.includes(options.root))
     assert.equal(existsSync(env.JARVIS_LINK_PATH!), false, 'COM requires a nonexistent shortcut path')
     calls.push(env)
-    writeFileSync(env.JARVIS_LINK_PATH!, JSON.stringify(env))
+    writeFileSync(env.JARVIS_LINK_PATH!, JSON.stringify(env), { mode: 0o644 })
   }
   await nativeIntegration(options, ['--install'])
   assert.equal(calls.length, 1)
@@ -224,8 +225,176 @@ test('uninstall refuses modified artifacts and forged deletion receipts', async 
   const receiptPath = join(options.home, 'Library', 'Application Support', 'Jarvis', 'native-install.json')
   const receipt = JSON.parse(await readFile(receiptPath, 'utf8'))
   receipt.files[0].path = join(options.root, 'runtime', 'node')
-  await writeFile(receiptPath, JSON.stringify(receipt))
+  await writeFile(receiptPath, JSON.stringify(receipt, null, 2) + '\n')
   await assert.rejects(nativeIntegration(options, ['--uninstall']), /Unsafe/)
+}))
+
+test('new integrations remain removable under a group-writable creation mask', { skip: process.platform === 'win32' }, async () => {
+  const previous = process.umask(0o002)
+  try {
+    for (const platform of ['darwin', 'win32'] as const) await fixture(platform, async options => {
+      options.runPowerShell = (_script, env) => writeFileSync(env.JARVIS_LINK_PATH!, 'shortcut', { mode: 0o644 })
+      const created = await nativeIntegration(options, ['--install', '--autostart'])
+      await nativeIntegration(options, ['--uninstall'])
+      for (const path of created) assert.equal(existsSync(path), false)
+    })
+  } finally { process.umask(previous) }
+})
+
+test('strict receipt validation rejects malformed shapes and missing bindings without deleting', async () => {
+  for (const platform of ['darwin', 'win32'] as const) await fixture(platform, async options => {
+    options.runPowerShell = (_script, env) => writeFileSync(env.JARVIS_LINK_PATH!, 'shortcut', { mode: 0o644 })
+    const created = await nativeIntegration(options, ['--install', '--autostart'])
+    const state = created.at(-1)!
+    const original = JSON.parse(await readFile(state, 'utf8'))
+    const mutations = [
+      () => null, () => [], () => 'secret', () => ({ ...original, surprise: true }),
+      () => ({ ...original, root: undefined }), () => ({ ...original, root: join(options.root, '..') + '/./package' }),
+      () => ({ ...original, autostart: undefined }), () => ({ ...original, autostart: false }),
+      () => ({ ...original, files: original.files.slice(1) }),
+      () => ({ ...original, files: original.files.map(() => original.files[0]) }),
+      () => ({ ...original, files: [null, ...original.files.slice(1)] }),
+      () => ({ ...original, files: [{ ...original.files[0], extra: 1 }, ...original.files.slice(1)] }),
+      () => ({ ...original, files: [{ ...original.files[0], sha256: 'A'.repeat(64) }, ...original.files.slice(1)] }),
+      () => ({ ...original, configFile: options.root }),
+      () => ({ ...original, dataDir: options.root }),
+      () => ({ ...original, configFile: options.root, dataDir: 'relative' }),
+      () => ({ ...original, configFile: options.root + '\0', dataDir: options.root }),
+      () => ({ ...original, notificationAumid: 'forged' }),
+      ...(platform === 'win32' ? [() => ({ ...original, notificationAumid: undefined })] : []),
+    ]
+    for (const mutation of mutations) {
+      await writeFile(state, JSON.stringify(mutation(), null, 2) + '\n')
+      await assert.rejects(nativeIntegration(options, ['--uninstall']), /^Error: Unsafe integration receipt$/)
+      for (const path of created) assert.ok(existsSync(path))
+    }
+    await writeFile(state, '{"secret-not-for-errors":')
+    await assert.rejects(nativeIntegration(options, ['--uninstall']), /^Error: Unsafe integration receipt$/)
+    const validBytes = Buffer.from(JSON.stringify(original, null, 2) + '\n')
+    await writeFile(state, validBytes.toString().replace('"schemaVersion": 1,', '"schemaVersion": 1,\n  "schemaVersion": 1,'))
+    await assert.rejects(nativeIntegration(options, ['--uninstall']), /^Error: Unsafe integration receipt$/)
+    const rootOffset = validBytes.indexOf(Buffer.from('"root": "')) + Buffer.byteLength('"root": "')
+    assert.ok(rootOffset > 0)
+    const invalidUtf8 = Buffer.concat([validBytes.subarray(0, rootOffset + 1), Buffer.from([0xff]), validBytes.subarray(rootOffset + 1)])
+    assert.doesNotThrow(() => JSON.parse(invalidUtf8.toString('utf8')), 'lossy UTF-8 decoding would accept this JSON')
+    await writeFile(state, invalidUtf8)
+    await assert.rejects(nativeIntegration(options, ['--uninstall']), /^Error: Unsafe integration receipt$/)
+    for (const path of created) assert.ok(existsSync(path))
+    await writeFile(state, validBytes)
+    await nativeIntegration(options, ['--uninstall'])
+  })
+})
+
+for (const target of ['receipt', 'artifact'] as const) test(`uninstall bounds sparse ${target} before reading bytes`, async t => fixture('darwin', async options => {
+  const created = await nativeIntegration(options, ['--install', '--autostart'])
+  const path = target === 'receipt' ? created.at(-1)! : created.at(-2)!
+  await truncate(path, 16 * 1024 * 1024)
+  let opens = 0
+  const original = fsPromises.open
+  t.mock.method(fsPromises, 'open', async (...args: Parameters<typeof open>) => { opens++; return original(...args) })
+  syncBuiltinESMExports()
+  try {
+    await assert.rejects(nativeIntegration(options, ['--uninstall']), /size/)
+    assert.equal(opens, target === 'receipt' ? 0 : 3, 'oversized file is rejected before opening or allocating its payload')
+    for (const file of created) assert.ok(existsSync(file))
+  } finally { t.mock.restoreAll(); syncBuiltinESMExports() }
+}))
+
+for (const target of ['receipt', 'artifact'] as const) test(`uninstall rejects linked ${target} without deleting other artifacts`, { skip: process.platform === 'win32' }, async () => fixture('darwin', async options => {
+  const created = await nativeIntegration(options, ['--install', '--autostart'])
+  const path = target === 'receipt' ? created.at(-1)! : created.at(-2)!
+  const other = join(options.root, 'linked-sentinel')
+  await link(path, other)
+  await assert.rejects(nativeIntegration(options, ['--uninstall']), /links/)
+  for (const file of created) assert.ok(existsSync(file))
+  await unlink(other)
+  await rename(path, other)
+  await symlink(other, path)
+  await assert.rejects(nativeIntegration(options, ['--uninstall']), /symlink/)
+  assert.ok(existsSync(other))
+  for (const file of created) assert.ok(existsSync(file))
+}))
+
+test('uninstall rejects directories and FIFOs before opening payloads', { skip: process.platform === 'win32' }, async () => fixture('darwin', async options => {
+  const created = await nativeIntegration(options, ['--install', '--autostart'])
+  const target = created.at(-2)!
+  await rename(target, join(options.root, 'saved-artifact'))
+  await mkdir(target, { mode: 0o755 })
+  await assert.rejects(nativeIntegration(options, ['--uninstall']), /type/)
+  // The exact integration path was just created as an empty directory.
+  await fsPromises.rmdir(target)
+  execFileSync('mkfifo', ['-m', '600', target])
+  await assert.rejects(nativeIntegration(options, ['--uninstall']), /type/)
+  for (const path of created) assert.ok(existsSync(path))
+}))
+
+test('uninstall preflight rejects last changed artifact and unsafe permissions without repair', { skip: process.platform === 'win32' }, async () => fixture('darwin', async options => {
+  const created = await nativeIntegration(options, ['--install', '--autostart'])
+  const last = created.at(-2)!, state = created.at(-1)!
+  const original = await readFile(last)
+  await writeFile(last, 'changed')
+  await assert.rejects(nativeIntegration(options, ['--uninstall']), /changed/)
+  for (const file of created) assert.ok(existsSync(file))
+  await writeFile(last, original)
+  for (const [path, mode] of [[last, 0o666], [state, 0o644], [join(options.home, 'Applications'), 0o777]] as const) {
+    const previous = (await lstat(path)).mode & 0o777
+    await chmod(path, mode)
+    await assert.rejects(nativeIntegration(options, ['--uninstall']), /permissions/)
+    assert.equal((await lstat(path)).mode & 0o777, mode)
+    for (const file of created) assert.ok(existsSync(file))
+    await chmod(path, previous)
+  }
+}))
+
+test('uninstall revalidates identities after preflight even for same-byte replacements', async t => fixture('darwin', async options => {
+  const created = await nativeIntegration(options, ['--install', '--autostart'])
+  const originalOpen = fsPromises.open
+  let opens = 0
+  t.mock.method(fsPromises, 'open', async (...args: Parameters<typeof open>) => {
+    if (++opens === 5) {
+      const bytes = await readFile(created[0]!)
+      await rename(created[0]!, join(options.root, 'old-artifact'))
+      await writeFile(created[0]!, bytes, { mode: 0o600 })
+    }
+    return originalOpen(...args)
+  })
+  syncBuiltinESMExports()
+  try {
+    await assert.rejects(nativeIntegration(options, ['--uninstall']), /changed/)
+    for (const path of created) assert.ok(existsSync(path))
+  } finally { t.mock.restoreAll(); syncBuiltinESMExports() }
+}))
+
+for (const target of ['artifact', 'receipt'] as const) test(`uninstall detects ${target} mutation after an earlier unlink`, async t => fixture('darwin', async options => {
+  const created = await nativeIntegration(options, ['--install', '--autostart'])
+  const originalUnlink = fsPromises.unlink
+  let calls = 0
+  t.mock.method(fsPromises, 'unlink', async (path: Parameters<typeof unlink>[0]) => {
+    await originalUnlink(path)
+    if (++calls === 1) {
+      const changed = target === 'artifact' ? created[1]! : created.at(-1)!
+      const bytes = await readFile(changed)
+      await rename(changed, join(options.root, 'old-file'))
+      await writeFile(changed, bytes, { mode: 0o600 })
+    }
+  })
+  syncBuiltinESMExports()
+  try {
+    await assert.rejects(nativeIntegration(options, ['--uninstall']), /changed/)
+    assert.equal(existsSync(created[0]!), false, 'deletions are not transactional')
+    assert.ok(existsSync(created.at(-1)!))
+    if (target === 'artifact') for (const path of created.slice(1)) assert.ok(existsSync(path))
+  } finally { t.mock.restoreAll(); syncBuiltinESMExports() }
+}))
+
+test('uninstall accepts missing artifacts and removed package; unsafe absent-state ancestors still fail', async () => fixture('darwin', async options => {
+  const created = await nativeIntegration(options, ['--install'])
+  await unlink(created[0]!)
+  await rename(options.root, options.root + '-moved')
+  assert.equal((await nativeIntegration(options, ['--uninstall'])).length, 2)
+  assert.deepEqual(await nativeIntegration(options, ['--uninstall']), [])
+  await writeFile(join(options.home, 'Applications', 'Jarvis.app'), 'not a directory')
+  await assert.rejects(nativeIntegration(options, ['--uninstall']), /ancestor|ENOTDIR/)
 }))
 
 test('symlink integration ancestors are refused', { skip: process.platform === 'win32' }, async () => fixture('darwin', async options => {
