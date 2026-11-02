@@ -92,7 +92,24 @@ async function windowsPrivate(paths: string[]) {
   if (process.platform !== 'win32') return
   const systemRoot = process.env.SystemRoot
   assert(systemRoot && isAbsolute(systemRoot), 'Windows system root unavailable')
-  await promisify(execFile)(join(systemRoot, 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe'), ['-NoLogo', '-NoProfile', '-NonInteractive', '-EncodedCommand', Buffer.from(WINDOWS_PRIVATE, 'utf16le').toString('base64')], { env: { ...process.env, JARVIS_INTEGRATION_PATHS: JSON.stringify(paths) }, timeout: 10_000, maxBuffer: 16 * 1024, windowsHide: true, shell: false })
+  try {
+    await promisify(execFile)(join(systemRoot, 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe'), ['-NoLogo', '-NoProfile', '-NonInteractive', '-EncodedCommand', Buffer.from(WINDOWS_PRIVATE, 'utf16le').toString('base64')], { env: { ...process.env, JARVIS_INTEGRATION_PATHS: JSON.stringify(paths) }, timeout: 10_000, maxBuffer: 16 * 1024, windowsHide: true, shell: false })
+  } catch (error) {
+    // execFile errors include the entire encoded command. Retain only bounded
+    // process evidence, never its message, stack, output, command, or cause.
+    const safe = new Error('Native integration snapshot permission verification failed') as Error & { code?: string | number; killed?: boolean; signal?: string }
+    try {
+      if (typeof error === 'object' && error !== null) {
+        const code = Object.getOwnPropertyDescriptor(error, 'code')?.value
+        const killed = Object.getOwnPropertyDescriptor(error, 'killed')?.value
+        const signal = Object.getOwnPropertyDescriptor(error, 'signal')?.value
+        if ((typeof code === 'number' && Number.isInteger(code) && code >= 0 && code <= 255) || (typeof code === 'string' && ['ETIMEDOUT', 'SIGTERM', 'SIGKILL', 'ENOENT', 'EACCES', 'EPERM', 'EEXIST', 'ENOTDIR', 'EISDIR', 'ENOSPC', 'EMFILE', 'ENFILE', 'EIO', 'EBUSY', 'EROFS', 'ENAMETOOLONG', 'ELOOP'].includes(code))) safe.code = code
+        if (typeof killed === 'boolean') safe.killed = killed
+        if (signal === 'SIGTERM' || signal === 'SIGKILL') safe.signal = signal
+      }
+    } catch { /* An unreadable error must not bypass the sanitized boundary. */ }
+    throw safe
+  }
 }
 async function boundedRead(path: string, limit: number) {
   const before = await lstat(path, { bigint: true }); privateStat(before, false)

@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import { createHash } from 'node:crypto'
-import { execFileSync, spawn } from 'node:child_process'
+import childProcess, { execFileSync, spawn } from 'node:child_process'
 import { once } from 'node:events'
 import fsPromises, { chmod, lstat, mkdir, mkdtemp, readFile, readdir, realpath, rm, unlink, writeFile, symlink, link } from 'node:fs/promises'
 import { syncBuiltinESMExports } from 'node:module'
@@ -10,6 +10,7 @@ import { test } from 'node:test'
 import { describeNativeIntegration, type InstallOptions } from '../scripts/install-native.ts'
 import { createIntegrationSnapshot, restoreIntegrationSnapshot, verifyIntegrationSnapshot } from '../scripts/native-integration-snapshot.ts'
 import { WINDOWS_AUMID } from '../src/windows-notification.ts'
+import { sanitizeDiagnostic, type Diagnostic } from './fixtures/native-snapshot-diagnostic.ts'
 const hash = (bytes: Buffer) => createHash('sha256').update(bytes).digest('hex')
 async function fixture(platform: 'darwin' | 'win32', autostart: boolean, run: (value: { integration: InstallOptions; destination: string; receiptPath: string; artifactPaths: string[]; temp: string }) => Promise<void>) {
   const base = await realpath(tmpdir()), temp = await mkdtemp(join(base, 'integration-snapshot-'))
@@ -197,6 +198,78 @@ test('copy corruption fails before publishing the manifest and releases the capt
   const retry = await createIntegrationSnapshot({ integration, destination: join(temp, 'retry-after-failure') })
   assert.equal(retry.manifestSha256, baseline.manifestSha256)
   assert.deepEqual(retry.manifest, baseline.manifest)
+}))
+test('Windows permission process failures are sanitized at the public snapshot boundary', async () => fixture('win32', true, async ({ integration, destination }) => {
+  const captured = await createIntegrationSnapshot({ integration, destination })
+  const originalLstat = fsPromises.lstat, originalExecFile = childProcess.execFile
+  const platform = Object.getOwnPropertyDescriptor(process, 'platform')!
+  const systemRoot = process.env.SystemRoot
+  const cases: Array<{ fields: Record<string, unknown>; diagnostic: Diagnostic; unreadable?: 'accessor' | 'proxy' }> = [
+    { fields: {}, diagnostic: { ok: false, kind: 'unknown' }, unreadable: 'accessor' },
+    { fields: {}, diagnostic: { ok: false, kind: 'unknown' }, unreadable: 'proxy' },
+    { fields: { code: 'ETIMEDOUT', killed: true, signal: 'SIGTERM' }, diagnostic: { ok: false, kind: 'timeout', code: 'ETIMEDOUT', killed: true, signal: 'SIGTERM' } },
+    { fields: { code: null, killed: true, signal: 'SIGTERM' }, diagnostic: { ok: false, kind: 'terminated', killed: true, signal: 'SIGTERM' } },
+    { fields: { code: 'SIGKILL', killed: true, signal: 'SIGKILL' }, diagnostic: { ok: false, kind: 'terminated', code: 'SIGKILL', killed: true, signal: 'SIGKILL' } },
+    ...[0, 71, 255].map(code => ({ fields: { code, killed: false, signal: null }, diagnostic: { ok: false as const, kind: 'process-exit' as const, code, killed: false } })),
+    { fields: { code: 'EACCES' }, diagnostic: { ok: false, kind: 'filesystem', code: 'EACCES' } },
+    ...[-1, 256, 1.5, 'RAW_SECRET'.repeat(1000), { secret: 'RAW_SECRET' }].map(code => ({ fields: { code, killed: 'RAW_SECRET', signal: 'RAW_SECRET' }, diagnostic: { ok: false as const, kind: 'unknown' as const } })),
+  ]
+  try {
+    process.env.SystemRoot = dirname(destination)
+    // Enter the Windows-only check after real filesystem/path preflight. This
+    // exercises the private helper on every host without exporting a test seam.
+    fsPromises.lstat = (async (...args: Parameters<typeof originalLstat>) => {
+      const result = await originalLstat(...args)
+      if (args[0] === join(destination, 'payload') && typeof args[1] === 'object' && args[1]?.bigint) Object.defineProperty(process, 'platform', { ...platform, value: 'win32' })
+      return result
+    }) as typeof originalLstat
+    for (const { fields, diagnostic, unreadable } of cases) {
+      let calls = 0, accessorReads = 0, encodedCommand = ''
+      const raw = Object.assign(new Error('RAW_SECRET -EncodedCommand ' + 'X'.repeat(20_000)), fields, { cmd: 'RAW_SECRET', stdout: 'RAW_SECRET', stderr: 'RAW_SECRET', cause: new Error('RAW_SECRET') })
+      childProcess.execFile = ((file: string, args: string[], options: childProcess.ExecFileOptions, callback: (error: Error, stdout: string, stderr: string) => void) => {
+        calls++
+        assert.equal(file, join(process.env.SystemRoot!, 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe'))
+        assert.deepEqual(args.slice(0, -1), ['-NoLogo', '-NoProfile', '-NonInteractive', '-EncodedCommand'])
+        encodedCommand = args.at(-1)!
+        assert.ok(Buffer.from(encodedCommand, 'base64').toString('utf16le').includes('Get-Acl -LiteralPath $p'))
+        assert.equal(options.timeout, 10_000)
+        assert.equal(options.maxBuffer, 16 * 1024)
+        assert.equal(options.windowsHide, true)
+        assert.equal(options.shell, false)
+        assert.deepEqual(JSON.parse(options.env!.JARVIS_INTEGRATION_PATHS!), [destination, join(destination, 'payload'), join(destination, 'manifest.json'), join(destination, 'receipt.bin')])
+        raw.message += encodedCommand
+        if (unreadable === 'accessor') Object.defineProperty(raw, 'code', { get() { accessorReads++; throw new Error('RAW_SECRET accessor failure') } })
+        const rejection = unreadable === 'proxy' ? new Proxy(raw, { getOwnPropertyDescriptor() { throw new Error('RAW_SECRET descriptor failure') } }) : raw
+        callback(rejection, 'RAW_SECRET stdout', 'RAW_SECRET stderr')
+      }) as unknown as typeof originalExecFile
+      syncBuiltinESMExports()
+      await assert.rejects(verifyIntegrationSnapshot({ snapshot: destination, manifestSha256: captured.manifestSha256, integration }), (error: unknown) => {
+        assert.ok(error instanceof Error)
+        assert.notEqual(error, raw)
+        assert.equal(error.message, 'Native integration snapshot permission verification failed')
+        assert.ok(error.message.length <= 512)
+        assert.deepEqual(sanitizeDiagnostic(error), diagnostic)
+        assert.deepEqual(Object.getOwnPropertyNames(error).sort(), ['message', 'stack', ...['code', 'killed', 'signal'].filter(key => Object.hasOwn(diagnostic, key))].sort())
+        for (const text of [String(error), error.stack!, JSON.stringify(error)]) {
+          assert.ok(!text.includes('RAW_SECRET'))
+          assert.ok(!text.includes('-EncodedCommand'))
+          assert.ok(!text.includes(encodedCommand))
+        }
+        assert.ok(error.stack!.includes('windowsPrivate'))
+        return true
+      })
+      assert.equal(calls, 1, 'permission checks must not retry')
+      assert.equal(accessorReads, 0, 'error metadata accessors must not execute')
+      Object.defineProperty(process, 'platform', platform)
+    }
+  } finally {
+    Object.defineProperty(process, 'platform', platform)
+    if (systemRoot === undefined) delete process.env.SystemRoot
+    else process.env.SystemRoot = systemRoot
+    fsPromises.lstat = originalLstat
+    childProcess.execFile = originalExecFile
+    syncBuiltinESMExports()
+  }
 }))
 test('native Windows verification accepts readonly private ACLs and rejects shared ACLs without repair', { skip: process.platform !== 'win32' }, async () => fixture('win32', true, async ({ integration, destination }) => {
   const result = await createIntegrationSnapshot({ integration, destination })
