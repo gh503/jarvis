@@ -9,7 +9,7 @@ import { dirname, join, sep } from 'node:path'
 import { createNativeInstallIntent } from '../scripts/native-install-intent.ts'
 import { writeNativeInstallIntent } from '../scripts/native-install-intent-store.ts'
 import { test } from 'node:test'
-import { describeNativeIntegration, inspectNativeIntegration, nativeIntegration, parseArgs, POWERSHELL_LINK, shellQuote, validatePackage, windowsQuote, xml } from '../scripts/install-native.ts'
+import { describeNativeIntegration, inspectNativeIntegration, nativeIntegration, parseArgs, POWERSHELL_LINK, renderNativeIntegration, shellQuote, validatePackage, windowsQuote, xml } from '../scripts/install-native.ts'
 import type { InstallOptions, Platform } from '../scripts/install-native.ts'
 import { WINDOWS_AUMID } from '../src/windows-notification.ts'
 import { ensurePrivateDataDirectory } from '../src/private-directory.ts'
@@ -36,6 +36,66 @@ async function fixture(platform: Platform, run: (options: InstallOptions) => Pro
     await rm(temp, { recursive: true, force: true })
   }
 }
+
+test('pure renderer preserves legacy bytes and quoting for nonexistent Unicode paths', { skip: process.platform === 'win32' }, () => {
+  const options = { platform: 'darwin' as const, root: "/missing/中文 ' & $", home: '/missing/home' }
+  const config = '/external/配置 "<&>.env'
+  const plan = renderNativeIntegration(options, true, config)
+  assert.equal(plan.platform, 'darwin')
+  if (plan.platform !== 'darwin') return
+  assert.deepEqual(plan.artifacts.map(({ path, mode }) => ({ path, mode })), [
+    { path: '/missing/home/Applications/Jarvis.app/Contents/Info.plist', mode: 0o600 },
+    { path: '/missing/home/Applications/Jarvis.app/Contents/MacOS/Jarvis', mode: 0o700 },
+    { path: '/missing/home/Library/LaunchAgents/org.jarvis.portable.plist', mode: 0o600 },
+  ])
+  const header = '<?xml version="1.0" encoding="UTF-8"?>\n<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">\n<plist version="1.0"><dict>'
+  assert.deepEqual(plan.artifacts.map(artifact => artifact.bytes), [
+    Buffer.from(header + '<key>CFBundleIdentifier</key><string>org.jarvis.portable</string><key>CFBundleName</key><string>Jarvis</string><key>CFBundleExecutable</key><string>Jarvis</string><key>CFBundlePackageType</key><string>APPL</string><key>CFBundleVersion</key><string>1</string><key>LSUIElement</key><true/></dict></plist>\n'),
+    Buffer.from(String.raw`#!/bin/sh
+set -eu
+cd '/missing/中文 '\'' & $'
+exec '/missing/中文 '\'' & $/runtime/node' '--experimental-transform-types' '/missing/中文 '\'' & $/scripts/app.ts' '--config' '/external/配置 "<&>.env'
+`),
+    Buffer.from(header + '<key>Label</key><string>org.jarvis.portable</string><key>ProgramArguments</key><array><string>/missing/中文 &apos; &amp; $/runtime/node</string><string>--experimental-transform-types</string><string>/missing/中文 &apos; &amp; $/scripts/app.ts</string><string>--config</string><string>/external/配置 &quot;&lt;&amp;&gt;.env</string><string>--no-open</string></array><key>WorkingDirectory</key><string>/missing/中文 &apos; &amp; $</string><key>RunAtLoad</key><true/></dict></plist>\n'),
+  ])
+  assert.deepEqual(renderNativeIntegration(options, false, config), { platform: 'darwin', artifacts: plan.artifacts.slice(0, 2) })
+  const windows = { ...options, platform: 'win32' as const, appData: '/missing/roaming', localAppData: '/missing/local' }
+  const expected = { path: '/missing/roaming/Microsoft/Windows/Start Menu/Programs/Jarvis.lnk', target: "/missing/中文 ' & $/runtime/node.exe", args: String.raw`"--experimental-transform-types" "/missing/中文 ' & $/scripts/app.ts" "--config" "/external/配置 \"<&>.env"`, cwd: options.root }
+  assert.deepEqual(renderNativeIntegration(windows, false, config), { platform: 'win32', shortcuts: [expected] })
+  assert.deepEqual(renderNativeIntegration(windows, true, config), { platform: 'win32', shortcuts: [expected, { ...expected, path: '/missing/roaming/Microsoft/Windows/Start Menu/Programs/Startup/Jarvis.lnk', args: expected.args + ' "--no-open"' }] })
+  plan.artifacts[0]!.bytes.fill(0)
+  assert.notDeepEqual(renderNativeIntegration(options, true, config), plan, 'each render owns its bytes')
+})
+
+for (const platform of ['darwin', 'win32'] as const) for (const autostart of [false, true]) for (const configured of [false, true]) test(`${platform} installer consumes render plan (${autostart}, config ${configured})`, async () => fixture(platform, async options => {
+  const privateDir = join(dirname(options.root), 'external 配置')
+  await ensurePrivateDataDirectory(privateDir)
+  const config = configured ? join(privateDir, "config ' & $.env") : undefined
+  if (config) await writeFile(config, `JARVIS_DATA_DIR="${join(privateDir, 'data')}"\nJARVIS_AUTH_TOKEN=never-render-secret\n`, { mode: 0o600 })
+  const plan = renderNativeIntegration(options, autostart, config)
+  assert.deepEqual(renderNativeIntegration(options, autostart, config), plan)
+  const calls: { target: string; args: string; cwd: string }[] = []
+  options.runPowerShell = (script, env) => {
+    assert.equal(script, POWERSHELL_LINK)
+    assert.equal(existsSync(env.JARVIS_LINK_PATH!), false)
+    calls.push({ target: env.JARVIS_LINK_TARGET!, args: env.JARVIS_LINK_ARGS!, cwd: env.JARVIS_LINK_CWD! })
+    writeFileSync(env.JARVIS_LINK_PATH!, Buffer.from([0, 255, calls.length]), { mode: 0o600 })
+  }
+  const created = await nativeIntegration(options, ['--install', ...(autostart ? ['--autostart'] : []), ...(config ? ['--config', config] : [])])
+  const planned = plan.platform === 'darwin' ? plan.artifacts : plan.shortcuts
+  assert.deepEqual(created.slice(0, -1), planned.map(artifact => artifact.path))
+  if (plan.platform === 'darwin') {
+    for (const artifact of plan.artifacts) {
+      assert.deepEqual(await readFile(artifact.path), artifact.bytes)
+      if (process.platform !== 'win32') assert.equal((await lstat(artifact.path)).mode & 0o777, artifact.mode & ~process.umask())
+    }
+  } else assert.deepEqual(calls, plan.shortcuts.map(({ target, args, cwd }) => ({ target, args, cwd })))
+  const receipt = JSON.parse(await readFile(created.at(-1)!, 'utf8'))
+  assert.deepEqual(receipt.files.map((entry: { path: string }) => entry.path), planned.map(artifact => artifact.path))
+  for (const entry of receipt.files) assert.equal(entry.sha256, createHash('sha256').update(await readFile(entry.path)).digest('hex'))
+  if (!autostart) assert.equal(existsSync(describeNativeIntegration(options).artifactPaths.at(-1)!), false)
+  for (const path of created) assert.ok(!(await readFile(path)).includes('never-render-secret'))
+}))
 
 for (const platform of ['darwin', 'win32'] as const) for (const autostart of [false, true]) test(`${platform} inspection preserves exact bytes, modes and startup absence (${autostart})`, async () => fixture(platform, async options => {
   options.runPowerShell = (_script, env) => writeFileSync(env.JARVIS_LINK_PATH!, Buffer.from([0, 255, 13, 10]), { mode: 0o600 })

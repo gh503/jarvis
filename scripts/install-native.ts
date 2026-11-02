@@ -139,7 +139,8 @@ function validateOptionPath(path: unknown): asserts path is string {
   // Windows aliases must fail even when the destination does not yet exist.
   if (process.platform === 'win32' && (!/^[a-z]:\\/i.test(path) || path.slice(2).includes(':') || path.includes('/') || !path.slice(3).split('\\').every(part => !/[. ]$/.test(part) && !/^(con|prn|aux|nul|com[1-9¹²³]|lpt[1-9¹²³])(?:\.|$)/i.test(part)))) throw new Error('Unsafe integration option path: native Windows alias')
 }
-function locations(options: InstallOptions) {
+type RenderOptions = Pick<InstallOptions, 'platform' | 'root' | 'home' | 'appData' | 'localAppData'>
+function locations(options: RenderOptions) {
   const app = join(options.home, 'Applications', 'Jarvis.app')
   const state = options.platform === 'darwin' ? join(options.home, 'Library', 'Application Support', 'Jarvis', 'native-install.json') : join(options.localAppData!, 'Jarvis', 'native-install.json')
   const menu = join(options.appData ?? options.home, 'Microsoft', 'Windows', 'Start Menu', 'Programs')
@@ -148,6 +149,31 @@ function locations(options: InstallOptions) {
     : [join(menu, 'Jarvis.lnk'), join(menu, 'Startup', 'Jarvis.lnk')]
   return { app, state, files }
 }
+export type NativeIntegrationRenderPlan =
+  | { platform: 'darwin'; artifacts: { path: string; bytes: Buffer; mode: number }[] }
+  | { platform: 'win32'; shortcuts: { path: string; target: string; args: string; cwd: string }[] }
+
+/** Pure rendering of already resolved inputs, in publication order. No validation or I/O.
+ * Modes are requested creation modes (subject to umask). Windows COM supplies the
+ * shortcut bytes later; this plan cannot predict their bytes or hashes. */
+export function renderNativeIntegration(options: RenderOptions, autostart: boolean, configFile?: string): NativeIntegrationRenderPlan {
+  const { root } = options
+  const { files } = locations(options)
+  const runtime = join(root, 'runtime', options.platform === 'win32' ? 'node.exe' : 'node')
+  const argv = ['--experimental-transform-types', join(root, 'scripts', 'app.ts'), ...(configFile ? ['--config', configFile] : [])]
+  if (options.platform === 'darwin') {
+    const artifacts = [
+      { path: files[0]!, bytes: Buffer.from(plist('<key>CFBundleIdentifier</key><string>org.jarvis.portable</string><key>CFBundleName</key><string>Jarvis</string><key>CFBundleExecutable</key><string>Jarvis</string><key>CFBundlePackageType</key><string>APPL</string><key>CFBundleVersion</key><string>1</string><key>LSUIElement</key><true/>')), mode: 0o600 },
+      { path: files[1]!, bytes: Buffer.from(`#!/bin/sh\nset -eu\ncd ${shellQuote(root)}\nexec ${[runtime, ...argv].map(shellQuote).join(' ')}\n`), mode: 0o700 },
+    ]
+    if (autostart) artifacts.push({ path: files[2]!, bytes: Buffer.from(plist(`<key>Label</key><string>org.jarvis.portable</string><key>ProgramArguments</key><array>${[runtime, ...argv, '--no-open'].map(value => `<string>${xml(value)}</string>`).join('')}</array><key>WorkingDirectory</key><string>${xml(root)}</string><key>RunAtLoad</key><true/>`)), mode: 0o600 })
+    return { platform: 'darwin', artifacts }
+  }
+  return { platform: 'win32', shortcuts: files.slice(0, autostart ? 2 : 1).map((path, index) => ({
+    path, target: runtime, args: [...argv, ...(index === 1 ? ['--no-open'] : [])].map(windowsQuote).join(' '), cwd: root,
+  })) }
+}
+
 async function absent(path: string): Promise<void> {
   try { await lstat(path) } catch (error) { if ((error as NodeJS.ErrnoException).code === 'ENOENT') return; throw error }
   throw new Error(`Integration already exists; uninstall it first: ${path}`)
@@ -357,8 +383,7 @@ export async function nativeIntegration(options: InstallOptions, args: string[])
     await absent(state)
     if (options.platform === 'darwin') await absent(app)
     for (const path of files) await absent(path)
-    const runtime = join(root, 'runtime', options.platform === 'win32' ? 'node.exe' : 'node')
-    const argv = ['--experimental-transform-types', join(root, 'scripts', 'app.ts'), ...(binding.configFile ? ['--config', binding.configFile] : [])]
+    const plan = renderNativeIntegration({ ...options, root }, autostart, binding.configFile)
     interface CreatedRecord { path: string; identity?: BigIntStats; sha256?: string; limit: number }
     const created: CreatedRecord[] = []
     const userRoots = [options.home, options.appData, options.localAppData].filter((path): path is string => path !== undefined).map(path => resolve(path))
@@ -396,13 +421,10 @@ export async function nativeIntegration(options: InstallOptions, args: string[])
       if (failed) throw failure
     }
     try {
-      if (options.platform === 'darwin') {
-        await output(files[0]!, plist('<key>CFBundleIdentifier</key><string>org.jarvis.portable</string><key>CFBundleName</key><string>Jarvis</string><key>CFBundleExecutable</key><string>Jarvis</string><key>CFBundlePackageType</key><string>APPL</string><key>CFBundleVersion</key><string>1</string><key>LSUIElement</key><true/>'))
-        await output(files[1]!, `#!/bin/sh\nset -eu\ncd ${shellQuote(root)}\nexec ${[runtime, ...argv].map(shellQuote).join(' ')}\n`, 0o700)
-        if (autostart) await output(files[2]!, plist(`<key>Label</key><string>org.jarvis.portable</string><key>ProgramArguments</key><array>${[runtime, ...argv, '--no-open'].map(value => `<string>${xml(value)}</string>`).join('')}</array><key>WorkingDirectory</key><string>${xml(root)}</string><key>RunAtLoad</key><true/>`))
+      if (plan.platform === 'darwin') {
+        for (const artifact of plan.artifacts) await output(artifact.path, artifact.bytes, artifact.mode)
       } else {
-        for (const [index, path] of files.entries()) {
-          if (index === 1 && !autostart) continue
+        for (const { path, target, args, cwd } of plan.shortcuts) {
           await mkdir(dirname(path), { recursive: true, mode: 0o755 })
           // COM must see a nonexistent path: a zero-byte reservation is not a valid .lnk.
           // Publish exclusively after generation, so existing final links are never replaced.
@@ -412,7 +434,7 @@ export async function nativeIntegration(options: InstallOptions, args: string[])
           let failure: unknown
           let failed = false
           try {
-            ;(options.runPowerShell ?? runPowerShell)(POWERSHELL_LINK, { JARVIS_LINK_PATH: temporaryLink, JARVIS_LINK_TARGET: runtime, JARVIS_LINK_ARGS: [...argv, ...(index === 1 ? ['--no-open'] : [])].map(windowsQuote).join(' '), JARVIS_LINK_CWD: root })
+            ;(options.runPowerShell ?? runPowerShell)(POWERSHELL_LINK, { JARVIS_LINK_PATH: temporaryLink, JARVIS_LINK_TARGET: target, JARVIS_LINK_ARGS: args, JARVIS_LINK_CWD: cwd })
             const source = await boundedIntegrationRead(temporaryLink, 1024 * 1024, userRoots)
             if (!source?.bytes.length) throw new Error('PowerShell did not create a shortcut')
             staged = { path: temporaryLink, identity: source.identity, sha256: digest(source.bytes), limit: 1024 * 1024 }

@@ -8,6 +8,8 @@ Extract a trusted native package into a permanent, writable location first. Keep
 
 Current source safety guard (added after the historical releases above): install and uninstall refuse when a retained [install intent](native-install-intent.md) exists, including a matching binding. Malformed or unsafe records also block mutation. The check runs under the existing shared installation lock before reading package/configuration contents, even when no integration receipt exists. Preserve the intent and integration files for review; this refusal does not authorize deleting the record, automatic repair, replay or cleanup. The installer does not yet publish or retire intents. A missing intent preserves the existing install/uninstall checks; it does not by itself prove the integration locations are empty.
 
+The source installer now consumes a pure `renderNativeIntegration` plan after its existing validation and absence checks. macOS output bytes and requested creation modes are determined together before publication; Windows plans contain only COM target, quoted arguments and working directory, with shortcut bytes still obtained from actual COM output. The renderer performs no filesystem checks or writes and is not an ownership or recovery API. Exclusive publication, receipt hashing from actual files, retained-intent refusal, and failure cleanup remain in the installer. This prerequisite does not add persisted intent publication, transaction recovery, or activation.
+
 ## Commands
 
 For a package whose installer dependencies have been verified, run from the extracted package directory using its bundled Node 24 runtime. Do not use these installer commands with the affected v2.0.65/v2.0.68 archives.
