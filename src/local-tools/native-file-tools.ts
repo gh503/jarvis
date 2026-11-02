@@ -16,7 +16,7 @@ function decode(bytes: Buffer): string {
 
 /** Native read capabilities are constructed only from explicitly configured readRoots.
  * The platform argument is trusted application/test wiring, never a tool argument. */
-export function nativeFileDefinitions(deps: { settings: LocalToolSettings; storageFile?: string }, platform: NodeJS.Platform = process.platform): ToolDefinition[] {
+export function nativeFileDefinitions(deps: { settings: LocalToolSettings; storageFile?: string; externalConfigFile?: string }, platform: NodeJS.Platform = process.platform): ToolDefinition[] {
   if ((platform !== 'darwin' && platform !== 'win32') || !existsSync(nativeFilesystemExecutable())) return []
   const windows = platform === 'win32'
   const comparison = (value: string) => windows ? value.toLowerCase() : value
@@ -42,7 +42,8 @@ export function nativeFileDefinitions(deps: { settings: LocalToolSettings; stora
     return { root, identity: `${st.dev}:${st.ino}` }
   }
   const snapshot = deps.settings.snapshot(), settingsKey = JSON.stringify(snapshot)
-  const privateDirs = [path.dirname(deps.settings.file), path.dirname(deps.storageFile ?? path.join(path.dirname(deps.settings.file), 'local-files.json')), snapshot.outputDir].map(p => path.resolve(p))
+  const externalConfigFile = Object.hasOwn(deps, 'externalConfigFile') ? deps.externalConfigFile : process.env.JARVIS_CONFIG_FILE
+  const privateDirs = [path.dirname(deps.settings.file), path.dirname(deps.storageFile ?? path.join(path.dirname(deps.settings.file), 'local-files.json')), snapshot.outputDir, ...(externalConfigFile === undefined ? [] : [path.dirname(externalConfigFile)])].map(p => path.resolve(p))
   // Private storage permits symlink ancestors. Exclude both lexical and actual
   // directories, binding the latter so relocation cannot open a disclosure gap.
   const inspectPrivate = (configured: string) => {
@@ -68,6 +69,8 @@ export function nativeFileDefinitions(deps: { settings: LocalToolSettings; stora
     }
   })
   const assertCurrent = () => {
+    if (process.env.JARVIS_CONFIG_FILE !== externalConfigFile) throw new Error('External config selection changed; refresh tool definitions')
+    if (externalConfigFile !== undefined && (!path.isAbsolute(externalConfigFile) || externalConfigFile.includes('\0'))) throw new Error('External config path is unsafe')
     if (JSON.stringify(deps.settings.snapshot()) !== settingsKey) throw new Error('File settings changed; refresh tool definitions')
     for (let i = 0; i < privateInitial.length; i++) {
       const expected = privateInitial[i]
@@ -101,7 +104,7 @@ export function nativeFileDefinitions(deps: { settings: LocalToolSettings; stora
     const parameters = { type: 'object', properties: spec.properties, required: spec.required, additionalProperties: false }
     return {
       name: spec.name, description: spec.description, parameters,
-      definitionHash: hash(JSON.stringify({ backend: 'native-files-v1', platform, settings: snapshot, roots: initial, privateDirs, privateInitial, name: spec.name, parameters })),
+      definitionHash: hash(JSON.stringify({ backend: 'native-files-v1', platform, settings: snapshot, externalConfigFile, roots: initial, privateDirs, privateInitial, name: spec.name, parameters })),
       usage: 'local', permission: 'allow', effect: 'read', destination: 'local',
       async execute(args, context) {
         let fs: NativeFilesystem | undefined, token: string | undefined

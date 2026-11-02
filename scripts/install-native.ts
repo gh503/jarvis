@@ -8,6 +8,7 @@ import { homedir } from 'node:os'
 import { dirname, isAbsolute, join, resolve } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import { PROPERTY_STORE_TYPES, WINDOWS_AUMID } from '../src/windows-notification.ts'
+import { loadExternalConfig } from '../src/external-config.ts'
 
 export type Platform = 'darwin' | 'win32'
 export interface InstallOptions {
@@ -20,11 +21,21 @@ export interface InstallOptions {
   runPowerShell?: (script: string, env: NodeJS.ProcessEnv) => void
 }
 const digest = (data: Buffer | string) => createHash('sha256').update(data).digest('hex')
-export function parseArgs(args: string[]): { action: 'install' | 'uninstall'; autostart: boolean } {
-  if (args.some(arg => !['--install', '--uninstall', '--autostart'].includes(arg)) || new Set(args).size !== args.length || args.includes('--install') === args.includes('--uninstall') || (args.includes('--uninstall') && args.includes('--autostart'))) {
-    throw new Error('Usage: install-native.ts --install [--autostart] | --uninstall')
+export function parseArgs(args: string[]): { action: 'install' | 'uninstall'; autostart: boolean; configFile?: string } {
+  const usage = () => new Error('Usage: install-native.ts --install [--autostart] [--config ABS] | --uninstall')
+  const flags = new Set<string>()
+  let configFile: string | undefined
+  for (let index = 0; index < args.length; index++) {
+    const arg = args[index]!
+    if (!['--install', '--uninstall', '--autostart', '--config'].includes(arg) || flags.has(arg)) throw usage()
+    flags.add(arg)
+    if (arg === '--config') {
+      configFile = args[++index]
+      if (!configFile || !isAbsolute(configFile) || /[\0\r\n]/.test(configFile)) throw usage()
+    }
   }
-  return { action: args.includes('--install') ? 'install' : 'uninstall', autostart: args.includes('--autostart') }
+  if (flags.has('--install') === flags.has('--uninstall') || (flags.has('--uninstall') && (flags.has('--autostart') || flags.has('--config')))) throw usage()
+  return { action: flags.has('--install') ? 'install' : 'uninstall', autostart: flags.has('--autostart'), ...(configFile === undefined ? {} : { configFile }) }
 }
 export const shellQuote = (value: string) => `'${value.replaceAll("'", "'\\''")}'`
 export function windowsQuote(value: string): string {
@@ -149,7 +160,10 @@ async function safeAncestors(path: string): Promise<void> {
 }
 
 export async function nativeIntegration(options: InstallOptions, args: string[]): Promise<string[]> {
-  const { action, autostart } = parseArgs(args)
+  const { action, autostart, configFile } = parseArgs(args)
+  // Validate on the host before any integration mutation; never snapshot secrets.
+  const externalConfig = configFile === undefined ? undefined : loadExternalConfig(configFile)
+  const binding = configFile === undefined ? {} : { configFile: await realpath(configFile), dataDir: externalConfig!.JARVIS_DATA_DIR }
   const { app, state, files } = locations(options)
   for (const path of [state, ...files]) await safeAncestors(path)
   if (action === 'uninstall') {
@@ -177,7 +191,7 @@ export async function nativeIntegration(options: InstallOptions, args: string[])
   if (options.platform === 'darwin') await absent(app)
   for (const path of files) await absent(path)
   const runtime = join(root, 'runtime', options.platform === 'win32' ? 'node.exe' : 'node')
-  const argv = ['--experimental-transform-types', join(root, 'scripts', 'app.ts')]
+  const argv = ['--experimental-transform-types', join(root, 'scripts', 'app.ts'), ...(binding.configFile ? ['--config', binding.configFile] : [])]
   const created: string[] = []
   async function output(path: string, content: string, mode = 0o600) {
     await mkdir(dirname(path), { recursive: true })
@@ -211,7 +225,7 @@ export async function nativeIntegration(options: InstallOptions, args: string[])
     }
     const records = []
     for (const path of created) records.push({ path, sha256: digest(await readFile(path)) })
-    await output(state, JSON.stringify({ schemaVersion: 1, platform: options.platform, root, autostart, ...(options.platform === 'win32' ? { notificationAumid: WINDOWS_AUMID } : {}), files: records }, null, 2) + '\n')
+    await output(state, JSON.stringify({ schemaVersion: 1, platform: options.platform, root, autostart, ...binding, ...(options.platform === 'win32' ? { notificationAumid: WINDOWS_AUMID } : {}), files: records }, null, 2) + '\n')
     return created
   } catch (error) {
     // Only exact paths created by this invocation, never package or user data trees.

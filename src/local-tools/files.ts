@@ -26,6 +26,20 @@ interface Backup {id:string;path:string;content:string;version:string;sessionId:
 export class FileTools {
   private catalog:Artifact[]=[]
   private catalogLoaded=false
+  private readonly externalConfigFile=process.env.JARVIS_CONFIG_FILE
+  private readonly externalConfigInitial=this.inspectExternalConfig()
+  private inspectExternalConfig():{lexical:string;root:string;identity:string}|null {
+    if(this.externalConfigFile===undefined)return null
+    try {const lexical=dirname(absolute(this.externalConfigFile)),root=realpathSync(lexical),stat=lstatSync(root,{bigint:true});if(!stat.isDirectory())return null;return {lexical,root,identity:`${stat.dev}:${stat.ino}`}}catch{return null}
+  }
+  private externalConfigDirs():string[] {
+    if(process.env.JARVIS_CONFIG_FILE!==this.externalConfigFile)throw new Error('External config selection changed; restart file tools')
+    if(this.externalConfigFile===undefined)return []
+    const initial=this.externalConfigInitial,now=this.inspectExternalConfig()
+    if(!initial||!now)throw new Error('External config directory is unavailable or unsafe')
+    if(now.root!==initial.root||now.identity!==initial.identity)throw new Error('External config directory changed; restart file tools')
+    return [initial.lexical,initial.root]
+  }
   constructor(private readonly deps:{settings:LocalToolSettings;bus?:EventBus;storageFile?:string;localVision?:(bytes:Buffer,prompt:string,signal:AbortSignal)=>Promise<string>}){}
   capabilities(){
     const scoped=scopedFilesystemCapability()
@@ -36,7 +50,7 @@ export class FileTools {
     requireScopedFilesystem()
     const path=absolute(input),settings=this.deps.settings.snapshot()
     const privateDirs=[dirname(this.deps.settings.file),dirname(this.storagePath())]
-    if(forbidden(path)||path===this.deps.settings.file||path===this.storagePath()||within(this.privatePath('history'),path)||(!within(settings.outputDir,path)&&privateDirs.some(root=>within(root,path))))throw new Error('Protected path is forbidden')
+    if(this.externalConfigDirs().some(root=>within(root,path))||forbidden(path)||path===this.deps.settings.file||path===this.storagePath()||within(this.privatePath('history'),path)||(!within(settings.outputDir,path)&&privateDirs.some(root=>within(root,path))))throw new Error('Protected path is forbidden')
     const roots=[...(write?settings.writeRoots:[...settings.readRoots,...settings.writeRoots]),settings.outputDir]
     if(!roots.some(root=>within(root,path)))throw new Error('Path is outside permitted roots')
     const parent=openDirectory(dirname(path)),target=`/proc/self/fd/${parent}/${basename(path)}`
@@ -94,7 +108,7 @@ export class FileTools {
   clearAll():void {
     if(!this.capabilities().writeSupported){this.assertPortableCleanupEmpty();return}
     const output=absolute(this.deps.settings.snapshot().outputDir)
-    if(output.split('/').filter(Boolean).length<3||[dirname(this.deps.settings.file),dirname(this.storagePath())].some(p=>within(output,p)))throw new Error('Unsafe generated workspace for erase')
+    if(this.externalConfigDirs().some(p=>within(output,p)||within(p,output))||output.split('/').filter(Boolean).length<3||[dirname(this.deps.settings.file),dirname(this.storagePath())].some(p=>within(output,p)))throw new Error('Unsafe generated workspace for erase')
     const erase=(fd:number)=>{const base=`/proc/self/fd/${fd}`;for(const name of readdirSync(base)){const target=join(base,name),st=lstatSync(target);if(st.isDirectory()){const child=openSync(target,C.O_RDONLY|C.O_DIRECTORY|C.O_NOFOLLOW);try{erase(child)}finally{closeSync(child)}rmdirSync(target)}else unlinkSync(target)}fsyncSync(fd)}
     let fd:number|undefined;try{fd=openDirectory(output);if(realpathSync(`/proc/self/fd/${fd}`)!==output)throw new Error('Workspace changed during erase');erase(fd)}catch(e){if((e as NodeJS.ErrnoException).code!=='ENOENT')throw e}finally{if(fd!==undefined)closeSync(fd)}
     this.clear()
@@ -143,11 +157,11 @@ export class FileTools {
     visit(absolute(path),0);return {results,truncated,filesScanned:files,bytesScanned:bytes}
   }
   definitions():ToolDefinition[]{
-    if(process.platform==='win32'||process.platform==='darwin')return nativeFileDefinitions(this.deps)
+    if(process.platform==='win32'||process.platform==='darwin')return nativeFileDefinitions({...this.deps,externalConfigFile:this.externalConfigFile})
     if(!this.capabilities().supported)return []
     const str={type:'string'},integer={type:'integer',minimum:1},path={path:str},version={expectedVersion:str}
     const def=(name:string,description:string,properties:Record<string,unknown>,required:string[],write:boolean,run:(a:Record<string,unknown>,c:Parameters<ToolDefinition['execute']>[1])=>unknown|Promise<unknown>):ToolDefinition=>{
-      const parameters={type:'object',properties,required,additionalProperties:false};return {name,description,parameters,definitionHash:hash(JSON.stringify({name,parameters,revision:this.deps.settings.snapshot().revision})),usage:'local',permission:write?'ask':'allow',effect:write?'write':'read',destination:'local',execute:async(a,c)=>{c.signal.throwIfAborted();const action=async()=>({content:JSON.stringify(await run(a,c))});return write?serialized(this.deps.settings.file+':files',action):action()}}
+      const parameters={type:'object',properties,required,additionalProperties:false};return {name,description,parameters,definitionHash:hash(JSON.stringify({name,parameters,revision:this.deps.settings.snapshot().revision,externalConfigFile:this.externalConfigFile,externalConfigInitial:this.externalConfigInitial})),usage:'local',permission:write?'ask':'allow',effect:write?'write':'read',destination:'local',execute:async(a,c)=>{c.signal.throwIfAborted();const action=async()=>({content:JSON.stringify(await run(a,c))});return write?serialized(this.deps.settings.file+':files',action):action()}}
     }
     const definitions=[
       def('file_list','List permitted files; symlinks and secret paths are excluded.',{...path,recursive:{type:'boolean'},includeHidden:{type:'boolean'}},['path'],false,(a,c)=>this.scan(String(a.path),a,c.signal,false)),

@@ -12,12 +12,13 @@
  *   --no-open     only make sure the server is running
  *   --stop        stop a server that was started in the background
  *   --browser=X   force a browser binary
+ *   --config ABS  use a private external configuration file
  */
 import { spawn } from 'node:child_process'
 import { existsSync, mkdirSync, openSync, closeSync } from 'node:fs'
 import { loadConfig } from '../src/config.ts'
 import { acquireLifecycleLock, canonicalDataDir, launcherUrl, requestRuntime } from '../src/runtime-lifecycle.ts'
-import { dirname, join } from 'node:path'
+import { dirname, isAbsolute, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 const root = dirname(dirname(fileURLToPath(import.meta.url)))
@@ -131,6 +132,15 @@ function openFallback(): void {
 }
 
 async function main(): Promise<void> {
+  let configFile: string | undefined
+  for (let index = 0; index < args.length; index++) {
+    const arg = args[index]!
+    if (arg !== '--config' && !arg.startsWith('--config=')) continue
+    if (configFile !== undefined || arg !== '--config') throw new Error('Usage: app.ts [--config ABS]; --config must occur once with an absolute path')
+    configFile = args[++index]
+    if (!configFile || !isAbsolute(configFile) || /[\0\r\n]/.test(configFile)) throw new Error('Usage: app.ts --config ABS requires an absolute path')
+  }
+  if (configFile !== undefined) process.env.JARVIS_CONFIG_FILE = configFile
   const config = loadConfig()
   dataDir = canonicalDataDir(config.dataDir)
   url = launcherUrl(config)

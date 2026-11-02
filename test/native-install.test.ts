@@ -9,6 +9,7 @@ import { test } from 'node:test'
 import { nativeIntegration, parseArgs, POWERSHELL_LINK, shellQuote, validatePackage, windowsQuote, xml } from '../scripts/install-native.ts'
 import type { InstallOptions, Platform } from '../scripts/install-native.ts'
 import { WINDOWS_AUMID } from '../src/windows-notification.ts'
+import { ensurePrivateDataDirectory } from '../src/private-directory.ts'
 
 async function fixture(platform: Platform, run: (options: InstallOptions) => Promise<void>, realRuntime = false) {
   const temporaryRoot = await realpath(tmpdir())
@@ -38,6 +39,58 @@ test('native CLI requires explicit action and opt-in startup', () => {
   assert.deepEqual(parseArgs(['--install']), { action: 'install', autostart: false })
   assert.deepEqual(parseArgs(['--install', '--autostart']), { action: 'install', autostart: true })
 })
+
+test('native CLI accepts config only once for install with an absolute path', () => {
+  const file = join(tmpdir(), 'private config.env')
+  assert.deepEqual(parseArgs(['--config', file, '--install', '--autostart']), { action: 'install', autostart: true, configFile: file })
+  for (const args of [['--install', '--config'], ['--install', '--config', 'relative.env'], ['--install', '--config', file, '--config', file], ['--uninstall', '--config', file], ['--install', `--config=${file}`]]) assert.throws(() => parseArgs(args), /Usage/)
+})
+
+for (const platform of ['darwin', 'win32'] as const) test(`${platform} config binding reaches manual and startup launchers without secrets`, async () => fixture(platform, async options => {
+  const privateDir = join(options.root, '..', 'private')
+  // Canonicalize the parent: the loader rejects dot segments and symlink aliases.
+  await ensurePrivateDataDirectory(privateDir)
+  const file = join(await realpath(privateDir), "config ' & $ 中文.env")
+  const dataDir = join(await realpath(privateDir), 'selected data')
+  const secret = 'never-snapshot-this-token'
+  const source = `JARVIS_DATA_DIR="${dataDir}"\nJARVIS_AUTH_TOKEN=${secret}\n`
+  await writeFile(file, source, { mode: 0o600 })
+  const calls: NodeJS.ProcessEnv[] = []
+  options.runPowerShell = (script, env) => {
+    assert.equal(script, POWERSHELL_LINK)
+    assert.ok(!script.includes(file))
+    calls.push(env)
+    writeFileSync(env.JARVIS_LINK_PATH!, JSON.stringify(env))
+  }
+  const created = await nativeIntegration(options, ['--install', '--config', file, '--autostart'])
+  const receipt = JSON.parse(await readFile(created.at(-1)!, 'utf8'))
+  assert.equal(receipt.configFile, file)
+  assert.equal(receipt.dataDir, dataDir)
+  for (const path of created) assert.ok(!(await readFile(path, 'utf8')).includes(secret))
+  if (platform === 'darwin') {
+    const script = await readFile(created[1]!, 'utf8')
+    assert.ok(script.includes(`${shellQuote('--config')} ${shellQuote(file)}`))
+    const agent = await readFile(created[2]!, 'utf8')
+    assert.ok(agent.includes(`<string>--config</string><string>${xml(file)}</string>`))
+  } else {
+    assert.equal(calls.length, 2)
+    for (const call of calls) assert.ok(call.JARVIS_LINK_ARGS!.includes(`${windowsQuote('--config')} ${windowsQuote(file)}`))
+  }
+  // Editing configuration does not invalidate ownership of installed wrappers.
+  await writeFile(file, source.replace(secret, 'updated-token'))
+  await nativeIntegration(options, ['--uninstall'])
+  assert.equal(await readFile(file, 'utf8'), source.replace(secret, 'updated-token'))
+}))
+
+test('invalid external configuration causes no integration mutations', async () => fixture('darwin', async options => {
+  const dir = join(options.root, 'private')
+  await ensurePrivateDataDirectory(dir)
+  const file = join(dir, 'invalid.env')
+  await writeFile(file, 'JARVIS_DATA_DIR=relative\n', { mode: 0o600 })
+  await assert.rejects(nativeIntegration(options, ['--install', '--config', file]), /JARVIS_CONFIG_FILE/)
+  assert.equal(existsSync(options.home), false)
+  assert.equal(await readFile(file, 'utf8'), 'JARVIS_DATA_DIR=relative\n')
+}))
 
 test('quoting preserves shell and Windows argument boundaries and safe XML', () => {
   assert.equal(windowsQuote('C:\\a b\\'), '"C:\\a b\\\\"')

@@ -3,6 +3,7 @@ import { homedir } from 'node:os'
 import { dirname, isAbsolute, join, resolve, win32, posix } from 'node:path'
 import { randomBytes } from 'node:crypto'
 import { runtimeVersion } from './version.ts'
+import { externalConfigKeys, loadExternalConfig } from './external-config.ts'
 
 export interface JarvisConfig {
   version: string
@@ -107,20 +108,28 @@ function env(name: string, fallback: string): string {
 function parsePort(value: string): number {
   const port = Number(value)
   if (!Number.isInteger(port) || port < 1 || port > 65535) {
-    throw new Error(`JARVIS_PORT must be an integer from 1 to 65535 (got ${value})`)
+    throw new Error('JARVIS_PORT must be an integer from 1 to 65535')
   }
   return port
 }
 
 function parseTime(value: string, name: string): string {
   if (!/^([01]\d|2[0-3]):[0-5]\d$/.test(value)) {
-    throw new Error(`${name} must be HH:MM (got ${value})`)
+    throw new Error(`${name} must be HH:MM`)
   }
   return value
 }
 
 export function loadConfig(): JarvisConfig {
-  loadDotEnv()
+  const selector = process.env.JARVIS_CONFIG_FILE
+  if (selector !== undefined) {
+    // Validate first so rejected input cannot partially replace the environment.
+    const parsed = loadExternalConfig(selector)
+    for (const key of externalConfigKeys) delete process.env[key]
+    Object.assign(process.env, parsed)
+  } else {
+    loadDotEnv()
+  }
 
   const host = env('JARVIS_HOST', DEFAULTS.host)
   const authToken = env('JARVIS_AUTH_TOKEN', '')
