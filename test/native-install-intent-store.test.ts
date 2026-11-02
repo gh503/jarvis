@@ -183,6 +183,51 @@ test('writer verifies persisted bytes after sync before acknowledging publicatio
   await assert.rejects(readNativeInstallIntent(f))
   await assert.rejects(writeNativeInstallIntent(f), { code: 'EEXIST' })
 })
+for (const change of ['sibling', 'child', 'parent-mode', 'parent-inode'] as const) test(`reader handles ${change} during descriptor read`, { skip: process.platform === 'win32' && change.startsWith('parent-') }, async t => {
+  const f = await fixture(t)
+  await writeNativeInstallIntent(f)
+  const parent = dirname(f.directory), original = fs.open
+  const before = await fs.lstat(parent, { bigint: true })
+  let changed = false
+  fs.open = (async (...args: Parameters<typeof fs.open>) => {
+    const handle = await original(...args)
+    if (args[0] === f.path) {
+      const read = handle.read.bind(handle)
+      handle.read = (async (...readArgs: unknown[]) => {
+        const result = await (read as (...args: unknown[]) => Promise<unknown>)(...readArgs)
+        if (!changed) {
+          changed = true
+          if (change === 'sibling' || change === 'child') {
+            await fs.mkdir(join(change === 'sibling' ? parent : f.directory, 'unrelated-child'), { mode: 0o700 })
+          } else if (change === 'parent-mode') {
+            // Both modes pass ancestor policy; the snapshot must still detect change.
+            await fs.chmod(parent, (before.mode & 0o777n) === 0o700n ? 0o750 : 0o700)
+          } else {
+            const moved = join(dirname(parent), 'moved-parent')
+            assert.ok(parent.startsWith(f.root + '/'))
+            assert.equal(dirname(moved), dirname(parent))
+            await fs.rename(parent, moved)
+            await fs.mkdir(parent, { mode: Number(before.mode & 0o777n) })
+            // Keep the control directory and source file identities unchanged:
+            // only the containing parent's inode has been replaced.
+            const movedControl = join(moved, 'native-install-control')
+            assert.equal(dirname(f.directory), parent)
+            assert.equal(dirname(movedControl), moved)
+            await fs.rename(movedControl, f.directory)
+          }
+        }
+        return result
+      }) as typeof handle.read
+    }
+    return handle
+  }) as typeof fs.open
+  syncBuiltinESMExports()
+  try {
+    if (change === 'sibling' || change === 'child') assert.deepEqual(await readNativeInstallIntent(f), f.intent)
+    else await assert.rejects(readNativeInstallIntent(f), /Unsafe/)
+    assert.ok(changed)
+  } finally { fs.open = original; syncBuiltinESMExports() }
+})
 for (const race of ['replace', 'hardlink', 'grow', 'ancestor'] as const) test(`reader rejects ${race} during descriptor read`, { skip: process.platform === 'win32' && ['replace', 'ancestor'].includes(race) }, async t => {
   const f = await fixture(t)
   await writeNativeInstallIntent(f)

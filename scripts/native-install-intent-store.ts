@@ -16,6 +16,10 @@ function checkFile(stat: BigIntStats): void {
 async function statOrMissing(path: string): Promise<BigIntStats | undefined> {
   try { return await lstat(path, { bigint: true }) } catch (error) { if (missing(error)) return undefined; throw error }
 }
+// Directory child activity legitimately changes nlink (including file creation
+// on APFS), size and timestamps. Pin the directory and its security metadata,
+// while retaining full metadata checks for the intent file itself.
+const sameDirectory = (a: BigIntStats, b: BigIntStats) => a.isDirectory() && b.isDirectory() && a.dev === b.dev && a.ino === b.ino && a.mode === b.mode && a.uid === b.uid && a.gid === b.gid
 type Boundary = readonly { path: string; stat: BigIntStats | undefined }[]
 async function boundary(directory: string): Promise<Boundary> {
   await verifyNativeInstallAncestors(directory)
@@ -32,7 +36,7 @@ async function verifyBoundary(directory: string, before: Boundary): Promise<void
   await verifyNativeInstallAncestors(directory)
   for (const entry of before) {
     const after = await statOrMissing(entry.path)
-    if (entry.stat ? !after || !sameIdentity(entry.stat, after) : after !== undefined) throw unsafe()
+    if (entry.stat ? !after || !sameDirectory(entry.stat, after) : after !== undefined) throw unsafe()
   }
   if (await verifyNativeInstallPrivatePath(directory, true) !== (before[0]!.stat !== undefined)) throw unsafe()
 }

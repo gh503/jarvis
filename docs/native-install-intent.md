@@ -85,6 +85,26 @@ Without actual receipt bytes, `receipt` is null. A decoded intent may contain no
 
 The caller must establish trust in inputs through its own channel. Canonical encoding and hashes identify bytes; they do not authenticate a publisher, prove installation ownership, or grant cleanup authority. Validating an intent is never sufficient authority to replay installation steps or delete matching paths.
 
+## Pure observation classification
+
+The separate unreleased [native-install-reconcile.ts](../scripts/native-install-reconcile.ts) exports the synchronous pure API `reconcileNativeInstallIntent({ integration, intent, observations }): NativeInstallReconcileReport`. It validates the existing intent codec against the explicit fixed layout before comparing observations. It does not capture filesystem observations, read the intent store, acquire locks, persist anything, invoke installer operations, or expose a CLI. The store remains standalone and unused by the installer; the classifier is standalone too.
+
+`observations` contains `artifacts`, an array with every fixed slot in exactly the intent's order (including excluded startup), and `receipt`, at the exact fixed receipt path. Each observation is `{ path, state: 'absent' | 'unsafe' }` or `{ path, state: 'file', bytes: Buffer, mode?: number }`. File buffers are bounded to 1 MiB per artifact and 64 KiB for the receipt. Optional modes are integers from `0` through `0o7777`; a known artifact expectation requires an explicitly matching mode, so omitting it produces a conflict. Receipt mode does not establish permission safety. Malformed observation shapes, paths, ordering, bounds, or intent metadata throw before comparison; an observed `unsafe` state is a reportable conflict.
+
+The report contains an overall `status`, ordered artifact entries, a receipt entry, and scope. Entries expose only the fixed path, classification, and optional bounded reason code, with no raw bytes or secrets. The report and its entries are frozen. Overall classifications are:
+
+| Status | Meaning for supplied observations only |
+| --- | --- |
+| `unpublished` | All artifact slots and the receipt are absent. This does not establish operation history. |
+| `consistent` | All included artifacts match known byte-length, SHA-256, and mode expectations, excluded slots are absent, and the actual receipt matches its known expectation and parsed binding/artifact hashes. |
+| `incomplete` | Some required artifact or receipt is absent; present entries match known expectations. |
+| `indeterminate` | A present included artifact or valid receipt has an unknown expectation, with no conflict. Missing entries may coexist. |
+| `conflict` | Any unsafe state, excluded-but-present artifact, known byte/mode mismatch, malformed receipt, or receipt binding/artifact-hash mismatch. |
+
+Conflict takes priority over unknown expectations, and unknown expectations take priority over incompleteness. All-absent observations yield `unpublished` even when intent expectations are unknown. A missing receipt with present payloads yields `incomplete`, `indeterminate`, or `conflict`, never ownership. Present receipt bytes are strictly parsed even when the expected receipt digest is unknown; malformed receipt bytes conflict. Receipt artifact hashes are compared with both known intent expectations and supplied present artifact bytes. Contradictory observed bytes conflict even when the intent's artifact expectation is unknown; matching a receipt does not fill that unknown expectation, so otherwise matching observations remain `indeterminate`. The intent binding is authoritative for receipt comparison. The layout option `integration.root` remains syntactic and need not equal that binding root; neither root is inspected.
+
+`consistent` never means committed, owned, or safe. Report scope is exactly `{ ownership: false, execution: false, automaticCleanup: false, atomicity: false }`; the intent format's existing three scope flags are unchanged. Callers must capture observations with all writers quiescent and separately establish actual filesystem identity, permissions, and boundary safety. The classifier cannot prove that supplied observations came from real files, form an atomic snapshot, or authorize replay, execution, deletion, or cleanup. No filesystem observation reader or crash recovery is implemented. This addition remains unreleased; native Windows validation and the current Windows lock-fix result remain unknown, with no new verified release claim.
+
 ## Relationship to existing installer safeguards
 
 The [source shared install/uninstall lock](native-install.md#unreleased-shared-installuninstall-lock) coordinates cooperating installer calls and the separate intent writer. The codec remains pure, and intent reading, inventory inspection, and integration snapshot capture/verification remain unlocked and require quiescent writers. No successful native Windows result or released package inclusion is claimed for the new storage API.
