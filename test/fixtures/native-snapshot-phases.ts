@@ -70,8 +70,13 @@ ${marker('entered')}
 export function installPermissionPhaseProbe(): { latest: () => PermissionPhases | undefined; restore: () => void } {
   const original = childProcess.execFile
   let latest: PermissionPhases | undefined
+  let generation = 0
   // Keep native callback semantics (including errors/streams) and the ChildProcess.
   const wrapped = function (...call: unknown[]) {
+    // Evidence belongs only to the most recently started subprocess. A drifted
+    // or unrelated invocation must never inherit an earlier permission trace.
+    latest = undefined
+    const invocation = ++generation
     const [file, args, options, callback] = call
     const opts = options as childProcess.ExecFileOptions | undefined
     const root = opts?.env?.SystemRoot
@@ -85,7 +90,7 @@ export function installPermissionPhaseProbe(): { latest: () => PermissionPhases 
         latest = undefined
         call[1] = [...args.slice(0, 4), Buffer.from(script, 'utf16le').toString('base64')]
         call[3] = (error: unknown, stdout: unknown, stderr: unknown) => {
-          latest = parsePermissionPhases(stdout, started, performance.now() - clock)
+          if (invocation === generation) latest = parsePermissionPhases(stdout, started, performance.now() - clock)
           callback(error, stdout, stderr)
         }
       }

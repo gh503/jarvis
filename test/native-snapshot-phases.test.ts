@@ -95,11 +95,14 @@ test('interception preserves native callbacks and return value, ignores unrelate
       [file, args, { ...options, timeout: 20000 }], [file, args, { ...options, shell: true }], [file, args, { ...options, env: {} }],
     ]
     for (const call of unrelated) {
+      execFile(file, args, options, () => {})
+      assert.ok(probe.latest())
       const callback = () => {}
       Reflect.apply(execFile, childProcess, [...call, callback])
       const actual = calls.at(-1)!
       assert.equal(actual[1], call[1])
       assert.equal(actual[3], callback)
+      assert.equal(probe.latest(), undefined, 'unmatched calls cannot retain previous permission evidence')
     }
     probe.restore()
     assert.equal(execFile, fake)
