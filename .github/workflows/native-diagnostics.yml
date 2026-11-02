@@ -36,6 +36,7 @@ jobs:
           $node = (Get-Command node.exe).Source
           $unicode = [string][char]0x4E2D + [char]0x6587
           $names = @('plain', 'with spaces', $unicode, "package ' & `$ folder", ($unicode + " package ' & `$ folder"))
+          $requiredFailures = 0
           foreach ($name in $names) {
             $dir = Join-Path $root $name
             New-Item -ItemType Directory -Path $dir | Out-Null
@@ -49,12 +50,16 @@ jobs:
                 $link.TargetPath = $value
                 $link.Save()
                 $loaded = (New-Object -ComObject WScript.Shell).CreateShortcut($out)
-                Write-Host ("SUCCESS name={0} quoted={1} exact={2}" -f $name, $quoted, ($loaded.TargetPath -eq $target))
+                $exact = [string]::Equals($loaded.TargetPath, $target, [StringComparison]::Ordinal)
+                if (!$quoted -and !$exact) { $requiredFailures++ }
+                Write-Host ("RESULT name={0} quoted={1} exact={2}" -f $name, $quoted, $exact)
               } catch {
-                Write-Host ("FAIL name={0} quoted={1} error={2}" -f $name, $quoted, $_.Exception.Message)
+                if (!$quoted) { $requiredFailures++ }
+                Write-Host ("FAIL name={0} quoted={1}" -f $name, $quoted)
               }
             }
           }
           # Only exact directory allocated by this step, below the runner's temp root.
           if ((Split-Path -Parent $root) -ne $env:RUNNER_TEMP) { throw 'Unsafe probe cleanup' }
           Remove-Item -LiteralPath $root -Recurse -Force
+          if ($requiredFailures -ne 0) { throw 'Unquoted shortcut target round-trip failed' }
