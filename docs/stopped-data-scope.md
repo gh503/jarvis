@@ -1,6 +1,6 @@
 # Internal stopped-data scope
 
-Status: **upcoming source API; not yet published in a portable release**. The internal [stopped-data-scope.ts](../scripts/stopped-data-scope.ts) helper lets trusted source modules hold the launcher and runtime lifecycle locks continuously across sequential snapshot creation for one canonical data root. No CLI behavior changes, and there is no `--scope` flag.
+Status: **internal API released in [v2.0.45](https://github.com/gh503/jarvis/releases/tag/v2.0.45)**. The internal [stopped-data-scope.ts](../scripts/stopped-data-scope.ts) helper lets trusted source modules hold the launcher and runtime lifecycle locks continuously across sequential snapshot creation for one canonical data root. No CLI behavior changes, and there is no `--scope` flag.
 
 `withStoppedDataScope(dataDir, async scope => ...)` acquires launcher then runtime locks and fails if an owner is active; it does not stop the runtime. Stop all other writers, including config editors and tools that bypass lifecycle locks, before entry and keep them stopped throughout capture. Lock preflight can update operational lock files and data-root permissions/ACLs.
 

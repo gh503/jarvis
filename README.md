@@ -8,7 +8,7 @@ Start with [上手指南](docs/getting-started.md) for **native preview or sourc
 and [分发说明](docs/distribution.md) for platform limits and release gates.
 Windows, macOS and Linux have native runtime lifecycle support and Node 24 portable
 package matrices. **Unsigned native portable previews are published** for Linux x64, Windows x64
-and macOS arm64 at the recommended [v2.0.42](https://github.com/gh503/jarvis/releases/tag/v2.0.42). They are
+and macOS arm64 at the recommended [v2.0.45](https://github.com/gh503/jarvis/releases/tag/v2.0.45). They are
 not signed installers or a guarantee of stable production readiness or full feature parity.
 The in-app `/providers` and `/install` pages help configure models and browser clients.
 
@@ -47,13 +47,12 @@ repository write permission limited to the release job.
 
 ## Native preview status
 
-For the pinned v2.0.42 preview, the three-platform automated release gates passed for runtime lifecycle and
-bundled Node 24 packages, including packaged privacy, backup and updater checks
-and Windows Unicode shortcut activation. This covers the hosted runner targets,
-not every OS/CPU pair or interactive desktop environment.
+For the pinned v2.0.45 preview, [release packaging and publication](https://github.com/gh503/jarvis/actions/runs/41471967649)
+passed on all three targets and published all nine assets.
+These automated checks cover hosted runner targets, not every OS/CPU pair or interactive desktop environment.
 
 Download the archive matching your OS/CPU, its SHA256 and provenance from
-[v2.0.42](https://github.com/gh503/jarvis/releases/tag/v2.0.42), verify the archive,
+[v2.0.45](https://github.com/gh503/jarvis/releases/tag/v2.0.45), verify the archive,
 and extract into a stable writable folder. Each of the three targets has these
 three files. Other builds may be available as conditional unsigned CI previews in
 [Actions](https://github.com/gh503/jarvis/actions); source instructions remain below.
@@ -76,7 +75,7 @@ parity and transactional update activation remain unfinished. Desktop notificati
 explicit native installation of Jarvis’s own identity; visible delivery remains
 unverified and can be suppressed by system settings or session policy.
 
-v2.0.42 also ships an offline [data-only snapshot CLI](docs/native-state-snapshot.md):
+v2.0.45 also ships an offline [data-only snapshot CLI](docs/native-state-snapshot.md):
 stop the runtime and all other writers, create a snapshot, verify it against a separately
 trusted manifest digest, and restore only to a fresh directory. It preserves all supported
 data, including original secrets and SQLite WAL, except documented root coordination
@@ -87,7 +86,9 @@ main/sidecar entries before SQLite mutation. Main database identity must stay st
 normal sidecar removal and recreation are allowed. This does not guarantee protection
 against hostile same-user filesystem races.
 
-v2.0.42 adds a private [config-only snapshot CLI](docs/native-config-snapshot.md) that preserves exact file bytes without mutating the process environment. Restore creates a fresh private directory and retains the same `JARVIS_DATA_DIR`. The source config parent must be disjoint from the data directory in both directions; an existing explicit config binding inside the data root is unsupported by config snapshot creation. Config and data snapshots are separate, not an atomic pair or a full rollback; they do not activate releases or capture external TLS files, models, or installer integrations.
+First released in v2.0.42, the private [config-only snapshot CLI](docs/native-config-snapshot.md) preserves exact file bytes without mutating the process environment. Restore creates a fresh private directory and retains the same `JARVIS_DATA_DIR`. The source config parent must be disjoint from the data directory in both directions; an existing explicit config binding inside the data root is unsupported by config snapshot creation. Config and data snapshots are separate, not an atomic pair or a full rollback; they do not activate releases or capture external TLS files, models, or installer integrations.
+
+v2.0.45 releases the internal [stopped-data scope API](docs/stopped-data-scope.md), holding both lifecycle locks continuously across sequential optional config and data captures. Snapshot CLIs remain unchanged; this adds no aggregate recovery manifest or installed-version binding.
 
 ## Native tools and local work
 
@@ -106,7 +107,7 @@ confirmation. Questions collect information and do not grant tool permissions.
 See [本地工具与权限说明](docs/ui.md#本地工具任务与目录授权) for the exact names,
 API routes, privacy boundaries and recurrence behavior.
 
-The v2.0.42 preview supports `file_read`, `file_list` and `file_search` on macOS/Windows
+The v2.0.45 preview supports `file_read`, `file_list` and `file_search` on macOS/Windows
 through the native filesystem helper: explicitly authorize at most 16 read roots;
 text reads are UTF-8 and limited to 1 MiB, with secret-path filtering and private-key content rejection.
 Native writes, output workspace operations, artifact delivery, image inspection
