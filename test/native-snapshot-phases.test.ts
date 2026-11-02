@@ -58,6 +58,35 @@ test('native Windows PowerShell flushes the decorated phase protocol', { skip: p
   } finally { probe.restore() }
 })
 
+test('late callbacks cannot overwrite evidence from a newer subprocess', () => {
+  const original = childProcess.execFile
+  const callbacks: Array<(error: unknown, stdout: string, stderr: string) => void> = []
+  childProcess.execFile = ((...args: unknown[]) => {
+    callbacks.push(args[3] as typeof callbacks[number])
+    return {} as childProcess.ChildProcess
+  }) as typeof childProcess.execFile
+  syncBuiltinESMExports()
+  const probe = installPermissionPhaseProbe()
+  let completed = 0
+  try {
+    const file = win32.join('C:\\Windows', 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe')
+    const args = ['-NoLogo', '-NoProfile', '-NonInteractive', '-EncodedCommand', Buffer.from(script, 'utf16le').toString('base64')]
+    const options = { env: { SystemRoot: 'C:\\Windows', JARVIS_INTEGRATION_PATHS: '[]' }, timeout: 10000, maxBuffer: 16384, windowsHide: true, shell: false }
+    execFile(file, args, options, () => { completed++ })
+    execFile(file, args, options, () => { completed++ })
+    callbacks[1]!(null, `JARVIS_PHASE_V1|complete|${Date.now()}\n`, '')
+    const newer = probe.latest()
+    assert.ok(newer?.phases.complete !== undefined)
+    callbacks[0]!(null, `JARVIS_PHASE_V1|entered|${Date.now()}\n`, '')
+    assert.equal(probe.latest(), newer)
+    assert.equal(completed, 2)
+  } finally {
+    probe.restore()
+    childProcess.execFile = original
+    syncBuiltinESMExports()
+  }
+})
+
 test('interception preserves native callbacks and return value, ignores unrelated calls, restores ESM export', async () => {
   const original = childProcess.execFile
   const sentinel = {} as childProcess.ChildProcess
