@@ -189,6 +189,11 @@ pub struct Root {
     ancestors: Vec<Handle>,
 }
 impl Root {
+    pub fn identity(&self) -> Result<(String, String)> {
+        let metadata = info(self.ancestors.last().unwrap())?;
+        let index = ((metadata.index_high as u64) << 32) | metadata.index_low as u64;
+        Ok((metadata.volume.to_string(), index.to_string()))
+    }
     pub fn open(path: &str) -> Result<Self> {
         let b = path.as_bytes();
         // Only DOS drive absolute local paths; never UNC, device namespaces or ADS.

@@ -39,6 +39,10 @@ fn regular(s: &libc::stat) -> Result<()> {
     Ok(())
 }
 impl Root {
+    pub fn identity(&self) -> Result<(String, String)> {
+        let metadata = stat(self.0.as_raw_fd())?;
+        Ok((metadata.st_dev.to_string(), metadata.st_ino.to_string()))
+    }
     pub fn open(path: &str) -> Result<Self> {
         if !path.starts_with('/') || path.starts_with("//") {
             return Err("INVALID_ROOT");

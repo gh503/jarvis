@@ -191,7 +191,8 @@ impl State {
                     if opened.contains_key(&token) {
                         return Err("RANDOM_FAILED");
                     }
-                    tokens.push(json!({"token":token}));
+                    let (device, inode) = root.identity()?;
+                    tokens.push(json!({"token":token,"identity":{"device":device,"inode":inode}}));
                     opened.insert(token, root);
                 }
                 self.roots = opened;

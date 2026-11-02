@@ -119,6 +119,12 @@ fn object_authority_and_link_rejection() {
         .unwrap()
         .to_string();
     assert_eq!(token.len(), 64);
+    use std::os::unix::fs::MetadataExt;
+    let expected = fs::metadata(&root).unwrap();
+    assert_eq!(
+        init["result"]["roots"][0]["identity"],
+        json!({"device":expected.dev().to_string(),"inode":expected.ino().to_string()})
+    );
     let read =
         |name: &str, max| json!({"op":"read","root":token,"components":[name],"maxBytes":max});
     assert_eq!(h.call(read("safe", 5))["result"]["dataBase64"], "aGVsbG8=");

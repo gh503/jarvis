@@ -1,7 +1,7 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { existsSync } from 'node:fs'
-import { mkdtemp, mkdir, writeFile, symlink, link, rm } from 'node:fs/promises'
+import { mkdtemp, mkdir, writeFile, symlink, link, rm, stat } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -24,13 +24,44 @@ test('native transport kills stalled child and rejects malformed or oversized re
   }
 })
 test('native transport serializes requests and invalidates closed roots', { timeout: 30000 }, async t => {
-  const script = `const readline=require('node:readline');let seq=0;readline.createInterface({input:process.stdin}).on('line',line=>{const r=JSON.parse(line);if(r.seq!==++seq)process.exit(2);const result=r.op==='hello'?{protocolVersion:1,capabilities:['read','list'],maxRequestBytes:65536,maxReadBytes:8388608,maxListEntries:1000}:r.op==='init'?{roots:[{token:'opaque'}]}:r.op==='read'?{dataBase64:'aGk=',bytes:2}:r.op==='list'?{entries:[],truncated:false}:{};console.log(JSON.stringify({version:1,seq:r.seq,ok:true,result}))})`
-  const { filesystem, roots } = await NativeFilesystem.start([tmpdir()], { executable: process.execPath, args: ['-e', script] })
+  const script = `const readline=require('node:readline');let seq=0;readline.createInterface({input:process.stdin}).on('line',line=>{const r=JSON.parse(line);if(r.seq!==++seq)process.exit(2);const result=r.op==='hello'?{protocolVersion:1,capabilities:['read','list'],maxRequestBytes:65536,maxReadBytes:8388608,maxListEntries:1000}:r.op==='init'?{roots:[{token:'opaque',identity:{device:'1',inode:'9007199254740993'}}]}:r.op==='read'?{dataBase64:'aGk=',bytes:2}:r.op==='list'?{entries:[],truncated:false}:{};console.log(JSON.stringify({version:1,seq:r.seq,ok:true,result}))})`
+  const { filesystem, roots, identities } = await NativeFilesystem.start([tmpdir()], { executable: process.execPath, args: ['-e', script] })
   t.after(() => filesystem.disposeAsync())
+  assert.deepEqual(identities, [{ device: '1', inode: '9007199254740993' }])
   const [read, list] = await Promise.all([filesystem.read(roots[0]!, ['file']), filesystem.list(roots[0]!)])
   assert.equal(read.toString(), 'hi'); assert.deepEqual(list, { entries: [], truncated: false })
   await filesystem.closeRoot(roots[0]!)
   await assert.rejects(filesystem.read(roots[0]!, ['file']), /INVALID_ROOT_TOKEN/)
+})
+test('native init rejects absent, malformed, or ambiguous handle identities', { timeout: 30000 }, async () => {
+  const identity = { device: '1', inode: '9007199254740993' }
+  const root = { token: 'opaque', identity }
+  const invalid: unknown[] = [
+    {}, { roots: null }, { roots: [] }, { roots: [null] }, { roots: ['opaque'] },
+    { roots: [{ token: 'opaque' }] }, { roots: [{ ...root, identity: null }] },
+    { roots: [{ ...root, identity: [] }] }, { roots: [{ ...root, identity: '1:2' }] },
+    { roots: [{ ...root, token: '' }] }, { roots: [{ ...root, token: 1 }] },
+    { roots: [{ ...root, extra: true }] }, { roots: [root], extra: true },
+    { roots: [{ ...root, identity: { ...identity, extra: true } }] },
+    { roots: [root, root] },
+  ]
+  for (const field of ['device', 'inode']) {
+    for (const value of [undefined, null, 1, 9007199254740992, '', '-1', '+1', '01', '1.0', '1e3', ' 1', '1\n', 'a', '1'.repeat(40)]) {
+      invalid.push({ roots: [{ ...root, identity: { ...identity, [field]: value } }] })
+    }
+  }
+  for (const result of invalid) {
+    const script = `require('node:readline').createInterface({input:process.stdin}).on('line',line=>{const r=JSON.parse(line);const result=r.op==='hello'?{protocolVersion:1,capabilities:['read','list'],maxRequestBytes:65536,maxReadBytes:8388608,maxListEntries:1000}:${JSON.stringify(result)};console.log(JSON.stringify({version:1,seq:r.seq,ok:true,result}))})`
+    const count = (result as { roots?: unknown[] }).roots?.length === 2 ? 2 : 1
+    await assert.rejects(NativeFilesystem.start(Array(count).fill(tmpdir()), { executable: process.execPath, args: ['-e', script] }), /INVALID_RESPONSE/, JSON.stringify(result))
+  }
+})
+test('native transport preserves cancellation during initialization', { timeout: 30000 }, async () => {
+  const controller = new AbortController()
+  const start = NativeFilesystem.start([tmpdir()], { executable: process.execPath, args: ['-e', 'process.stdin.resume()'], signal: controller.signal })
+  controller.abort()
+  await assert.rejects(start, /HELPER_CLOSED/)
+  await assert.rejects(NativeFilesystem.start([], { signal: controller.signal }), { name: 'AbortError' })
 })
 test('native helper pinned read/list rejects escape, hardlinks and byte overflow', { timeout: 30000 }, async t => {
   if (!existsSync(nativeFilesystemExecutable())) {
@@ -51,8 +82,10 @@ test('native helper pinned read/list rejects escape, hardlinks and byte overflow
   await writeFile(join(root, 'large.txt'), '12345')
   await writeFile(join(root, 'hard-original.txt'), 'private')
   await link(join(root, 'hard-original.txt'), join(root, 'hard-copy.txt'))
-  const { filesystem, roots } = await NativeFilesystem.start([root], { signal: t.signal })
+  const { filesystem, roots, identities } = await NativeFilesystem.start([root], { signal: t.signal })
   helper = filesystem
+  const metadata = await stat(root, { bigint: true })
+  assert.deepEqual(identities, [{ device: metadata.dev.toString(), inode: metadata.ino.toString() }])
   const token = roots[0]!
   assert.equal((await filesystem.read(token, ['nested', 'hello.txt'])).toString(), 'hello λ')
   const listing = await filesystem.list(token)

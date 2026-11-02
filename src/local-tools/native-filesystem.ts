@@ -14,6 +14,7 @@ export function nativeFilesystemExecutable(): string {
   if (existsSync(packaged)) return packaged
   return join(root, 'native', 'dist', name)
 }
+export interface NativeRootIdentity { device: string; inode: string }
 export interface NativeEntry { name: string; kind: 'file' | 'directory' | 'other'; size: number }
 /** Internal application adapter. Executable overrides are trusted construction-time inputs,
  * never tool arguments. No operations are enabled merely by importing this module. */
@@ -39,7 +40,7 @@ export class NativeFilesystem {
     this.child.on('close', () => this.stop(fail('HELPER_EXITED')))
     this.child.stdin.on('error', () => this.stop(fail('HELPER_PIPE_CLOSED')))
   }
-  static async start(roots: string[], options: { executable?: string; timeoutMs?: number; args?: string[]; signal?: AbortSignal } = {}): Promise<{ filesystem: NativeFilesystem; roots: string[] }> {
+  static async start(roots: string[], options: { executable?: string; timeoutMs?: number; args?: string[]; signal?: AbortSignal } = {}): Promise<{ filesystem: NativeFilesystem; roots: string[]; identities: NativeRootIdentity[] }> {
     if (!roots.every(root => isAbsolute(root) && !root.includes('\0'))) throw fail('INVALID_ROOT')
     roots = [...roots]
     const timeout = options.timeoutMs ?? 10000
@@ -55,12 +56,20 @@ export class NativeFilesystem {
     try {
       const hello = await fs.request('hello', {}) as Record<string, unknown>
       if (hello.protocolVersion !== 1 || hello.maxRequestBytes !== MAX_REQUEST || hello.maxReadBytes !== MAX_READ || hello.maxListEntries !== 1000 || !Array.isArray(hello.capabilities) || !['read', 'list'].every(value => (hello.capabilities as unknown[]).includes(value))) throw fail('PROTOCOL_MISMATCH')
-      const init = await fs.request('init', { roots }) as { roots?: Array<{ token?: unknown }> }
-      if (!Array.isArray(init.roots) || init.roots.length !== roots.length || init.roots.some(root => typeof root.token !== 'string' || !root.token)) throw fail('INVALID_RESPONSE')
-      const tokens = init.roots.map(root => root.token as string)
+      const init = await fs.request('init', { roots }) as Record<string, unknown>
+      const record = (value: unknown, keys: string[]): value is Record<string, unknown> => value !== null && typeof value === 'object' && !Array.isArray(value) && Object.keys(value).length === keys.length && keys.every(key => Object.hasOwn(value, key))
+      // Keep handle identities as canonical decimal strings: JS numbers lose inode precision.
+      const decimal = (value: unknown): value is string => typeof value === 'string' && /^(?:0|[1-9][0-9]{0,38})(?![\s\S])/.test(value)
+      if (!record(init, ['roots']) || !Array.isArray(init.roots) || init.roots.length !== roots.length) throw fail('INVALID_RESPONSE')
+      const tokens: string[] = [], identities: NativeRootIdentity[] = []
+      for (const root of init.roots) {
+        if (!record(root, ['token', 'identity']) || typeof root.token !== 'string' || !root.token || !record(root.identity, ['device', 'inode']) || !decimal(root.identity.device) || !decimal(root.identity.inode)) throw fail('INVALID_RESPONSE')
+        tokens.push(root.token)
+        identities.push({ device: root.identity.device, inode: root.identity.inode })
+      }
       if (new Set(tokens).size !== tokens.length) throw fail('INVALID_RESPONSE')
       tokens.forEach(token => fs.roots.add(token))
-      return { filesystem: fs, roots: tokens }
+      return { filesystem: fs, roots: tokens, identities }
     } catch (error) { await fs.disposeAsync(); throw error }
   }
   private stop(error: Error): void {

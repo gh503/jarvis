@@ -22,7 +22,7 @@ function inspectRoot(configured:string){
     if(st.isSymbolicLink()||!st.isDirectory())throw new Error('Skill directory components must be real directories, not symlinks')
   }
   if(realpathSync(root)!==root)throw new Error('Skill directory is not its configured real root')
-  const stat=lstatSync(root)
+  const stat=lstatSync(root,{bigint:true})
   return {root,identity:`${stat.dev}:${stat.ino}`}
 }
 
@@ -56,9 +56,13 @@ function nativeSkillTools(deps:Dependencies):ToolDefinition[]{
     const root=assertCurrent()
     // The helper pins an object capability, not a sandbox for this Node process.
     // Only this configured canonical root is registered; init is never a model tool.
-    const {filesystem:fs,roots}=await NativeFilesystem.start([root.root],{signal})
+    const {filesystem:fs,roots,identities}=await NativeFilesystem.start([root.root],{signal})
     const token=roots[0]!
     try{
+      // Pathname checks alone miss an ABA swap during registration. Bind the
+      // actual pinned handle to the definition's exact (non-rounded) identity.
+      const opened=identities[0]
+      if(!opened||`${opened.device}:${opened.inode}`!==root.identity)throw new Error('Skill directory changed during registration')
       signal.throwIfAborted();assertCurrent()
       const result=await run(fs,token)
       signal.throwIfAborted();assertCurrent()
@@ -127,7 +131,7 @@ export function skillTools(deps:Dependencies,platform:NodeJS.Platform=process.pl
   const withRoot=<T>(run:(fd:number)=>T):T=>{
     const root=assertCurrent(),fd=openDirectory(root.root)
     try{
-      const stat=fstatSync(fd)
+      const stat=fstatSync(fd,{bigint:true})
       if(`${stat.dev}:${stat.ino}`!==root.identity||realpathSync(`/proc/self/fd/${fd}`)!==root.root)throw new Error('Skill directory changed')
       const result=run(fd)
       assertCurrent()

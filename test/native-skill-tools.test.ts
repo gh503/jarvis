@@ -1,7 +1,7 @@
 import { test, type TestContext } from 'node:test'
 import assert from 'node:assert/strict'
 import { createHash } from 'node:crypto'
-import { existsSync, mkdtempSync, mkdirSync, writeFileSync, linkSync, symlinkSync, realpathSync, renameSync, rmSync } from 'node:fs'
+import { existsSync, mkdtempSync, mkdirSync, writeFileSync, linkSync, symlinkSync, realpathSync, renameSync, rmSync, lstatSync } from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { skillCapability, skillTools } from '../src/local-tools/skills.ts'
@@ -88,6 +88,68 @@ test('native skill definitions reject revisions and root replacement before exec
   renameSync(f.root,path.join(f.temp,'old'));mkdirSync(f.root)
   assert.equal((await f.invoke('skill_list')).isError,true)
   assert.notEqual(skillTools(f.deps,platform)[0]!.definitionHash,hash)
+})
+for(const operation of ['skill_load','skill_list'])test(`native ${operation} rejects an ABA root substitution during real helper init before reading`,async t=>{
+  const f=fixture(t);if(!f)return
+  const original=path.join(f.temp,'original'),substitute=path.join(f.temp,'substitute')
+  mkdirSync(substitute)
+  writeFileSync(path.join(f.root,'Guide.md'),'AUTHORIZED_GUIDANCE')
+  writeFileSync(path.join(substitute,'Guide.md'),'SUBSTITUTE_MUST_NOT_BE_READ')
+  const identity=(root:string)=>{const stat=lstatSync(root,{bigint:true});return {device:String(stat.dev),inode:String(stat.ino)}}
+  const authorizedIdentity=identity(f.root),substituteIdentity=identity(substitute)
+  assert.notDeepEqual(authorizedIdentity,substituteIdentity)
+  const start=NativeFilesystem.start.bind(NativeFilesystem)
+  let initialized=false,restoredBeforeReturn=false,restorationBlocked=false,reads=0,lists=0
+  t.mock.method(NativeFilesystem,'start',async(roots:Parameters<typeof start>[0],options:Parameters<typeof start>[1])=>{
+    assert.deepEqual(roots,[f.root])
+    // These are the fixture's three absolute paths: move the authorized root
+    // aside, let the REAL helper pin the substitute, then restore the pathname.
+    renameSync(f.root,original);renameSync(substitute,f.root)
+    let opened:Awaited<ReturnType<typeof start>>|undefined
+    try{
+      opened=await start(roots,options)
+      initialized=true
+      assert.deepEqual(opened.identities,[substituteIdentity])
+      const read=opened.filesystem.read.bind(opened.filesystem),list=opened.filesystem.list.bind(opened.filesystem)
+      t.mock.method(opened.filesystem,'read',(...args:Parameters<typeof read>)=>{reads++;return read(...args)})
+      t.mock.method(opened.filesystem,'list',(...args:Parameters<typeof list>)=>{lists++;return list(...args)})
+      try{renameSync(f.root,substitute)}catch(error){
+        // Windows opens without FILE_SHARE_DELETE: restoration can be blocked
+        // while the substitute handle is alive. This is not a completed ABA.
+        assert.equal(process.platform,'win32')
+        assert.match((error as NodeJS.ErrnoException).code??'',/^(?:EPERM|EACCES|EBUSY)$/)
+        restorationBlocked=true
+        throw error
+      }
+      renameSync(original,f.root)
+      restoredBeforeReturn=true
+      assert.deepEqual(identity(f.root),authorizedIdentity)
+      return opened
+    }catch(error){
+      await opened?.filesystem.disposeAsync()
+      throw error
+    }finally{
+      // On a blocked Windows restoration, release handles before restoring.
+      if(existsSync(original)){
+        if(existsSync(f.root))renameSync(f.root,substitute)
+        renameSync(original,f.root)
+      }
+    }
+  })
+  const result=await f.invoke(operation,operation==='skill_load'?{name:'Guide.md'}:{})
+  assert.equal(initialized,true,'the actual helper must open the substitute')
+  assert.equal(result.isError,true,result.content)
+  assert.doesNotMatch(result.content,/SUBSTITUTE_MUST_NOT_BE_READ/)
+  assert.equal(reads,0,'identity rejection must precede every read')
+  assert.equal(lists,0,'identity rejection must precede every listing')
+  assert.deepEqual(identity(f.root),authorizedIdentity)
+  if(restorationBlocked){
+    assert.equal(restoredBeforeReturn,false)
+    t.diagnostic('Windows sharing mode blocked restoration; a complete ABA was not possible')
+  }else{
+    assert.equal(restoredBeforeReturn,true,'POSIX must complete the ABA before start returns')
+    assert.match(result.content,/Skill directory changed during registration/)
+  }
 })
 for(const stage of [3,4])for(const mutation of ['revision','root'])test(`native skill suppresses content on ${mutation} replacement at check ${stage}`,async t=>{
   const f=fixture(t);if(!f)return
