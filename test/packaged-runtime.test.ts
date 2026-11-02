@@ -132,6 +132,46 @@ test('native artifact verifies and starts/stops using only its bundled Node', { 
     await assert.rejects(lstat(join(controlDirectory, 'install-intent.json')), { code: 'ENOENT' })
     await assert.rejects(lstat(join(diagnosisState, 'native-install.json')), { code: 'ENOENT' })
     assert.equal(await readFile(sentinel, 'utf8'), sentinelBytes)
+    nextStage('bundled data snapshot create/verify/restore with empty PATH')
+    {
+      // Synthetic state stays disjoint from both application data and diagnosis.
+      const snapshotRoot = join(temporary, 'snapshot fixture 中文')
+      const source = join(snapshotRoot, 'source')
+      const snapshot = join(snapshotRoot, 'snapshot')
+      const destination = join(snapshotRoot, 'restored')
+      const outside = join(temporary, 'snapshot unrelated.txt')
+      const outsideBytes = Buffer.from('unrelated snapshot fixture must survive')
+      const configBytes = Buffer.from('{"fixture":"packaged snapshot 中文"}\n')
+      await writeFile(outside, outsideBytes, { mode: 0o600 })
+      const options = { env, cwd: temporary, encoding: 'utf8' as const, timeout: 60_000, maxBuffer: 64 * 1024 }
+      // Use the shipped permission API so Windows fixtures inherit private ACLs.
+      const setupScript = `import {ensurePrivateDataDirectory} from ${JSON.stringify(pathToFileURL(join(bundle, 'src/private-directory.ts')).href)};await ensurePrivateDataDirectory(${JSON.stringify(snapshotRoot)});await ensurePrivateDataDirectory(${JSON.stringify(source)});`
+      const setup = spawnSync(binary, ['--experimental-transform-types', '--input-type=module', '-e', setupScript], options)
+      assert.ifError(setup.error)
+      assert.equal(setup.status, 0, setup.stderr)
+      await writeFile(join(source, 'sample.txt'), configBytes, { mode: 0o600 })
+      const snapshotCli = join(bundle, 'scripts', 'snapshot-native.ts')
+      const runSnapshot = (args: string[]) => {
+        const result = spawnSync(binary, ['--experimental-transform-types', snapshotCli, ...args], options)
+        assert.ifError(result.error)
+        assert.equal(result.status, 0, result.stderr)
+        return JSON.parse(result.stdout)
+      }
+      const receipt = runSnapshot(['create', '--data', source, '--destination', snapshot])
+      assert.deepEqual(Object.keys(receipt).sort(), ['manifestSha256', 'snapshot'])
+      assert.equal(receipt.snapshot, snapshot)
+      assert.match(receipt.manifestSha256, /^[a-f0-9]{64}$/)
+      const snapshotArgs = ['--snapshot', snapshot, '--manifest-sha256', receipt.manifestSha256]
+      assert.deepEqual(runSnapshot(['verify', ...snapshotArgs]), { verified: true, ...receipt })
+      assert.deepEqual(runSnapshot(['restore', ...snapshotArgs, '--destination', destination]), {
+        destination, manifestSha256: receipt.manifestSha256,
+      })
+      assert.deepEqual(await readFile(join(destination, 'sample.txt')), configBytes)
+      assert.deepEqual(await readFile(join(source, 'sample.txt')), configBytes)
+      assert.deepEqual(await readFile(outside), outsideBytes)
+      assert.equal(await readFile(sentinel, 'utf8'), sentinelBytes)
+      await assert.rejects(lstat(data), { code: 'ENOENT' })
+    }
     nextStage('bundled native helper with empty PATH')
     const helperRoot = join(temporary, 'approved files')
     await mkdir(helperRoot)
