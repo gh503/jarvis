@@ -661,6 +661,36 @@ for (const stage of ['generation', 'read'] as const) test(`second Windows shortc
   } finally { t.mock.restoreAll(); syncBuiltinESMExports() }
 }))
 
+test('changed Windows staging during cleanup blocks all final publication', async t => fixture('win32', async options => {
+  const { artifactPaths, receiptPath } = describeNativeIntegration(options)
+  let temporaryLink = '', reads = 0, calls = 0
+  const changed = Buffer.from('changed after verified generation')
+  options.runPowerShell = (_script, env) => {
+    calls++
+    temporaryLink = env.JARVIS_LINK_PATH!
+    writeFileSync(temporaryLink, 'original shortcut', { mode: 0o600 })
+  }
+  const originalOpen = fsPromises.open
+  const finalOpens: string[] = []
+  t.mock.method(fsPromises, 'open', async (...args: Parameters<typeof open>) => {
+    if (args[1] === 'wx' && [...artifactPaths, receiptPath].includes(String(args[0]))) finalOpens.push(String(args[0]))
+    // The second bounded read belongs to owned cleanup. Change the file after
+    // its initial lstat, so either that read or the ownership check must refuse.
+    if (temporaryLink && args[0] === temporaryLink && ++reads === 2) await writeFile(temporaryLink, changed)
+    return originalOpen(...args)
+  })
+  syncBuiltinESMExports()
+  try {
+    await assert.rejects(nativeIntegration(options, ['--install', '--autostart']))
+    assert.equal(reads, 2, 'exercise cleanup after successful generation read')
+    assert.equal(calls, 1, 'do not generate another shortcut after unsafe cleanup')
+    assert.deepEqual(finalOpens, [])
+    for (const path of [...artifactPaths, receiptPath]) assert.equal(existsSync(path), false)
+    assert.deepEqual(await readFile(temporaryLink), changed)
+    assert.ok((await lstat(dirname(temporaryLink))).isDirectory())
+  } finally { t.mock.restoreAll(); syncBuiltinESMExports() }
+}))
+
 for (const stage of ['sync', 'close'] as const) test(`descriptor ${stage} failure preserves original error and safe cleanup`, async t => fixture('darwin', async options => {
   const first = join(options.home, 'Applications', 'Jarvis.app', 'Contents', 'Info.plist')
   const originalOpen = fsPromises.open
