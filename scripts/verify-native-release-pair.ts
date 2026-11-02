@@ -28,23 +28,42 @@ export function validateMember(name: string, root: string): void {
   assert.ok(parts.every(part => part && part !== '.' && part !== '..' && !/[. ]$/.test(part)), 'Unsafe archive component')
 }
 
+export function processFailureMetadata(error: unknown): { status?: number; signal?: string; code?: string } {
+  const result: { status?: number; signal?: string; code?: string } = {}
+  if (!error || typeof error !== 'object') return result
+  try {
+    const own = (key: string): unknown => {
+      const descriptor = Object.getOwnPropertyDescriptor(error, key)
+      return descriptor && Object.hasOwn(descriptor, 'value') ? descriptor.value : undefined
+    }
+    const status = own('status'), signal = own('signal'), code = own('code')
+    if (typeof status === 'number' && Number.isInteger(status) && status >= 0 && status <= 255) result.status = status
+    if (signal === 'SIGTERM' || signal === 'SIGKILL') result.signal = signal
+    if (typeof code === 'string' && ['ETIMEDOUT', 'ENOENT', 'EACCES', 'EPERM', 'ENOBUFS'].includes(code)) result.code = code
+  } catch { /* Uninspectable metadata must not expose the original error. */ }
+  return result
+}
+
 export async function main(): Promise<void> {
   const reportPath = resolve('native-update-acceptance-report.json')
   const started = Date.now(), deadline = started + 600_000
   let step = 'setup'
-  const operations: { index: number; step: string; elapsedMs: number; completed: boolean }[] = []
+  const operations: { index: number; step: string; elapsedMs: number; completed: boolean; failure?: ReturnType<typeof processFailureMetadata> }[] = []
   const report: Record<string, unknown> = { repository, platform: process.platform, arch: process.arch, releases, passed: false, operations }
   const run = (binary: string, args: string[], env: NodeJS.ProcessEnv = process.env, cwd?: string) => {
     assert.ok(Date.now() < deadline, 'Acceptance deadline exceeded')
-    const operation = { index: operations.length + 1, step, elapsedMs: 0, completed: false }
+    const operation: (typeof operations)[number] = { index: operations.length + 1, step, elapsedMs: 0, completed: false }
     operations.push(operation)
     const begun = performance.now()
     try {
       const output = execFileSync(binary, args, { env, cwd, encoding: 'utf8', timeout: Math.min(90_000, deadline - Date.now()), maxBuffer: 16 * 1024 * 1024, stdio: ['ignore', 'pipe', 'pipe'] }).trim()
       operation.completed = true
       return output
+    } catch (error) {
+      operation.failure = processFailureMetadata(error)
+      throw error
     } finally {
-      // Fixed fields only: do not inspect thrown errors or expose command arguments/output.
+      // Never expose command arguments, raw error text, or subprocess output.
       operation.elapsedMs = Math.round(performance.now() - begun)
     }
   }
