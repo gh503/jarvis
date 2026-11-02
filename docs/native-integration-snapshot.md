@@ -1,12 +1,12 @@
 # Native integration snapshots
 
-Status: **upcoming source feature; no verified release yet**. The recommended release remains the [v2.0.52 unsigned preview](https://github.com/gh503/jarvis/releases/tag/v2.0.52), which includes neither this API nor this CLI. The source module [native-integration-snapshot.ts](../scripts/native-integration-snapshot.ts) and source CLI [snapshot-native-integration.ts](../scripts/snapshot-native-integration.ts) capture and verify receipt-backed macOS or Windows native integration bytes. They provide no restore, activation, or writeback to installed integration locations.
+Status: **upcoming source feature; no verified release yet**. The recommended release remains the [v2.0.52 unsigned preview](https://github.com/gh503/jarvis/releases/tag/v2.0.52), which includes neither this API nor this CLI. The source module [native-integration-snapshot.ts](../scripts/native-integration-snapshot.ts) and source CLI [snapshot-native-integration.ts](../scripts/snapshot-native-integration.ts) capture and verify receipt-backed macOS or Windows native integration bytes. Creation and verification are available in source. The upcoming source recovery-copy API and explicit `restore-copy` CLI action described here have no verified release evidence yet. They copy recovery material to a fresh private directory; they provide no system installation restore, activation, or writeback to installed integration locations.
 
 The read-only inventory prerequisite and in-process installation-failure cleanup are included in v2.0.52; this persistent snapshot format is separate. API source `bbaf` passed all three jobs in [native CI 41489076014](https://github.com/gh503/jarvis/actions/runs/41489076014), but [release packaging/publication 41489351802](https://github.com/gh503/jarvis/actions/runs/41489351802) was still in progress at this evidence check. CLI source `e655` had [native CI 41490813672](https://github.com/gh503/jarvis/actions/runs/41490813672) still running. Neither the snapshot API nor CLI is included in v2.0.52.
 
 ## Source CLI
 
-Run from a current source checkout with a trusted source-development Node 24 executable. Both `create` and `verify` require all of `--platform darwin|win32`, `--arch x64|arm64`, `--home ABS`, and `--root ABS`. Windows layout additionally requires `--app-data ABS` and `--local-app-data ABS`; macOS layout rejects both AppData flags. `create` requires `--destination ABS`; `verify` requires `--snapshot ABS` and `--manifest-sha256` with exactly 64 lowercase hexadecimal characters. Unknown, duplicate, missing, or action-inappropriate options are usage errors. There is no `restore` action.
+Run from a current source checkout with a trusted source-development Node 24 executable. `create`, `verify`, and the upcoming `restore-copy` action require all of `--platform darwin|win32`, `--arch x64|arm64`, `--home ABS`, and `--root ABS`. Windows layout additionally requires `--app-data ABS` and `--local-app-data ABS`; macOS layout rejects both AppData flags. `create` requires `--destination ABS`; `verify` requires `--snapshot ABS` and `--manifest-sha256` with exactly 64 lowercase hexadecimal characters. `restore-copy` requires all three of `--snapshot ABS`, `--manifest-sha256` in that same digest format, and `--destination ABS`. Unknown, duplicate, missing, or action-inappropriate options are usage errors. `restore-copy` is a recovery-material copy, not a system restore command.
 
 Every location is explicit: the CLI does not derive integration paths from ambient `HOME`, `USERPROFILE`, `APPDATA`, or `LOCALAPPDATA`. It parses and validates the complete argument list before importing the operational snapshot module. It does not load `.env` or external configuration, run the installer CLI, install integrations, or execute captured launchers or shortcuts. Native Windows privacy checks still use the system PowerShell program described below.
 
@@ -29,6 +29,15 @@ POSIX shell, with a macOS layout and source Node 24 (replace `arm64` with `x64` 
   --root /Users/EXAMPLE_USER/temporary-integration-fixture/package \
   --snapshot /Users/EXAMPLE_USER/private-snapshots/integration-001 \
   --manifest-sha256 REPLACE_WITH_TRUSTED_MANIFEST_SHA256
+
+# Upcoming source recovery-copy action; not a verified release command.
+/absolute/path/to/source-node24/bin/node --experimental-transform-types scripts/snapshot-native-integration.ts restore-copy \
+  --platform darwin --arch arm64 \
+  --home /Users/EXAMPLE_USER/temporary-integration-fixture/home \
+  --root /Users/EXAMPLE_USER/temporary-integration-fixture/package \
+  --snapshot /Users/EXAMPLE_USER/private-snapshots/integration-001 \
+  --manifest-sha256 REPLACE_WITH_TRUSTED_MANIFEST_SHA256 \
+  --destination /Users/EXAMPLE_USER/private-snapshots/integration-recovery-001
 ```
 
 Windows PowerShell, with source Node 24 (replace `x64` with `arm64` if appropriate):
@@ -50,9 +59,20 @@ Windows PowerShell, with source Node 24 (replace `x64` with `arm64` if appropria
   --local-app-data 'C:\Users\EXAMPLE_USER\temporary-integration-fixture\home\AppData\Local' `
   --snapshot 'C:\Users\EXAMPLE_USER\private-snapshots\integration-001' `
   --manifest-sha256 REPLACE_WITH_TRUSTED_MANIFEST_SHA256
+
+# Upcoming source recovery-copy action; not a verified release command.
+& 'C:\absolute\path\to\source-node24\node.exe' --experimental-transform-types '.\scripts\snapshot-native-integration.ts' restore-copy `
+  --platform win32 --arch x64 `
+  --home 'C:\Users\EXAMPLE_USER\temporary-integration-fixture\home' `
+  --root 'C:\Users\EXAMPLE_USER\temporary-integration-fixture\package' `
+  --app-data 'C:\Users\EXAMPLE_USER\temporary-integration-fixture\home\AppData\Roaming' `
+  --local-app-data 'C:\Users\EXAMPLE_USER\temporary-integration-fixture\home\AppData\Local' `
+  --snapshot 'C:\Users\EXAMPLE_USER\private-snapshots\integration-001' `
+  --manifest-sha256 REPLACE_WITH_TRUSTED_MANIFEST_SHA256 `
+  --destination 'C:\Users\EXAMPLE_USER\private-snapshots\integration-recovery-001'
 ```
 
-Success prints one minimal JSON receipt: creation returns `{ "snapshot": "…", "manifestSha256": "…" }`; verification returns `{ "verified": true, "snapshot": "…", "manifestSha256": "…" }`. Output includes the snapshot path and digest, never captured file contents or the full manifest. Keep this output private. Success exits with status `0`, usage errors with `2`, and operational failures with `1`. CLI error diagnostics are bounded to 1,024 characters and do not expose captured bytes or raw exception text; an operational failure emits a fixed generic message. A failure may leave partial output as described below.
+Success prints one minimal JSON receipt: creation returns `{ "snapshot": "…", "manifestSha256": "…" }`; verification returns `{ "verified": true, "snapshot": "…", "manifestSha256": "…" }`; `restore-copy` returns `{ "destination": "…", "manifestSha256": "…" }`. Output includes the snapshot path and digest, never captured file contents or the full manifest. Keep this output private. Success exits with status `0`, usage errors with `2`, and operational failures with `1`. CLI error diagnostics are bounded to 1,024 characters and do not expose captured bytes or raw exception text; an operational failure emits a fixed generic message. A failure may leave partial output as described below.
 
 ## Source API and trust
 
@@ -61,9 +81,11 @@ Trusted source callers use these asynchronous APIs with the installer's [Install
 ```ts
 createIntegrationSnapshot({ integration: InstallOptions, destination })
 verifyIntegrationSnapshot({ snapshot, manifestSha256, integration: InstallOptions })
+// Upcoming recovery-copy API; release verification pending.
+restoreIntegrationSnapshot({ snapshot, manifestSha256, integration: InstallOptions, destination })
 ```
 
-Both return `{ snapshot, manifestSha256, manifest }`. `destination` must be a fresh canonical absolute path with an existing canonical parent. `snapshot` is the canonical absolute snapshot directory. Verification requires a lowercase 64-character SHA-256 digest of the exact manifest bytes, saved separately in a trusted private record. Computing a digest from an untrusted snapshot does not establish trust. The receipt is mutable local ownership metadata; neither the receipt nor these hashes authenticate a publisher.
+Creation and verification return `{ snapshot, manifestSha256, manifest }`; recovery copy returns `{ destination, manifestSha256, manifest }`. `destination` must be a fresh canonical absolute path with an existing canonical parent. `snapshot` is the canonical absolute snapshot directory. Verification requires a lowercase 64-character SHA-256 digest of the exact manifest bytes, saved separately in a trusted private record. Computing a digest from an untrusted snapshot does not establish trust. The receipt is mutable local ownership metadata; neither the receipt nor these hashes authenticate a publisher.
 
 `integration.platform` and the expected `home`, `appData`, and `localAppData` options select the fixed native receipt and artifact locations. Windows callers must supply both AppData paths explicitly. Verification checks those locations against the manifest and captured receipt. `integration.root` must be a valid absolute option path, but is **not asserted equal to the installed package root**. The actual receipt's `root`, `autostart`, and optional `configFile`/`dataDir` binding are authoritative, bound to the snapshot by the externally trusted manifest digest. Do not treat the caller's `root` or `arch` option as verified baseline package identity.
 
@@ -105,8 +127,20 @@ Windows creation establishes private output using the native private-directory p
 
 Output files are created exclusively and individually flushed with file `fsync`. Copied receipt and payload bytes are read back and checked before publication. The manifest is written last, after source rechecks; creation then verifies the result and rechecks source inspection and identities once more before returning. No directory synchronization is performed. Failure can retain a private partial destination, including a published manifest if final verification or the final source recheck fails. Preserve it for inspection; do not treat its existence as successful capture or automatically reuse it. There is no automatic cleanup, crash-atomic multi-file publication, or power-loss durability guarantee.
 
+## Recovery copy to a fresh private directory
+
+The upcoming `restoreIntegrationSnapshot({ snapshot, manifestSha256, integration, destination })` API and `restore-copy` CLI action copy recovery material, not an actual installation. They fully verify the source snapshot against the externally trusted manifest digest and expected integration layout before creating the fresh destination. The original receipt, artifacts, package, config, and data need not exist. Their recorded locations remain bindings and protected boundaries.
+
+The destination must not already exist, even as an empty directory, and must have an existing canonical parent. It must be disjoint in both directions from the source snapshot, original receipt parent, every fixed artifact parent, receipt-bound original package root, and any bound config parent and selected data directory. Existing ancestors must pass canonical-path checks, including when original files are absent. Nothing is overwritten or merged.
+
+The copy retains the exact snapshot layout: `manifest.json`, `receipt.bin`, and `payload/{index}.bin` for present artifacts only. It copies exact manifest, receipt, and payload bytes without rewriting embedded paths, retains explicit null metadata and absent payloads for missing artifacts, and keeps the **same externally trusted manifest SHA-256**. Recorded original modes remain metadata only. POSIX destination directories are `0700` and files `0600`; executable source modes are never applied. Windows uses the private-directory policy and snapshot ACL checks described above.
+
+All writers to the source snapshot must remain stopped throughout copying. After copying, the operation fully verifies both destination and source snapshots, checks source identities across the copy window, and compares the source manifest bytes again before success. These observations do not provide locks, an atomic snapshot, or protection against hostile same-account races. Each output file is created exclusively and file-fsynced; the manifest is copied last. A later failure retains a private partial destination, which may already contain the manifest. Preserve it for inspection and use a different fresh destination for a retry. There is no automatic cleanup, persistent recovery journal, directory synchronization, crash-atomic publication, or directory power-loss durability guarantee.
+
+Recovery copy never writes original system integration locations, runs shortcut COM creation, constructs an installed app wrapper, executes captured artifacts, launches Jarvis, or activates anything. Windows privacy checks may run the fixed system PowerShell checker. A successful copy is independently verifiable recovery material, not permission/ACL restoration or a working installation.
+
 ## Recovery and activation boundary
 
 Integration snapshots are separate from [native recovery sets](native-recovery-set.md). Recovery-set v1 retains its exact existing root layout and baseline/config/data contract; do not insert an integration snapshot into it. Coupling integration capture to a recovery set requires a separately designed future format version and coordination contract.
 
-The source API and CLI add no restore command, permission/ACL restoration, persistent recovery journal, installation transaction, activation, or automatic rollback. They do not establish compatibility between package code, configuration, and database schemas. Keep the original compatible bundle and private config/data recovery material separately, and follow the operator-controlled boundaries in [native update staging and recovery](native-update.md).
+The explicit recovery-copy API and CLI action add no system installation restore, permission/ACL restoration, persistent recovery journal, installation transaction, activation, or automatic rollback. They do not establish compatibility between package code, configuration, and database schemas. Keep the original compatible bundle and private config/data recovery material separately, and follow the operator-controlled boundaries in [native update staging and recovery](native-update.md).

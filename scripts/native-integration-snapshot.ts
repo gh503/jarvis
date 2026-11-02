@@ -7,10 +7,12 @@ import { promisify } from 'node:util'
 import { ensurePrivateDataDirectory } from '../src/private-directory.ts'
 import { describeNativeIntegration, inspectNativeIntegration, parseNativeIntegrationReceipt, type InstallOptions } from './install-native.ts'
 
-/** Capture and verify only. Keep writers quiescent and the manifest digest separately
- * trusted. This does not activate integrations, restore installations or ACLs, copy
- * configuration/package/data contents, or promise atomic/power-loss snapshots. Failed
- * captures retain their private partial directory for explicit operator handling. */
+/** Capture, verify, and export portable recovery copies only. Keep all writers
+ * quiescent and the manifest digest separately trusted. This does not activate
+ * integrations, restore installations or ACLs, copy configuration/package/data
+ * contents, or promise atomic/power-loss snapshots or directory fsync durability.
+ * Failures retain private partial directories for explicit operator handling.
+ * Malicious same-account mutation (including ABA replacement) is out of scope. */
 export const INTEGRATION_SNAPSHOT_LIMITS = Object.freeze({ manifestBytes: 16 * 1024, receiptBytes: 64 * 1024, artifactBytes: 1024 * 1024 })
 const SCOPE = Object.freeze({ kind: 'native-integration-inventory', activation: 'none', installationRestore: 'none', aclRestore: 'none', writers: 'quiescent-required', atomicity: 'not-asserted', externalConfiguration: 'binding-only', packageAndData: 'binding-only' })
 type Inventory = NonNullable<Awaited<ReturnType<typeof inspectNativeIntegration>>>
@@ -31,7 +33,12 @@ const encode = (value: unknown) => Buffer.from(JSON.stringify(value) + '\n')
 function assert(value: unknown, message: string): asserts value { if (!value) throw new Error(message) }
 const identityKeys = ['dev', 'ino', 'mode', 'nlink', 'uid', 'gid', 'size', 'mtimeNs', 'ctimeNs', 'birthtimeNs'] as const
 function same(a: BigIntStats, b: BigIntStats) { return identityKeys.every(key => a[key] === b[key]) }
-function absolute(path: string) { assert(typeof path === 'string' && isAbsolute(path) && resolve(path) === path && !/[\x00-\x1f\x7f]/.test(path), 'Expected canonical absolute path') }
+function absolute(path: string) {
+  assert(typeof path === 'string' && Buffer.byteLength(path) <= 4096 && isAbsolute(path) && resolve(path) === path && !/[\x00-\x1f\x7f\ud800-\udfff]/u.test(path), 'Expected canonical absolute path')
+  // Native Windows normalizes these spellings even for a not-yet-existing leaf.
+  // Reject them before mkdir, rather than relying on existing-ancestor realpath.
+  if (process.platform === 'win32') assert(/^[a-z]:\\/i.test(path) && !path.slice(2).includes(':') && !path.includes('/') && path.slice(3).split('\\').every(p => !/[. ]$/.test(p) && !/^(con|prn|aux|nul|com[1-9¹²³]|lpt[1-9¹²³])(?:\.|$)/i.test(p)), 'Expected native Windows path without aliases')
+}
 function overlaps(a: string, b: string) {
   const below = (x: string, y: string) => { const r = relative(x, y); return r === '' || (!isAbsolute(r) && r !== '..' && !r.startsWith('..' + sep)) }
   return below(a, b) || below(b, a)
@@ -175,6 +182,44 @@ export async function createIntegrationSnapshot({ integration, destination }: { 
   const finalInventory = await inspectNativeIntegration(integration), finalIdentities = await identities(sources)
   assert(finalInventory && encode(manifestFor(finalInventory)).equals(bytes) && before.every((s, index) => s === undefined ? finalIdentities[index] === undefined : finalIdentities[index] !== undefined && same(s, finalIdentities[index]!)), 'Original integration changed during capture')
   return result
+}
+/** Export a portable, data-only recovery copy into a fresh private directory.
+ * The original manifest/receipt/payload bytes and recorded modes are preserved;
+ * copied files are private data (0600), never executable integration artifacts.
+ * This never writes original integration paths or invokes integration activation.
+ * All writers must remain stopped; later failures retain the partial destination. */
+export async function restoreIntegrationSnapshot({ snapshot, manifestSha256, integration, destination }: { snapshot: string; manifestSha256: string; integration: InstallOptions; destination: string }): Promise<{ destination: string; manifestSha256: string; manifest: IntegrationSnapshotManifest }> {
+  const { manifest } = await verifyIntegrationSnapshot({ snapshot, manifestSha256, integration })
+  absolute(destination)
+  const protectedRoots = protectedPaths({ receiptPath: manifest.originalReceiptPath, artifacts: manifest.artifacts.map(item => ({ path: item.path, bytes: undefined, mode: undefined })), binding: manifest.binding })
+  assert([snapshot, ...protectedRoots].every(path => !overlaps(path, destination)), 'Recovery destination overlaps snapshot or protected source')
+  await canonical(dirname(destination))
+  // Original files may have disappeared. Still check every existing ancestor so
+  // aliases cannot turn a lexically separate destination into a production path.
+  for (const path of [...protectedRoots, manifest.originalReceiptPath, ...manifest.artifacts.map(item => item.path)]) await canonical(path, true)
+  const names = manifest.artifacts.flatMap((item, index) => item.bytes === null ? [] : [`${index}.bin`])
+  const sources = [snapshot, join(snapshot, 'payload'), join(snapshot, 'manifest.json'), join(snapshot, 'receipt.bin'), ...names.map(name => join(snapshot, 'payload', name))]
+  const before = await identities(sources)
+  const bytes = await boundedRead(join(snapshot, 'manifest.json'), INTEGRATION_SNAPSHOT_LIMITS.manifestBytes)
+  assert(hash(bytes) === manifestSha256, 'Manifest SHA-256 mismatch')
+  await mkdir(destination, { mode: 0o700 })
+  await ensurePrivateDataDirectory(destination)
+  await mkdir(join(destination, 'payload'), { mode: 0o700 })
+  const copy = async (name: string, limit: number, length: number, sha256: string) => {
+    const content = await boundedRead(join(snapshot, name), limit)
+    assert(content.length === length && hash(content) === sha256, 'Source snapshot checksum mismatch during recovery')
+    await writeExclusive(join(destination, name), content)
+    assert((await boundedRead(join(destination, name), limit)).equals(content), 'Copied recovery data mismatch')
+  }
+  await copy('receipt.bin', INTEGRATION_SNAPSHOT_LIMITS.receiptBytes, manifest.receiptBytes, manifest.receiptSha256)
+  for (const [index, item] of manifest.artifacts.entries()) if (item.bytes !== null) await copy(join('payload', `${index}.bin`), INTEGRATION_SNAPSHOT_LIMITS.artifactBytes, item.bytes, item.sha256!)
+  await writeExclusive(join(destination, 'manifest.json'), bytes)
+  await verifyIntegrationSnapshot({ snapshot: destination, manifestSha256, integration })
+  await verifyIntegrationSnapshot({ snapshot, manifestSha256, integration })
+  const after = await identities(sources)
+  assert(before.every((s, index) => s !== undefined && after[index] !== undefined && same(s, after[index]!)), 'Source snapshot changed during recovery')
+  assert((await boundedRead(join(snapshot, 'manifest.json'), INTEGRATION_SNAPSHOT_LIMITS.manifestBytes)).equals(bytes), 'Source manifest changed during recovery')
+  return { destination, manifestSha256, manifest }
 }
 export async function verifyIntegrationSnapshot({ snapshot, manifestSha256, integration }: { snapshot: string; manifestSha256: string; integration: InstallOptions }): Promise<IntegrationSnapshotResult> {
   assert(typeof manifestSha256 === 'string' && /^[a-f0-9]{64}$/.test(manifestSha256), 'Expected external manifest SHA-256')

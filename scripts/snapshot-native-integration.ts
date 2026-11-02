@@ -7,14 +7,16 @@ import type { InstallOptions } from './install-native.ts'
 export type IntegrationSnapshotArgs =
   | { action: 'create'; integration: InstallOptions; destination: string }
   | { action: 'verify'; integration: InstallOptions; snapshot: string; manifestSha256: string }
+  | { action: 'restore-copy'; integration: InstallOptions; snapshot: string; manifestSha256: string; destination: string }
 
-const usage = 'Usage: snapshot-native-integration.ts create --platform darwin|win32 --arch x64|arm64 --home ABS --root ABS --destination ABS | verify --platform darwin|win32 --arch x64|arm64 --home ABS --root ABS --snapshot ABS --manifest-sha256 64lowerhex (win32 requires --app-data ABS --local-app-data ABS; darwin forbids them)'
+const usage = 'Usage: snapshot-native-integration.ts create --platform darwin|win32 --arch x64|arm64 --home ABS --root ABS --destination ABS | verify --platform darwin|win32 --arch x64|arm64 --home ABS --root ABS --snapshot ABS --manifest-sha256 64lowerhex | restore-copy --platform darwin|win32 --arch x64|arm64 --home ABS --root ABS --snapshot ABS --manifest-sha256 64lowerhex --destination ABS (win32 requires --app-data ABS --local-app-data ABS; darwin forbids them)'
 
 /** Parse the complete explicit context before importing any operational modules. */
 export function parseIntegrationSnapshotArgs(args: readonly string[]): IntegrationSnapshotArgs {
   const [action, ...rest] = args
-  if (action !== 'create' && action !== 'verify') throw new Error(usage)
-  const required = ['--platform', '--arch', '--home', '--root', ...(action === 'create' ? ['--destination'] : ['--snapshot', '--manifest-sha256'])]
+  if (action !== 'create' && action !== 'verify' && action !== 'restore-copy') throw new Error(usage)
+  const required = ['--platform', '--arch', '--home', '--root', ...(action === 'create' ? ['--destination'] : ['--snapshot', '--manifest-sha256']),
+    ...(action === 'restore-copy' ? ['--destination'] : [])]
   const allowed = [...required, '--app-data', '--local-app-data']
   const values = new Map<string, string>()
   if (rest.length % 2) throw new Error(usage)
@@ -33,7 +35,9 @@ export function parseIntegrationSnapshotArgs(args: readonly string[]): Integrati
   const integration: InstallOptions = { platform, arch: values.get('--arch')!, home: values.get('--home')!, root: values.get('--root')!,
     ...(platform === 'win32' ? { appData: values.get('--app-data')!, localAppData: values.get('--local-app-data')! } : {}) }
   return action === 'create' ? { action, integration, destination: values.get('--destination')! }
-    : { action, integration, snapshot: values.get('--snapshot')!, manifestSha256: values.get('--manifest-sha256')! }
+    : action === 'restore-copy'
+      ? { action, integration, snapshot: values.get('--snapshot')!, manifestSha256: values.get('--manifest-sha256')!, destination: values.get('--destination')! }
+      : { action, integration, snapshot: values.get('--snapshot')!, manifestSha256: values.get('--manifest-sha256')! }
 }
 
 export async function main(args: string[]): Promise<void> {
@@ -41,10 +45,13 @@ export async function main(args: string[]): Promise<void> {
   try { options = parseIntegrationSnapshotArgs(args) }
   catch { console.error(usage); process.exitCode = 2; return }
   try {
-    const { createIntegrationSnapshot, verifyIntegrationSnapshot } = await import('./native-integration-snapshot.ts')
+    const { createIntegrationSnapshot, verifyIntegrationSnapshot, restoreIntegrationSnapshot } = await import('./native-integration-snapshot.ts')
     if (options.action === 'create') {
       const { snapshot, manifestSha256 } = await createIntegrationSnapshot(options)
       console.log(JSON.stringify({ snapshot, manifestSha256 }))
+    } else if (options.action === 'restore-copy') {
+      const { destination, manifestSha256 } = await restoreIntegrationSnapshot(options)
+      console.log(JSON.stringify({ destination, manifestSha256 }))
     } else {
       await verifyIntegrationSnapshot(options)
       console.log(JSON.stringify({ verified: true, snapshot: options.snapshot, manifestSha256: options.manifestSha256 }))

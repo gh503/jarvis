@@ -2,7 +2,7 @@ import assert from 'node:assert/strict'
 import { execFile } from 'node:child_process'
 import { createHash } from 'node:crypto'
 import { writeFileSync } from 'node:fs'
-import { chmod, lstat, mkdir, mkdtemp, readFile, realpath, rm, unlink, writeFile } from 'node:fs/promises'
+import { chmod, lstat, mkdir, mkdtemp, readFile, readdir, realpath, rm, unlink, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { dirname, isAbsolute, join, relative, sep } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -20,25 +20,27 @@ function context(platform: 'darwin' | 'win32', root = absolute): string[] {
   return ['--platform', platform, '--arch', 'arm64', '--home', join(root, 'home'), '--root', join(root, 'package'),
     ...(platform === 'win32' ? ['--app-data', join(root, 'roaming'), '--local-app-data', join(root, 'local')] : [])]
 }
-function args(action: 'create' | 'verify', platform: 'darwin' | 'win32'): string[] {
-  return [action, ...context(platform), ...(action === 'create' ? ['--destination', absolute] : ['--snapshot', absolute, '--manifest-sha256', digest])]
+function args(action: 'create' | 'verify' | 'restore-copy', platform: 'darwin' | 'win32'): string[] {
+  return [action, ...context(platform), ...(action === 'create' ? ['--destination', absolute] : ['--snapshot', absolute, '--manifest-sha256', digest]),
+    ...(action === 'restore-copy' ? ['--destination', join(absolute, 'recovery')] : [])]
 }
 
-test('integration snapshot parser accepts only explicit create and verify contexts in any order', () => {
-  for (const platform of ['darwin', 'win32'] as const) for (const action of ['create', 'verify'] as const) {
+test('integration snapshot parser accepts only explicit create, verify and restore-copy contexts in any order', () => {
+  for (const platform of ['darwin', 'win32'] as const) for (const action of ['create', 'verify', 'restore-copy'] as const) {
     const input = args(action, platform)
     const pairs = Array.from({ length: (input.length - 1) / 2 }, (_, i) => input.slice(1 + i * 2, 3 + i * 2)).reverse().flat()
     const integration = { platform, arch: 'arm64', home: join(absolute, 'home'), root: join(absolute, 'package'),
       ...(platform === 'win32' ? { appData: join(absolute, 'roaming'), localAppData: join(absolute, 'local') } : {}) }
     assert.deepEqual(parseIntegrationSnapshotArgs([action, ...pairs]), action === 'create'
-      ? { action, integration, destination: absolute } : { action, integration, snapshot: absolute, manifestSha256: digest })
+      ? { action, integration, destination: absolute }
+      : { action, integration, snapshot: absolute, manifestSha256: digest, ...(action === 'restore-copy' ? { destination: join(absolute, 'recovery') } : {}) })
     assert.equal(parseIntegrationSnapshotArgs(input.map(value => value === 'arm64' ? 'x64' : value)).integration.arch, 'x64')
   }
 })
 
 test('integration snapshot parser rejects actions, duplicates, unknown, missing and invalid options', () => {
-  const invalid: string[][] = [[], ['restore'], ['activate'], ['install'], ['--help'], ['create'], ['verify']]
-  for (const platform of ['darwin', 'win32'] as const) for (const action of ['create', 'verify'] as const) {
+  const invalid: string[][] = [[], ['restore'], ['activate'], ['install'], ['--help'], ['create'], ['verify'], ['restore-copy'], ['restore', ...args('restore-copy', 'darwin').slice(1)]]
+  for (const platform of ['darwin', 'win32'] as const) for (const action of ['create', 'verify', 'restore-copy'] as const) {
     const input = args(action, platform)
     invalid.push([...input, '--force'], [...input, '--unknown', absolute], [...input, '--arch', 'x64'])
     invalid.push([...input, ...(action === 'create' ? ['--snapshot', absolute] : ['--destination', absolute])])
@@ -52,7 +54,7 @@ test('integration snapshot parser rejects actions, duplicates, unknown, missing 
     for (const bad of ['linux', 'Darwin', '']) invalid.push(input.map((value, index) => index === 2 ? bad : value))
     for (const bad of ['ia32', 'ARM64', '']) invalid.push(input.map((value, index) => index === 4 ? bad : value))
     if (platform === 'darwin') for (const option of ['--app-data', '--local-app-data']) invalid.push([...input, option, absolute])
-    if (action === 'verify') for (const bad of ['a'.repeat(63), 'a'.repeat(65), 'A'.repeat(64), 'g'.repeat(64), digest + '\n']) invalid.push([...input.slice(0, -1), bad])
+    if (action !== 'create') for (const bad of ['a'.repeat(63), 'a'.repeat(65), 'A'.repeat(64), 'g'.repeat(64), digest + '\n']) invalid.push(input.map((value, index) => input[index - 1] === '--manifest-sha256' ? bad : value))
   }
   for (const input of invalid) assert.throws(() => parseIntegrationSnapshotArgs(input), /^Error: Usage:/, JSON.stringify(input))
 })
@@ -104,8 +106,12 @@ async function fixture(platform: 'darwin' | 'win32', body: (value: { root: strin
   }
 }
 
-for (const platform of ['darwin', 'win32'] as const) test(`${platform} CLI captures installed fixture and verifies offline without environment discovery or activation`, { timeout: childTimeout * 4 }, async () => fixture(platform, async ({ root, created }) => {
-  const snapshot = join(root, 'snapshot')
+for (const platform of ['darwin', 'win32'] as const) test(`${platform} CLI captures, verifies and restores a private recovery copy offline without activation`, { timeout: childTimeout * 6 }, async () => fixture(platform, async ({ root, created }) => {
+  const snapshot = join(root, 'snapshot'), destination = join(root, 'recovery')
+  const [missing] = created.splice(created.length - 2, 1)
+  assert.ok(missing)
+  owned(root, missing)
+  await unlink(missing)
   const before = await Promise.all(created.map(path => lstat(path, { bigint: true })))
   const capture = await run(['create', ...context(platform, root), '--destination', snapshot], root)
   assert.equal(capture.code, 0, capture.stderr)
@@ -125,7 +131,35 @@ for (const platform of ['darwin', 'win32'] as const) test(`${platform} CLI captu
   assert.deepEqual(JSON.parse(verified.stdout), { verified: true, ...receipt })
   const manifestAfter = await lstat(join(snapshot, 'manifest.json'), { bigint: true })
   for (const key of ['ino', 'mode', 'mtimeNs', 'ctimeNs'] as const) assert.equal(manifestAfter[key], manifestBefore[key])
-  assert.doesNotMatch(capture.stdout + capture.stderr + verified.stdout + verified.stderr, /PRIVATE-INTEGRATION/)
+  const restore = ['restore-copy', ...context(platform, root), '--snapshot', snapshot, '--manifest-sha256', receipt.manifestSha256, '--destination', destination]
+  const recovered = await run(restore, root)
+  assert.equal(recovered.code, 0, recovered.stderr)
+  assert.deepEqual(JSON.parse(recovered.stdout), { destination, manifestSha256: receipt.manifestSha256 })
+  assert.equal(recovered.stderr, '')
+  const manifestBytes = await readFile(join(destination, 'manifest.json'))
+  assert.equal(createHash('sha256').update(manifestBytes).digest('hex'), receipt.manifestSha256)
+  const manifest = JSON.parse(manifestBytes.toString())
+  assert.ok(manifest.artifacts.some((item: { path: string; bytes: number | null }) => item.path === missing && item.bytes === null))
+  assert.deepEqual((await readdir(destination)).sort(), ['manifest.json', 'payload', 'receipt.bin'])
+  const payloadNames = manifest.artifacts.flatMap((item: { bytes: number | null }, index: number) => item.bytes === null ? [] : [`${index}.bin`])
+  assert.deepEqual((await readdir(join(destination, 'payload'))).sort(), payloadNames.sort())
+  for (const file of ['manifest.json', 'receipt.bin', ...payloadNames.map((name: string) => join('payload', name))]) {
+    assert.deepEqual(await readFile(join(destination, file)), await readFile(join(snapshot, file)))
+    if (process.platform !== 'win32') assert.equal((await lstat(join(destination, file))).mode & 0o777, 0o600)
+  }
+  if (process.platform !== 'win32') for (const directory of [destination, join(destination, 'payload')]) assert.equal((await lstat(directory)).mode & 0o777, 0o700)
+  const recoveredVerify = await run(['verify', ...context(platform, root), '--snapshot', destination, '--manifest-sha256', receipt.manifestSha256], root)
+  assert.equal(recoveredVerify.code, 0, recoveredVerify.stderr)
+  assert.deepEqual(JSON.parse(recoveredVerify.stdout), { verified: true, snapshot: destination, manifestSha256: receipt.manifestSha256 })
+  const marker = join(destination, 'marker'), markerBytes = Buffer.from('existing destination must remain unchanged')
+  await writeFile(marker, markerBytes, { mode: 0o600 })
+  const markerBefore = await lstat(marker, { bigint: true })
+  failed(await run(restore, root))
+  assert.deepEqual(await readFile(marker), markerBytes)
+  const markerAfter = await lstat(marker, { bigint: true })
+  for (const key of ['ino', 'mode', 'mtimeNs', 'ctimeNs'] as const) assert.equal(markerAfter[key], markerBefore[key])
+  assert.doesNotMatch(capture.stdout + capture.stderr + verified.stdout + verified.stderr + recovered.stdout + recovered.stderr, /PRIVATE-INTEGRATION/)
+  await absent(missing)
   await absent(join(root, 'missing-data'))
   await absent(join(root, 'missing.env'))
   for (const path of created) await absent(path)
@@ -143,7 +177,7 @@ test('CLI usage fails before module discovery and create refuses protected overl
   await absent(destination)
 }))
 
-test('CLI rejects tampered private payloads and shared permissions without leaking or repairing', { timeout: childTimeout * 5 }, async () => fixture('darwin', async ({ root }) => {
+test('CLI rejects tampered private payloads and shared permissions without leaking or repairing', { timeout: childTimeout * 6 }, async () => fixture('darwin', async ({ root }) => {
   const snapshot = join(root, 'snapshot')
   const capture = await run(['create', ...context('darwin', root), '--destination', snapshot], root)
   assert.equal(capture.code, 0, capture.stderr)
@@ -152,6 +186,10 @@ test('CLI rejects tampered private payloads and shared permissions without leaki
   const payload = join(snapshot, 'payload', '0.bin'), original = await readFile(payload)
   await writeFile(payload, secret)
   failed(await run(verify, root))
+  const destination = join(root, 'tampered-recovery')
+  failed(await run(['restore-copy', ...verify.slice(1), '--destination', destination], root))
+  await absent(destination)
+  assert.deepEqual(await readFile(payload), Buffer.from(secret))
   await writeFile(payload, original)
   const manifest = join(snapshot, 'manifest.json'), manifestBytes = await readFile(manifest)
   await writeFile(manifest, secret)

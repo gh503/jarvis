@@ -7,7 +7,7 @@ import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { test } from 'node:test'
 import { describeNativeIntegration, type InstallOptions } from '../scripts/install-native.ts'
-import { createIntegrationSnapshot, verifyIntegrationSnapshot } from '../scripts/native-integration-snapshot.ts'
+import { createIntegrationSnapshot, restoreIntegrationSnapshot, verifyIntegrationSnapshot } from '../scripts/native-integration-snapshot.ts'
 import { WINDOWS_AUMID } from '../src/windows-notification.ts'
 const hash = (bytes: Buffer) => createHash('sha256').update(bytes).digest('hex')
 async function fixture(platform: 'darwin' | 'win32', autostart: boolean, run: (value: { integration: InstallOptions; destination: string; receiptPath: string; artifactPaths: string[]; temp: string }) => Promise<void>) {
@@ -163,4 +163,100 @@ test('private snapshots remain bounded when manifests are oversized', async () =
   const result = await createIntegrationSnapshot({ integration, destination })
   await writeFile(join(destination, 'manifest.json'), Buffer.alloc(16 * 1024 + 1))
   await assert.rejects(verifyIntegrationSnapshot({ snapshot: destination, manifestSha256: result.manifestSha256, integration }), /size limit/)
+}))
+
+for (const platform of ['darwin', 'win32'] as const) test(`restore ${platform} exports exact private recovery data without original sources`, async () => fixture(platform, true, async ({ integration, destination, receiptPath, artifactPaths, temp }) => {
+  await unlink(artifactPaths.at(-1)!)
+  if (process.platform !== 'win32') await chmod(artifactPaths[0]!, 0o1700)
+  const captured = await createIntegrationSnapshot({ integration, destination })
+  for (const path of [receiptPath, ...artifactPaths.slice(0, -1)]) await unlink(path)
+  const recoveryParent = join(temp, 'exports')
+  await mkdir(recoveryParent, { mode: 0o755 })
+  const recovery = join(recoveryParent, 'recovery')
+  const result = await restoreIntegrationSnapshot({ snapshot: destination, manifestSha256: captured.manifestSha256, integration, destination: recovery })
+  assert.deepEqual(result, { destination: recovery, manifestSha256: captured.manifestSha256, manifest: captured.manifest })
+  assert.equal(result.manifest.artifacts.at(-1)!.bytes, null)
+  if (process.platform !== 'win32') assert.equal(result.manifest.artifacts[0]!.mode, 0o1700)
+  const names = ['manifest.json', 'receipt.bin', ...captured.manifest.artifacts.flatMap((item, index) => item.bytes === null ? [] : [join('payload', `${index}.bin`)])]
+  for (const name of names) {
+    assert.deepEqual(await readFile(join(recovery, name)), await readFile(join(destination, name)))
+    if (process.platform !== 'win32') assert.equal((await lstat(join(recovery, name))).mode & 0o7777, 0o600)
+  }
+  for (const path of [recovery, join(recovery, 'payload')]) if (process.platform !== 'win32') assert.equal((await lstat(path)).mode & 0o7777, 0o700)
+  await assert.rejects(lstat(join(recovery, 'payload', `${artifactPaths.length - 1}.bin`)), { code: 'ENOENT' })
+  await verifyIntegrationSnapshot({ snapshot: recovery, manifestSha256: captured.manifestSha256, integration })
+  for (const path of [receiptPath, ...artifactPaths]) await assert.rejects(lstat(path), { code: 'ENOENT' })
+}))
+test('restore rejects existing and overlapping destinations without changing originals', async () => fixture('darwin', true, async ({ integration, destination, receiptPath, artifactPaths, temp }) => {
+  const captured = await createIntegrationSnapshot({ integration, destination })
+  const paths = [receiptPath, ...artifactPaths], before = await Promise.all(paths.map(path => readFile(path)))
+  for (const target of [destination, join(destination, 'copy'), temp, join(dirname(receiptPath), 'copy'), join(dirname(artifactPaths[0]!), 'copy'), join(integration.root, 'copy'), join(temp, 'config', 'copy'), join(temp, 'data', 'copy')]) {
+    await assert.rejects(restoreIntegrationSnapshot({ snapshot: destination, manifestSha256: captured.manifestSha256, integration, destination: target }), /overlaps/)
+  }
+  const existing = join(temp, 'existing')
+  await mkdir(existing, { mode: 0o755 })
+  await writeFile(join(existing, 'keep'), 'untouched')
+  await assert.rejects(restoreIntegrationSnapshot({ snapshot: destination, manifestSha256: captured.manifestSha256, integration, destination: existing }), { code: 'EEXIST' })
+  assert.equal(await readFile(join(existing, 'keep'), 'utf8'), 'untouched')
+  assert.deepEqual(await Promise.all(paths.map(path => readFile(path))), before)
+}))
+test('restore rejects aliased protected ancestors before creating destination', { skip: process.platform === 'win32' }, async () => fixture('darwin', true, async ({ integration, destination, temp }) => {
+  const captured = await createIntegrationSnapshot({ integration, destination })
+  const target = join(temp, 'outside'), recovery = join(target, 'copy')
+  await mkdir(target)
+  await symlink(target, join(temp, 'config'))
+  await assert.rejects(restoreIntegrationSnapshot({ snapshot: destination, manifestSha256: captured.manifestSha256, integration, destination: recovery }), /boundary|Noncanonical/)
+  await assert.rejects(lstat(recovery), { code: 'ENOENT' })
+}))
+for (const tamper of ['digest', 'payload', 'options'] as const) test(`restore ${tamper} preflight leaves destination absent`, async () => fixture('win32', true, async ({ integration, destination, temp }) => {
+  const captured = await createIntegrationSnapshot({ integration, destination }), recovery = join(temp, 'recovery')
+  if (tamper === 'payload') await writeFile(join(destination, 'payload', '0.bin'), 'bad')
+  await assert.rejects(restoreIntegrationSnapshot({ snapshot: destination, manifestSha256: tamper === 'digest' ? '0'.repeat(64) : captured.manifestSha256, integration: tamper === 'options' ? { ...integration, appData: join(temp, 'wrong-roaming'), localAppData: join(temp, 'wrong-local') } : integration, destination: recovery }))
+  await assert.rejects(lstat(recovery), { code: 'ENOENT' })
+}))
+test('restore retains private partial destination on exclusive write failure', async () => fixture('darwin', true, async ({ integration, destination, temp }) => {
+  const captured = await createIntegrationSnapshot({ integration, destination }), recovery = join(temp, 'recovery')
+  const original = fsPromises.open
+  fsPromises.open = (async (...args: Parameters<typeof original>) => {
+    if (args[0] === join(recovery, 'payload', '0.bin')) throw new Error('injected write failure')
+    return original(...args)
+  }) as typeof original
+  syncBuiltinESMExports()
+  try { await assert.rejects(restoreIntegrationSnapshot({ snapshot: destination, manifestSha256: captured.manifestSha256, integration, destination: recovery }), /injected write failure/) }
+  finally { fsPromises.open = original; syncBuiltinESMExports() }
+  assert.deepEqual(await readdir(recovery), ['payload', 'receipt.bin'])
+  if (process.platform !== 'win32') {
+    assert.equal((await lstat(recovery)).mode & 0o7777, 0o700)
+    assert.equal((await lstat(join(recovery, 'receipt.bin'))).mode & 0o7777, 0o600)
+  }
+}))
+test('native Windows restore rejects aliased destination leaves before creation', { skip: process.platform !== 'win32' }, async () => fixture('win32', true, async ({ integration, destination, temp }) => {
+  const captured = await createIntegrationSnapshot({ integration, destination })
+  await assert.rejects(lstat(integration.root), { code: 'ENOENT' })
+  const before = await readdir(temp)
+  for (const target of [integration.root + '.', integration.root + ' ', join(temp, 'copy:stream'), ...['CON', 'NUL.txt', 'COM1', 'COM¹.txt', 'LPT³'].map(name => join(temp, name))]) {
+    await assert.rejects(restoreIntegrationSnapshot({ snapshot: destination, manifestSha256: captured.manifestSha256, integration, destination: target }), /Windows path without aliases/)
+    await assert.rejects(createIntegrationSnapshot({ integration, destination: target }), /Windows path without aliases/)
+  }
+  await assert.rejects(lstat(integration.root), { code: 'ENOENT' })
+  assert.deepEqual(await readdir(temp), before)
+}))
+for (const mutation of ['before-read', 'after-copy', 'identity'] as const) test(`restore detects source mutation ${mutation}`, async () => fixture('darwin', true, async ({ integration, destination, temp }) => {
+  const captured = await createIntegrationSnapshot({ integration, destination }), recovery = join(temp, 'recovery')
+  const original = fsPromises.open
+  let changed = false
+  fsPromises.open = (async (...args: Parameters<typeof original>) => {
+    const trigger = mutation === 'before-read' ? join(recovery, 'receipt.bin') : join(recovery, 'manifest.json')
+    if (!changed && args[0] === trigger) {
+      changed = true
+      const path = join(destination, 'payload', '0.bin')
+      await writeFile(path, mutation === 'identity' ? await readFile(path) : Buffer.from('changed'))
+    }
+    return original(...args)
+  }) as typeof original
+  syncBuiltinESMExports()
+  try { await assert.rejects(restoreIntegrationSnapshot({ snapshot: destination, manifestSha256: captured.manifestSha256, integration, destination: recovery }), /checksum|changed during recovery/); assert.ok(changed) }
+  finally { fsPromises.open = original; syncBuiltinESMExports() }
+  assert.ok((await lstat(recovery)).isDirectory())
+  if (mutation === 'before-read') await assert.rejects(lstat(join(recovery, 'payload', '0.bin')), { code: 'ENOENT' })
 }))
