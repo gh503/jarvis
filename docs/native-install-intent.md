@@ -1,6 +1,6 @@
-# Native install intent codec (unreleased source)
+# Native install intent codec and storage (unreleased source)
 
-The source [native-install-intent.ts](../scripts/native-install-intent.ts) defines a pure, bounded intent format as a prerequisite for future installer transaction work. It describes a proposed binding and expected fixed-location artifacts. It performs no filesystem I/O, persists nothing, acquires no locks, and is not called by the installer. There is no CLI. This addition is unreleased; native Windows validation remains pending. Existing release recommendations are unchanged.
+The source [native-install-intent.ts](../scripts/native-install-intent.ts) defines a pure, bounded intent format as a prerequisite for future installer transaction work. It describes a proposed binding and expected fixed-location artifacts. The codec itself performs no filesystem I/O, persists nothing, and acquires no locks. The separate [native-install-intent-store.ts](../scripts/native-install-intent-store.ts) provides write-once storage and read-only inspection of that format. These storage APIs are not called by the installer; installer intent persistence is not implemented. There is no CLI. These additions are unreleased; native Windows validation, including the pending Windows lock fix result, remains pending. The recommended preview remains v2.0.52; no new verified release is claimed.
 
 An intent is caller-supplied metadata, not an ownership receipt, publisher signature, record of operation progress, or permission to execute, replay, delete, or automatically clean up anything. Even a complete set of expected hashes does not prove that any output was created. The format adds no journal writer, crash reconciliation, rollback, activation, or recoverable multi-file transaction.
 
@@ -25,6 +25,25 @@ decodeNativeInstallIntent(bytes, integration): NativeInstallIntent
 `expectedArtifacts` is an optional path-keyed object whose only allowed keys are the fixed artifact paths. Each value is `null` or `{ sha256, bytes, mode }`. An omitted entry becomes `null`. For an included slot, `null` means the expectation is unknown or pending; it does not assert that the file is absent. This allows Windows COM-generated shortcut bytes to remain unknown before creation. An excluded startup slot must have a null expectation.
 
 `expectedReceipt` is an optional buffer containing actual ownership receipt bytes. It is validated and hashed during construction, but the bytes themselves are not stored in the intent. Creation and decoding return deeply frozen snapshots: the binding, artifact array and entries, expected metadata, receipt metadata, scope, and outer intent cannot be mutated. Caller-owned objects and buffers are not retained as mutable state. Encoding returns a separate buffer; buffers are transport bytes, not immutable intent objects.
+
+## Storage API and fixed location
+
+The separate storage module exports these asynchronous APIs:
+
+```ts
+writeNativeInstallIntent({ integration, intent }): Promise<NativeInstallIntent>
+readNativeInstallIntent({ integration }): Promise<NativeInstallIntent | undefined>
+```
+
+`integration` is `InstallOptions`, and the writer's `intent` is `NativeInstallIntent`. A successful write returns the decoded stored intent, not a completion receipt. A successful read returns the deeply frozen decoded intent; a missing file returns `undefined` after boundary checks. Missing control directories or parents are not created by reading. Unsafe existing boundaries or malformed files cause rejection rather than being treated as absence.
+
+The only storage filename is `native-install-control/install-intent.json` beneath the fixed ownership receipt parent. On macOS this is `Library/Application Support/Jarvis/native-install-control/install-intent.json` under explicit home; on Windows it is `Jarvis/native-install-control/install-intent.json` beneath explicit `localAppData`. There is no caller-selected destination. Layout uses the supplied options; the original package, config file, and data directory need not exist. Decode-time binding validation retains the codec's semantics: `integration.root` need not equal `binding.root`.
+
+The writer encodes and validates the complete intent before any directory or lock preparation. Read-only boundary and existence preflight rejects a preexisting intent before lock preparation. It then acquires the same fixed control-directory SQLite launcher lock used by cooperating install/uninstall calls. Preparation may create private control storage, required parents, and operational SQLite files; existing control-directory permissions and ACLs are verified without resetting them. Under that lock it exclusively creates a new file with mode `0600`, writes the canonical bytes, fsyncs the file, and checks the stored bytes and identity before returning. An existing filename is always refused, even if it contains an identical valid intent. There is no overwrite, update, delete, adoption, or cleanup API.
+
+Reading never acquires the lock, accesses SQLite, repairs permissions, or creates files or directories. It reuses the shared boundary helpers in their read-only mode. Present files must be regular, have exactly one hard link, and satisfy the strict 16 KiB bound and canonical codec validation. On POSIX the intent file must belong to the current UID with exact mode `0600`, and the control directory must belong to that UID with exact mode `0700`, including rejection of special permission bits. Ancestor checks reject unsafe or redirected paths. On Windows the unchanged private operational checker rejects reparse points, restricts allowed access to the current user, SYSTEM, and Administrators, requires current-user FullControl, and permits Administrators ownership only for an elevated current user. It checks these requirements without changing ACLs; even a read uses this operational FullControl requirement.
+
+The writer holds the lock for its storage operation, but readers are unlocked. Keep writers quiescent for reads: bounded reads and repeated file/ancestor identity checks can reject observed changes, including a concurrent partial write, but do not provide an atomic snapshot or protection against all same-account pathname races. Failures retain partial output, including a file whose bytes happen to parse successfully after a late write, fsync, verification, or lock-release failure. Neither valid bytes nor successful reading prove that a write operation completed successfully or that any installation artifact was created. There is no completed marker, progress journal, automatic rollback, or crash reconciliation. File fsync is not a power-loss or atomic-publication guarantee; the API does not fsync the directory.
 
 ## Exact format and bounds
 
@@ -68,6 +87,6 @@ The caller must establish trust in inputs through its own channel. Canonical enc
 
 ## Relationship to existing installer safeguards
 
-The [source shared install/uninstall lock](native-install.md#unreleased-shared-installuninstall-lock) is a separate unreleased operational safeguard. It coordinates cooperating installer calls and can create private control/SQLite storage; this codec does none of that and does not extend lock coverage. Inventory and integration snapshot behavior remains as documented separately. No successful native Windows result or released package inclusion is claimed for the new intent format.
+The [source shared install/uninstall lock](native-install.md#unreleased-shared-installuninstall-lock) coordinates cooperating installer calls and the separate intent writer. The codec remains pure, and intent reading, inventory inspection, and integration snapshot capture/verification remain unlocked and require quiescent writers. No successful native Windows result or released package inclusion is claimed for the new storage API.
 
-The existing in-process cleanup guards still govern installer failures. A future persistent transaction design would need its own publication, locking, actual-byte verification, crash handling, ownership, and recovery contract. This format alone supplies none of those operations and does not change [the update activation boundary](native-update.md#activation-boundary).
+The existing in-process cleanup guards still govern installer failures; they do not clean up intent-store output. Persisting a proposed intent does not connect it to installer execution. A future persistent transaction design still needs an installer publication, actual-byte verification, crash handling, ownership, and recovery contract. These APIs do not change [the update activation boundary](native-update.md#activation-boundary).

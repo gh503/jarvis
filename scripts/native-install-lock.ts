@@ -44,12 +44,16 @@ function verifyPrivateWindowsPath(path: string): void {
   } catch { throw unsafe() }
 }
 import { ensurePrivateDataDirectory } from '../src/private-directory.ts'
-import { acquireLifecycleLock } from '../src/runtime-lifecycle.ts'
+import { acquireVerifiedLifecycleLock } from '../src/runtime-lifecycle.ts'
 
 const unsafe = () => new Error('Unsafe native install control boundary or permissions')
+function validateControlPath(path: string): void {
+  if (typeof path !== 'string' || !isAbsolute(path) || resolve(path) !== path || /[\x00-\x1f\x7f\ud800-\udfff]/u.test(path)) throw unsafe()
+  if (process.platform === 'win32' && (!/^[a-z]:\\/i.test(path) || path.slice(2).includes(':') || path.includes('/') || path.slice(3).split('\\').some(part => /[. ]$/.test(part) || /^(con|prn|aux|nul|com[1-9¹²³]|lpt[1-9¹²³])(?:\.|$)/i.test(part)))) throw unsafe()
+}
 
 /** Read-only checks: never repair an existing shared control directory or lock. */
-async function verifyPrivate(path: string, directory: boolean): Promise<boolean> {
+export async function verifyNativeInstallPrivatePath(path: string, directory: boolean): Promise<boolean> {
   let stat
   try { stat = await lstat(path) } catch (error) {
     if ((error as NodeJS.ErrnoException).code === 'ENOENT') return false
@@ -61,7 +65,8 @@ async function verifyPrivate(path: string, directory: boolean): Promise<boolean>
   return true
 }
 
-async function verifyAncestors(directory: string): Promise<void> {
+export async function verifyNativeInstallAncestors(directory: string): Promise<void> {
+  validateControlPath(directory)
   for (let path = directory; ; path = dirname(path)) {
     let stat
     try { stat = await lstat(path) } catch (error) {
@@ -90,26 +95,29 @@ async function verifyAncestors(directory: string): Promise<void> {
 export async function withNativeInstallLock<T>(
   { controlDirectory }: { controlDirectory: string }, operation: () => Promise<T>,
 ): Promise<T> {
-  if (!isAbsolute(controlDirectory) || resolve(controlDirectory) !== controlDirectory || /[\x00-\x1f\x7f\ud800-\udfff]/u.test(controlDirectory)) throw unsafe()
-  if (process.platform === 'win32' && (!/^[a-z]:\\/i.test(controlDirectory) || controlDirectory.slice(2).includes(':') || controlDirectory.includes('/') || controlDirectory.slice(3).split('\\').some(part => /[. ]$/.test(part) || /^(con|prn|aux|nul|com[1-9¹²³]|lpt[1-9¹²³])(?:\.|$)/i.test(part)))) throw unsafe()
-  await verifyAncestors(controlDirectory)
-  if (!await verifyPrivate(controlDirectory, true)) {
+  await verifyNativeInstallAncestors(controlDirectory)
+  if (!await verifyNativeInstallPrivatePath(controlDirectory, true)) {
     // Preserve the legacy state parent's permissions; privatize only our child.
     await mkdir(dirname(controlDirectory), { recursive: true, mode: 0o755 })
-    await verifyAncestors(dirname(controlDirectory))
+    await verifyNativeInstallAncestors(dirname(controlDirectory))
     let created = false
     try { await mkdir(controlDirectory, { mode: 0o700 }); created = true } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error
     }
-    if (!created) await verifyPrivate(controlDirectory, true)
+    if (!created) await verifyNativeInstallPrivatePath(controlDirectory, true)
     else await ensurePrivateDataDirectory(controlDirectory)
   }
-  await verifyAncestors(controlDirectory)
-  if (!await verifyPrivate(controlDirectory, true)) throw unsafe()
+  await verifyNativeInstallAncestors(controlDirectory)
+  if (!await verifyNativeInstallPrivatePath(controlDirectory, true)) throw unsafe()
   for (const suffix of ['', '-journal', '-wal', '-shm']) {
-    await verifyPrivate(join(controlDirectory, `launcher.lock.sqlite${suffix}`), false)
+    await verifyNativeInstallPrivatePath(join(controlDirectory, `launcher.lock.sqlite${suffix}`), false)
   }
-  const release = await acquireLifecycleLock(controlDirectory, 'launcher')
+  const release = await acquireVerifiedLifecycleLock(controlDirectory, 'launcher', async () => {
+    // Revalidate after lifecycle's hardlink preflight without rewriting existing
+    // Windows inheritable ACLs (which would also mutate child intent storage).
+    await verifyNativeInstallAncestors(controlDirectory)
+    if (!await verifyNativeInstallPrivatePath(controlDirectory, true)) throw unsafe()
+  })
   let failure: unknown
   let failed = false
   try { return await operation() } catch (error) { failed = true; failure = error; throw error }

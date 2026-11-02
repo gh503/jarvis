@@ -2,12 +2,27 @@ import assert from 'node:assert/strict'
 import { execFileSync, spawn } from 'node:child_process'
 import { once } from 'node:events'
 import { chmod, link, lstat, mkdir, mkdtemp, readFile, realpath, rm, symlink, writeFile } from 'node:fs/promises'
+import fsPromises from 'node:fs/promises'
+import { syncBuiltinESMExports } from 'node:module'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import test from 'node:test'
 import { DatabaseSync } from 'node:sqlite'
 import { describeNativeIntegration, nativeIntegration, type InstallOptions } from '../scripts/install-native.ts'
 import { withNativeInstallLock } from '../scripts/native-install-lock.ts'
+import { acquireVerifiedLifecycleLock } from '../src/runtime-lifecycle.ts'
+
+function windowsAclScript(controlDirectory: string, script: string): string {
+  const env: NodeJS.ProcessEnv = { ...process.env, TEST_CONTROL: controlDirectory }
+  for (const key of Object.keys(env)) if (key.toLowerCase() === 'psmodulepath') delete env[key]
+  script = String.raw`$ErrorActionPreference = 'Stop'
+$env:PSModulePath = "$PSHOME\Modules"
+Import-Module "$PSHOME\Modules\Microsoft.PowerShell.Security\Microsoft.PowerShell.Security.psd1" -ErrorAction Stop
+` + script
+  return execFileSync(join(process.env.SystemRoot!, 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe'), [
+    '-NoLogo', '-NoProfile', '-NonInteractive', '-EncodedCommand', Buffer.from(script, 'utf16le').toString('base64'),
+  ], { env, encoding: 'utf8', timeout: 10_000, windowsHide: true })
+}
 
 async function fixture(t: test.TestContext) {
   const root = await mkdtemp(join(await realpath(tmpdir()), 'native-lock-'))
@@ -31,6 +46,71 @@ test('absent uninstall creates private operational lock only and preserves legac
     assert.equal(lock.uid, process.getuid!())
   }
   for (const path of [receiptPath, ...artifactPaths]) await assert.rejects(lstat(path), { code: 'ENOENT' })
+})
+
+test('verified lifecycle rejects before creating SQLite or a missing directory', async t => {
+  const { controlDirectory } = await fixture(t)
+  const failure = new Error('privacy rejected')
+  let calls = 0
+  const verify = async () => { calls++; throw failure }
+  await assert.rejects(acquireVerifiedLifecycleLock(controlDirectory, 'launcher', verify), error => error === failure)
+  await assert.rejects(lstat(controlDirectory), { code: 'ENOENT' })
+  await mkdir(controlDirectory, { recursive: true, mode: 0o700 })
+  await assert.rejects(acquireVerifiedLifecycleLock(controlDirectory, 'launcher', verify), error => error === failure)
+  await assert.rejects(lstat(join(controlDirectory, 'launcher.lock.sqlite')), { code: 'ENOENT' })
+  assert.equal(calls, 2)
+})
+
+test('verified lifecycle preflights hardlinks before calling directory verifier', async t => {
+  const { root, controlDirectory } = await fixture(t)
+  await mkdir(controlDirectory, { recursive: true, mode: 0o700 })
+  const target = join(root, 'external')
+  await writeFile(target, 'untouched', { mode: 0o600 })
+  await link(target, join(controlDirectory, 'launcher.lock.sqlite-wal'))
+  const before = await lstat(target, { bigint: true })
+  await assert.rejects(acquireVerifiedLifecycleLock(controlDirectory, 'launcher', async () => assert.fail('verifier called')), /Unsafe lifecycle lock file/)
+  assert.deepEqual(await lstat(target, { bigint: true }), before)
+  await assert.rejects(lstat(join(controlDirectory, 'launcher.lock.sqlite')), { code: 'ENOENT' })
+})
+
+test('existing private control directory is not chmod repaired during acquisition', { skip: process.platform === 'win32' }, async t => {
+  const { controlDirectory } = await fixture(t)
+  await withNativeInstallLock({ controlDirectory }, async () => {})
+  const before = await lstat(controlDirectory, { bigint: true })
+  const originalChmod = fsPromises.chmod
+  fsPromises.chmod = async (path, mode) => {
+    assert.notEqual(path, controlDirectory, 'existing control directory must not be chmod repaired')
+    return originalChmod(path, mode)
+  }
+  syncBuiltinESMExports()
+  try { await withNativeInstallLock({ controlDirectory }, async () => {}) }
+  finally { fsPromises.chmod = originalChmod; syncBuiltinESMExports() }
+  const after = await lstat(controlDirectory, { bigint: true })
+  // SQLite journal creation/removal can legitimately change directory ctime.
+  assert.equal(after.mode, before.mode)
+  assert.equal(after.ino, before.ino)
+})
+
+test('native Windows preserves trusted inheritable control and child intent ACLs', { skip: process.platform !== 'win32', timeout: 60_000 }, async t => {
+  const { controlDirectory } = await fixture(t)
+  await withNativeInstallLock({ controlDirectory }, async () => {})
+  windowsAclScript(controlDirectory, String.raw`
+$p = $env:TEST_CONTROL
+$acl = Get-Acl -LiteralPath $p
+$sid = [Security.Principal.SecurityIdentifier]::new('S-1-5-32-544')
+$rule = [Security.AccessControl.FileSystemAccessRule]::new($sid, [Security.AccessControl.FileSystemRights]::ReadAndExecute, [Security.AccessControl.InheritanceFlags]'ContainerInherit, ObjectInherit', [Security.AccessControl.PropagationFlags]::None, [Security.AccessControl.AccessControlType]::Allow)
+$acl.AddAccessRule($rule)
+Set-Acl -LiteralPath $p -AclObject $acl
+[IO.Directory]::CreateDirectory((Join-Path $p 'intent-store')) | Out-Null
+[IO.File]::WriteAllText((Join-Path $p 'intent-store\intent.json'), 'sentinel')
+`)
+  const snapshot = () => windowsAclScript(controlDirectory, String.raw`
+@($env:TEST_CONTROL, (Join-Path $env:TEST_CONTROL 'intent-store'), (Join-Path $env:TEST_CONTROL 'intent-store\intent.json')) | ForEach-Object { (Get-Acl -LiteralPath $_).Sddl }
+`).trim()
+  const before = snapshot()
+  await withNativeInstallLock({ controlDirectory }, async () => {})
+  assert.equal(snapshot(), before)
+  assert.equal(await readFile(join(controlDirectory, 'intent-store', 'intent.json'), 'utf8'), 'sentinel')
 })
 
 test('invalid options fail before any control directory creation', async t => {
@@ -96,19 +176,7 @@ test('native Windows rejects shared ACL without repairing it', { skip: process.p
   const { controlDirectory } = await fixture(t)
   await withNativeInstallLock({ controlDirectory }, async () => {})
   await withNativeInstallLock({ controlDirectory }, async () => {})
-  const env: NodeJS.ProcessEnv = { ...process.env, TEST_CONTROL: controlDirectory }
-  for (const key of Object.keys(env)) if (key.toLowerCase() === 'psmodulepath') delete env[key]
-  const powershell = (script: string) => {
-    // Match the production boundary checker's fixed Windows PowerShell modules;
-    // CI may inherit an incompatible PSModulePath from PowerShell Core.
-    script = String.raw`$ErrorActionPreference = 'Stop'
-$env:PSModulePath = "$PSHOME\Modules"
-Import-Module "$PSHOME\Modules\Microsoft.PowerShell.Security\Microsoft.PowerShell.Security.psd1" -ErrorAction Stop
-` + script
-    return execFileSync(join(process.env.SystemRoot!, 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe'), [
-      '-NoLogo', '-NoProfile', '-NonInteractive', '-EncodedCommand', Buffer.from(script, 'utf16le').toString('base64'),
-    ], { env, encoding: 'utf8', timeout: 10_000, windowsHide: true })
-  }
+  const powershell = (script: string) => windowsAclScript(controlDirectory, script)
   powershell(String.raw`
 $ErrorActionPreference = 'Stop'
 $p = $env:TEST_CONTROL

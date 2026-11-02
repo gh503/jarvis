@@ -47,11 +47,28 @@ function inspectLockFamily(file: string, expected: (BigIntStats | undefined)[] =
 
 /** OS-managed SQLite locks are released on crashes; never infer ownership from a PID. */
 export async function acquireLifecycleLock(dataDir: string, name: 'runtime' | 'launcher', timeoutMs = 0): Promise<() => void> {
+  return acquireLifecycleLockPrepared(dataDir, name, () => ensurePrivateDataDirectory(dataDir), timeoutMs)
+}
+
+/** For trusted internal callers with a read-only privacy policy. The required
+ * verifier must reject unless the directory and its ancestors are safe for
+ * private SQLite storage; this is a trust boundary, not a bypass-proof API.
+ * File identity/link preflight still runs before verification and database open.
+ */
+export async function acquireVerifiedLifecycleLock(
+  dataDir: string, name: 'runtime' | 'launcher', verifyDirectory: () => Promise<void>, timeoutMs = 0,
+): Promise<() => void> {
+  return acquireLifecycleLockPrepared(dataDir, name, verifyDirectory, timeoutMs)
+}
+
+async function acquireLifecycleLockPrepared(
+  dataDir: string, name: 'runtime' | 'launcher', prepareDirectory: () => Promise<void>, timeoutMs: number,
+): Promise<() => void> {
   // Preflight before even the root ACL migration: a hardlinked SQLite file or
   // sidecar must never cause mutations to another tree. Same-account malicious
   // races are outside this boundary; bind identities to catch ordinary changes.
   const initial = inspectLockFamily(join(dataDir, `${name}.lock.sqlite`))
-  await ensurePrivateDataDirectory(dataDir)
+  await prepareDirectory()
   const file = join(canonicalDataDir(dataDir), `${name}.lock.sqlite`)
   const bound = inspectLockFamily(file, initial, !!initial[0])
   if (!bound[0]) {
