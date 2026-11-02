@@ -1,24 +1,24 @@
 # Native recovery sets
 
-Status: **first released in [v2.0.47](https://github.com/gh503/jarvis/releases/tag/v2.0.47)**. The current recommended [v2.0.52 preview](https://github.com/gh503/jarvis/releases/tag/v2.0.52) includes the offline CLI with the same v1 recovery-set format. A recovery set binds a verified baseline portable package identity to private config and data snapshots captured sequentially under one continuously held [stopped-data scope](stopped-data-scope.md). It provides coordinated capture and verification, not an automatic updater or a restore/activation transaction. See [Native update staging and recovery](native-update.md).
+> **Archive correction:** Historical portable archives, including v2.0.52, excluded this tooling through a fixed packaging allowlist. `94e75fe` adds 16 scripts and 7 docs; local Linux archive checks passed, but did not execute actual snapshot CLI operations or verify Windows/macOS releases or newly published assets. Use a trusted source checkout until new published assets are verified. v2.0.52 remains recommended only on its launcher evidence, not for native snapshots. See the [release pipeline evidence and verification limits](native-release-pipeline.md).
+
+Status: the [v2.0.47](https://github.com/gh503/jarvis/releases/tag/v2.0.47) source tag contains the recovery-set API and CLI; this is source availability, not archive inclusion. A recovery set binds a verified baseline portable package identity to private config and data snapshots captured sequentially under one continuously held [stopped-data scope](stopped-data-scope.md). It provides coordinated capture and verification, not an automatic updater or a restore/activation transaction. See [Native update staging and recovery](native-update.md).
 
 ## Commands and trust
 
-Run from a trusted v2.0.52 portable package using its bundled Node 24. On Linux/macOS, from the extracted package directory:
+Run from a trusted source checkout using a trusted Node 24 executable. On Linux/macOS, from the checkout root:
 
 ```sh
-./runtime/node --experimental-transform-types scripts/recovery-native.ts create --bundle /absolute/baseline-bundle --bundle-manifest-sha256 TRUSTED_BUNDLE_MANIFEST_SHA256 --config /absolute/private-config/config.env --data /absolute/data --destination /absolute/private-snapshots/new-recovery-set
-./runtime/node --experimental-transform-types scripts/recovery-native.ts verify --recovery-set /absolute/private-snapshots/new-recovery-set --manifest-sha256 TRUSTED_RECOVERY_MANIFEST_SHA256
+node --experimental-transform-types scripts/recovery-native.ts create --bundle /absolute/baseline-bundle --bundle-manifest-sha256 TRUSTED_BUNDLE_MANIFEST_SHA256 --config /absolute/private-config/config.env --data /absolute/data --destination /absolute/private-snapshots/new-recovery-set
+node --experimental-transform-types scripts/recovery-native.ts verify --recovery-set /absolute/private-snapshots/new-recovery-set --manifest-sha256 TRUSTED_RECOVERY_MANIFEST_SHA256
 ```
 
-Windows PowerShell, from the extracted package directory:
+Windows PowerShell, using a trusted Node 24 executable from the checkout root:
 
 ```powershell
-& '.\runtime\node.exe' --experimental-transform-types '.\scripts\recovery-native.ts' create --bundle 'C:\baseline-bundle' --bundle-manifest-sha256 TRUSTED_BUNDLE_MANIFEST_SHA256 --config 'C:\private-config\config.env' --data 'C:\data' --destination 'C:\private-snapshots\new-recovery-set'
-& '.\runtime\node.exe' --experimental-transform-types '.\scripts\recovery-native.ts' verify --recovery-set 'C:\private-snapshots\new-recovery-set' --manifest-sha256 TRUSTED_RECOVERY_MANIFEST_SHA256
+node --experimental-transform-types '.\scripts\recovery-native.ts' create --bundle 'C:\baseline-bundle' --bundle-manifest-sha256 TRUSTED_BUNDLE_MANIFEST_SHA256 --config 'C:\private-config\config.env' --data 'C:\data' --destination 'C:\private-snapshots\new-recovery-set'
+node --experimental-transform-types '.\scripts\recovery-native.ts' verify --recovery-set 'C:\private-snapshots\new-recovery-set' --manifest-sha256 TRUSTED_RECOVERY_MANIFEST_SHA256
 ```
-
-Source checkout users can substitute a trusted `node` 24 executable for the bundled runtime.
 
 On Windows use canonical absolute Windows paths and quote paths containing spaces. Both digest arguments require lowercase 64-character SHA256 values. Unknown, repeated, missing, or malformed options fail before an operation starts. There is no implicit environment/config discovery. Existing update, config-snapshot, and data-snapshot CLI interfaces remain unchanged; no `--scope` flag is added to them.
 
