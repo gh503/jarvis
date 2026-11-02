@@ -11,3 +11,4 @@ __pycache__/
 *.pyc
 .DS_Store
 native/scoped-fs/target/
+native-update-acceptance-report.json
