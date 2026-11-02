@@ -32,10 +32,21 @@ export async function main(): Promise<void> {
   const reportPath = resolve('native-update-acceptance-report.json')
   const started = Date.now(), deadline = started + 600_000
   let step = 'setup'
-  const report: Record<string, unknown> = { repository, platform: process.platform, arch: process.arch, releases, passed: false }
+  const operations: { index: number; step: string; elapsedMs: number; completed: boolean }[] = []
+  const report: Record<string, unknown> = { repository, platform: process.platform, arch: process.arch, releases, passed: false, operations }
   const run = (binary: string, args: string[], env: NodeJS.ProcessEnv = process.env, cwd?: string) => {
     assert.ok(Date.now() < deadline, 'Acceptance deadline exceeded')
-    return execFileSync(binary, args, { env, cwd, encoding: 'utf8', timeout: Math.min(90_000, deadline - Date.now()), maxBuffer: 16 * 1024 * 1024, stdio: ['ignore', 'pipe', 'pipe'] }).trim()
+    const operation = { index: operations.length + 1, step, elapsedMs: 0, completed: false }
+    operations.push(operation)
+    const begun = performance.now()
+    try {
+      const output = execFileSync(binary, args, { env, cwd, encoding: 'utf8', timeout: Math.min(90_000, deadline - Date.now()), maxBuffer: 16 * 1024 * 1024, stdio: ['ignore', 'pipe', 'pipe'] }).trim()
+      operation.completed = true
+      return output
+    } finally {
+      // Fixed fields only: do not inspect thrown errors or expose command arguments/output.
+      operation.elapsedMs = Math.round(performance.now() - begun)
+    }
   }
   const progress = (value: string) => { step = value; console.error(`[acceptance] ${step}`) }
   try {
