@@ -1,23 +1,29 @@
-name: Native shortcut diagnostics
+name: Native snapshot and shortcut diagnostics
 on:
   workflow_dispatch:
+permissions:
+  contents: read
 jobs:
   snapshot:
     runs-on: windows-latest
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
       - uses: actions/setup-node@v4
         with:
           node-version: '24'
           cache: npm
       - run: npm ci --ignore-scripts
-      - name: Run isolated snapshot CLI and bounded diagnostics
-        run: node --experimental-transform-types --test --test-concurrency=1 test/native-snapshot-diagnostics.test.ts test/native-integration-snapshot-cli.test.ts
+      - name: Run isolated snapshot boundary, CLI and bounded diagnostics
+        run: node --experimental-transform-types --test --test-concurrency=1 test/native-snapshot-diagnostics.test.ts test/native-integration-snapshot.test.ts test/native-integration-snapshot-cli.test.ts
   shortcut:
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
       - uses: actions/setup-node@v4
         with:
           node-version: '24'
