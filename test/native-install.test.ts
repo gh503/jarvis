@@ -514,7 +514,7 @@ test('failed shortcut creation rolls back owned files', async () => fixture('win
   assert.equal(existsSync(join(options.appData!, 'Microsoft', 'Windows', 'Start Menu', 'Programs', 'Jarvis.lnk')), false)
 }))
 
-for (const platform of ['darwin', 'win32'] as const) test(`${platform} invalid prepared receipt refuses before final artifact creation`, async t => fixture(platform, async options => {
+for (const platform of ['darwin', 'win32'] as const) for (const fault of ['inventory', 'encoding', 'size'] as const) test(`${platform} invalid prepared receipt ${fault} refuses before final artifact creation`, async t => fixture(platform, async options => {
   const { receiptPath, artifactPaths } = describeNativeIntegration(options)
   options.runPowerShell = (_script, env) => writeFileSync(env.JARVIS_LINK_PATH!, 'prepared shortcut', { mode: 0o600 })
   const originalStringify = JSON.stringify, originalOpen = fsPromises.open
@@ -523,7 +523,9 @@ for (const platform of ['darwin', 'win32'] as const) test(`${platform} invalid p
   t.mock.method(JSON, 'stringify', ((value: unknown, replacer: never, space: number) => {
     if (!injected && value && typeof value === 'object' && (value as { schemaVersion?: unknown }).schemaVersion === 1 && (value as { root?: unknown }).root === options.root && Object.hasOwn(value, 'autostart') && space === 2) {
       injected = true
-      return originalStringify({ ...value, files: [] }, replacer, space)
+      if (fault === 'inventory') return originalStringify({ ...value, files: [] }, replacer, space)
+      if (fault === 'encoding') return originalStringify(value)
+      return originalStringify({ ...value, root: '/' + 'x'.repeat(64 * 1024) }, replacer, space)
     }
     return originalStringify(value, replacer, space)
   }) as typeof JSON.stringify)
