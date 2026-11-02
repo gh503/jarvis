@@ -35,7 +35,7 @@ export function resolveRelease() {
   const manual = process.env.GITHUB_EVENT_NAME === 'workflow_dispatch';
   const tag = manual ? event.inputs?.tag : undefined;
   if (manual && !stableTag.test(tag ?? '')) throw new Error('Manual preview requires exact stable tag');
-  if (!manual && (event.workflow_run?.conclusion !== 'success' || event.workflow_run?.head_branch !== 'main'
+  if (!manual && (process.env.GITHUB_EVENT_NAME !== 'workflow_run' || event.workflow_run?.conclusion !== 'success' || event.workflow_run?.head_branch !== 'main'
     || event.workflow_run?.head_repository?.full_name !== repo() || !['push', 'workflow_dispatch'].includes(event.workflow_run?.event))) throw new Error('Untrusted or unsuccessful CI run');
   const sha = manual ? remoteSha(tag) : event.workflow_run.head_sha;
   if (!shaPattern.test(sha ?? '')) throw new Error('Invalid source SHA');

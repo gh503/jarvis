@@ -68,6 +68,14 @@ test('resolver emits no build outputs for stale unpublished source but preserves
       assert.equal(calls, before, 'reject before remote queries');
       assert.equal(readFileSync(process.env.GITHUB_OUTPUT, 'utf8'), '');
     }
+    writeFileSync(process.env.GITHUB_EVENT_PATH, JSON.stringify({ workflow_run: trusted }));
+    for (const eventName of ['push', 'pull_request', 'release', '', 'repository_dispatch']) {
+      process.env.GITHUB_EVENT_NAME = eventName;
+      const before = calls;
+      assert.throws(() => resolveRelease(), /Untrusted or unsuccessful CI run/);
+      assert.equal(calls, before, 'unexpected envelope must not query remotes');
+      assert.equal(readFileSync(process.env.GITHUB_OUTPUT, 'utf8'), '');
+    }
     process.env.GITHUB_EVENT_NAME = 'workflow_dispatch';
     writeFileSync(process.env.GITHUB_EVENT_PATH, JSON.stringify({ inputs: { tag: 'v2.0.1' } }));
     const beforeMainQueries = mainQueries.length;
