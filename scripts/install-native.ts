@@ -421,10 +421,8 @@ export async function nativeIntegration(options: InstallOptions, args: string[])
       if (failed) throw failure
     }
     try {
-      if (plan.platform === 'darwin') {
-        for (const artifact of plan.artifacts) await output(artifact.path, artifact.bytes, artifact.mode)
-      } else {
-        const shortcuts: { path: string; bytes: Buffer }[] = []
+      const prepared: { path: string; bytes: Buffer; mode: number }[] = plan.platform === 'darwin' ? plan.artifacts : []
+      if (plan.platform === 'win32') {
         for (const { path, target, args, cwd } of plan.shortcuts) {
           await mkdir(dirname(path), { recursive: true, mode: 0o755 })
           // COM must see a nonexistent path: a zero-byte reservation is not a valid .lnk.
@@ -441,7 +439,7 @@ export async function nativeIntegration(options: InstallOptions, args: string[])
             staged = { path: temporaryLink, identity: source.identity, sha256: digest(source.bytes), limit: 1024 * 1024 }
             // Keep the exact bounded-read bytes; every selected shortcut must finish
             // generation, validation and owned staging cleanup before publication.
-            shortcuts.push({ path, bytes: source.bytes })
+            prepared.push({ path, bytes: source.bytes, mode: 0o600 })
           } catch (error) { failed = true; failure = error }
           try {
             if (dirname(staging) !== dirname(path) || dirname(temporaryLink) !== staging) throw new Error('Unsafe shortcut staging cleanup')
@@ -451,12 +449,14 @@ export async function nativeIntegration(options: InstallOptions, args: string[])
           } catch (error) { if (failed) cleanupErrors.push(error); else { failed = true; failure = error } }
           if (failed) throw failure
         }
-        // Use exclusive descriptors: copyFile cannot establish destination ownership
-        // after a partial failure. No final link exists during COM generation.
-        for (const shortcut of shortcuts) await output(shortcut.path, shortcut.bytes)
       }
-      const records = created.map(({ path, sha256 }) => ({ path, sha256 }))
-      await output(state, JSON.stringify({ schemaVersion: 1, platform: options.platform, root, autostart, ...binding, ...(options.platform === 'win32' ? { notificationAumid: WINDOWS_AUMID } : {}), files: records }, null, 2) + '\n')
+      const records = prepared.map(({ path, bytes }) => ({ path, sha256: digest(bytes) }))
+      const receipt = Buffer.from(JSON.stringify({ schemaVersion: 1, platform: options.platform, root, autostart, ...binding, ...(options.platform === 'win32' ? { notificationAumid: WINDOWS_AUMID } : {}), files: records }, null, 2) + '\n')
+      // Validate the complete proposed receipt before any final artifact is published.
+      parseNativeIntegrationReceipt(receipt, { ...options, root })
+      for (const artifact of prepared) await output(artifact.path, artifact.bytes, artifact.mode)
+      if (JSON.stringify(created.map(({ path, sha256 }) => ({ path, sha256 }))) !== JSON.stringify(records)) throw new Error('Published integration differs from prepared receipt')
+      await output(state, receipt)
       return created.map(record => record.path)
     } catch (error) {
       for (const record of created.toReversed()) {
