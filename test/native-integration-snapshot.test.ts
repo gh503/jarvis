@@ -1,0 +1,166 @@
+import assert from 'node:assert/strict'
+import { createHash } from 'node:crypto'
+import { execFileSync } from 'node:child_process'
+import fsPromises, { chmod, lstat, mkdir, mkdtemp, readFile, readdir, realpath, rm, unlink, writeFile, symlink, link } from 'node:fs/promises'
+import { syncBuiltinESMExports } from 'node:module'
+import { tmpdir } from 'node:os'
+import { dirname, join } from 'node:path'
+import { test } from 'node:test'
+import { describeNativeIntegration, type InstallOptions } from '../scripts/install-native.ts'
+import { createIntegrationSnapshot, verifyIntegrationSnapshot } from '../scripts/native-integration-snapshot.ts'
+import { WINDOWS_AUMID } from '../src/windows-notification.ts'
+const hash = (bytes: Buffer) => createHash('sha256').update(bytes).digest('hex')
+async function fixture(platform: 'darwin' | 'win32', autostart: boolean, run: (value: { integration: InstallOptions; destination: string; receiptPath: string; artifactPaths: string[]; temp: string }) => Promise<void>) {
+  const base = await realpath(tmpdir()), temp = await mkdtemp(join(base, 'integration-snapshot-'))
+  const integration: InstallOptions = { platform, root: join(temp, 'package'), home: join(temp, 'home'), appData: join(temp, 'roaming'), localAppData: join(temp, 'local'), arch: process.arch, runPowerShell: () => { throw new Error('Must never activate') } }
+  try {
+    const layout = describeNativeIntegration(integration)
+    const files: Array<{ path: string; sha256: string }> = []
+    for (const path of autostart ? layout.artifactPaths : layout.artifactPaths.slice(0, -1)) {
+      await mkdir(dirname(path), { recursive: true, mode: 0o700 })
+      const bytes = platform === 'win32' ? Buffer.alloc(100 * 1024, 255) : Buffer.from([0, 255, 13, 10, files.length])
+      await writeFile(path, bytes, { mode: 0o700 })
+      files.push({ path, sha256: hash(bytes) })
+    }
+    await mkdir(dirname(layout.receiptPath), { recursive: true, mode: 0o700 })
+    const receipt = { schemaVersion: 1, platform, root: integration.root, autostart, configFile: join(temp, 'config', 'secret.env'), dataDir: join(temp, 'data'), ...(platform === 'win32' ? { notificationAumid: WINDOWS_AUMID } : {}), files }
+    await writeFile(layout.receiptPath, JSON.stringify(receipt, null, 2) + '\n', { mode: 0o600 })
+    await run({ integration, destination: join(temp, 'snapshot'), ...layout, temp })
+  } finally {
+    assert.equal(dirname(temp), base)
+    assert.ok(temp.startsWith(join(base, 'integration-snapshot-')))
+    await rm(temp, { recursive: true, force: true })
+  }
+}
+for (const platform of ['darwin', 'win32'] as const) for (const autostart of [false, true]) test(`persistent ${platform} capture and offline verification, autostart=${autostart}`, async () => fixture(platform, autostart, async ({ integration, destination, receiptPath, artifactPaths, temp }) => {
+  await mkdir(join(temp, 'config'))
+  await writeFile(join(temp, 'config', 'secret.env'), 'SECRET_MUST_NOT_COPY', { mode: 0o600 })
+  const environment = { ...process.env }, before = await lstat(receiptPath, { bigint: true })
+  const result = await createIntegrationSnapshot({ integration, destination })
+  assert.equal(result.manifest.artifacts.length, platform === 'darwin' ? 3 : 2)
+  if (platform === 'win32') assert.equal(result.manifest.artifacts[0]!.bytes, 100 * 1024)
+  assert.deepEqual(await readdir(destination), ['manifest.json', 'payload', 'receipt.bin'])
+  assert.equal(result.manifest.binding.configFile, join(temp, 'config', 'secret.env'))
+  assert.ok(!(await readFile(join(destination, 'receipt.bin'))).includes('SECRET_MUST_NOT_COPY'))
+  const after = await lstat(receiptPath, { bigint: true })
+  for (const key of ['ino', 'mode', 'mtimeNs', 'ctimeNs'] as const) assert.equal(before[key], after[key])
+  assert.deepEqual({ ...process.env }, environment)
+  for (const path of [receiptPath, ...(autostart ? artifactPaths : artifactPaths.slice(0, -1))]) await unlink(path)
+  assert.deepEqual(await verifyIntegrationSnapshot({ snapshot: destination, manifestSha256: result.manifestSha256, integration }), result)
+  await assert.rejects(verifyIntegrationSnapshot({ snapshot: destination, manifestSha256: result.manifestSha256, integration: { ...integration, home: join(temp, 'wrong'), appData: join(temp, 'wrong-roaming'), localAppData: join(temp, 'wrong-local') } }), /binding|path|receipt/)
+}))
+test('missing owned artifacts persist as absence without a payload file', async () => fixture('darwin', true, async ({ integration, destination, artifactPaths }) => {
+  await unlink(artifactPaths[0]!)
+  const result = await createIntegrationSnapshot({ integration, destination })
+  assert.deepEqual(result.manifest.artifacts[0], { path: artifactPaths[0], mode: null, bytes: null, sha256: null })
+  assert.deepEqual(await readdir(join(destination, 'payload')), ['1.bin', '2.bin'])
+}))
+test('unowned startup and missing receipt fail before destination creation', async () => fixture('win32', false, async ({ integration, destination, artifactPaths, receiptPath }) => {
+  await mkdir(dirname(artifactPaths[1]!), { recursive: true, mode: 0o700 })
+  await writeFile(artifactPaths[1]!, 'unowned', { mode: 0o600 })
+  await assert.rejects(createIntegrationSnapshot({ integration, destination }), /Unowned/)
+  await assert.rejects(lstat(destination), { code: 'ENOENT' })
+  await unlink(receiptPath)
+  await assert.rejects(createIntegrationSnapshot({ integration, destination }), /receipt is required/)
+}))
+test('protected source overlap and existing destinations are rejected', async () => fixture('darwin', false, async ({ integration, destination, receiptPath, artifactPaths, temp }) => {
+  for (const path of [join(dirname(receiptPath), 'snapshot'), join(dirname(artifactPaths[0]!), 'snapshot'), join(integration.root, 'snapshot'), join(temp, 'config', 'snapshot'), join(temp, 'data', 'snapshot')]) await assert.rejects(createIntegrationSnapshot({ integration, destination: path }), /overlaps/)
+  await mkdir(destination)
+  await assert.rejects(createIntegrationSnapshot({ integration, destination }), { code: 'EEXIST' })
+}))
+for (const tamper of ['payload', 'receipt', 'manifest', 'root-extra', 'payload-extra', 'missing', 'mode', 'hardlink', 'symlink'] as const) test(`verification rejects ${tamper} tampering`, { skip: process.platform === 'win32' && ['mode', 'symlink'].includes(tamper) }, async () => fixture('darwin', true, async ({ integration, destination, temp }) => {
+  const result = await createIntegrationSnapshot({ integration, destination })
+  const payload = join(destination, 'payload', '0.bin')
+  if (tamper === 'payload') await writeFile(payload, 'altered')
+  if (tamper === 'receipt') await writeFile(join(destination, 'receipt.bin'), '{}\n')
+  if (tamper === 'manifest') await writeFile(join(destination, 'manifest.json'), '{}\n')
+  if (tamper === 'root-extra') await writeFile(join(destination, 'extra'), '', { mode: 0o600 })
+  if (tamper === 'payload-extra') await mkdir(join(destination, 'payload', 'extra'))
+  if (tamper === 'missing') await unlink(payload)
+  if (tamper === 'mode') await chmod(payload, 0o644)
+  if (tamper === 'hardlink') await link(payload, join(temp, 'linked'))
+  if (tamper === 'symlink') { await unlink(payload); await symlink(join(destination, 'receipt.bin'), payload) }
+  await assert.rejects(verifyIntegrationSnapshot({ snapshot: destination, manifestSha256: result.manifestSha256, integration }))
+}))
+test('trusted edited manifest still cannot contradict receipt or invent original paths', async () => fixture('darwin', true, async ({ integration, destination }) => {
+  const result = await createIntegrationSnapshot({ integration, destination })
+  for (const edit of [(m: typeof result.manifest) => { m.artifacts[0]!.path = '/arbitrary' }, (m: typeof result.manifest) => { m.binding.root = '/other' }, (m: typeof result.manifest) => { m.artifacts[0]!.sha256 = '0'.repeat(64) }]) {
+    const changed = structuredClone(result.manifest); edit(changed)
+    const bytes = Buffer.from(JSON.stringify(changed) + '\n')
+    await writeFile(join(destination, 'manifest.json'), bytes)
+    await assert.rejects(verifyIntegrationSnapshot({ snapshot: destination, manifestSha256: hash(bytes), integration }))
+  }
+}))
+test('verification never repairs shared directory permissions', { skip: process.platform === 'win32' }, async () => fixture('darwin', false, async ({ integration, destination }) => {
+  const result = await createIntegrationSnapshot({ integration, destination })
+  await chmod(destination, 0o755)
+  await assert.rejects(verifyIntegrationSnapshot({ snapshot: destination, manifestSha256: result.manifestSha256, integration }), /private/)
+  assert.equal((await lstat(destination)).mode & 0o777, 0o755)
+}))
+test('capture detects original mutation during final snapshot verification', async () => fixture('darwin', true, async ({ integration, destination, artifactPaths }) => {
+  const original = fsPromises.open
+  let changed = false
+  fsPromises.open = (async (...args: Parameters<typeof original>) => {
+    if (!changed && args[0] === join(destination, 'manifest.json') && typeof args[1] === 'number' && (args[1] & 3) === 0) {
+      changed = true
+      await unlink(artifactPaths[0]!)
+    }
+    return original(...args)
+  }) as typeof original
+  syncBuiltinESMExports()
+  try { await assert.rejects(createIntegrationSnapshot({ integration, destination }), /changed during capture/); assert.ok(changed) }
+  finally { fsPromises.open = original; syncBuiltinESMExports() }
+}))
+test('copy corruption fails before publishing the manifest', async () => fixture('darwin', true, async ({ integration, destination }) => {
+  const original = fsPromises.open
+  let changed = false
+  fsPromises.open = (async (...args: Parameters<typeof original>) => {
+    if (!changed && args[0] === join(destination, 'receipt.bin') && typeof args[1] === 'number' && (args[1] & 3) === 0) {
+      changed = true
+      await writeFile(join(destination, 'receipt.bin'), 'corrupt')
+    }
+    return original(...args)
+  }) as typeof original
+  syncBuiltinESMExports()
+  try {
+    await assert.rejects(createIntegrationSnapshot({ integration, destination }), /changed during read|Copied receipt/)
+    assert.ok(changed)
+    await assert.rejects(lstat(join(destination, 'manifest.json')), { code: 'ENOENT' })
+  } finally { fsPromises.open = original; syncBuiltinESMExports() }
+}))
+test('native Windows verification accepts readonly private ACLs and rejects shared ACLs without repair', { skip: process.platform !== 'win32' }, async () => fixture('win32', true, async ({ integration, destination }) => {
+  const result = await createIntegrationSnapshot({ integration, destination })
+  const paths = [destination, join(destination, 'payload'), join(destination, 'manifest.json'), join(destination, 'receipt.bin'), join(destination, 'payload', '0.bin'), join(destination, 'payload', '1.bin')]
+  const run = (action: string) => execFileSync(join(process.env.SystemRoot!, 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe'), ['-NoLogo', '-NoProfile', '-NonInteractive', '-EncodedCommand', Buffer.from(String.raw`$ErrorActionPreference='Stop'
+$env:PSModulePath="$PSHOME\Modules"
+Import-Module "$PSHOME\Modules\Microsoft.PowerShell.Security\Microsoft.PowerShell.Security.psd1"
+$user=[Security.Principal.WindowsIdentity]::GetCurrent().User
+foreach ($p in (ConvertFrom-Json $env:JARVIS_TEST_PATHS)) {
+ $acl=Get-Acl -LiteralPath $p
+ if ($env:JARVIS_TEST_ACTION -eq 'read') { Write-Output $acl.Sddl; continue }
+ if ($env:JARVIS_TEST_ACTION -eq 'private') {
+  $acl.SetAccessRuleProtection($true,$false)
+  foreach ($rule in @($acl.Access)) { [void]$acl.RemoveAccessRuleSpecific($rule) }
+  $rights=if ((Get-Item -LiteralPath $p).PSIsContainer) { 'ReadAndExecute' } else { 'Read' }
+  $acl.AddAccessRule([Security.AccessControl.FileSystemAccessRule]::new($user,$rights,'Allow'))
+ }
+ if ($env:JARVIS_TEST_ACTION -eq 'shared') { $acl.AddAccessRule([Security.AccessControl.FileSystemAccessRule]::new([Security.Principal.SecurityIdentifier]::new('S-1-1-0'),'Read','Allow')) }
+ if ($env:JARVIS_TEST_ACTION -eq 'restore') { $acl.AddAccessRule([Security.AccessControl.FileSystemAccessRule]::new($user,'FullControl','Allow')) }
+ Set-Acl -LiteralPath $p -AclObject $acl
+}`, 'utf16le').toString('base64')], { env: { ...process.env, JARVIS_TEST_PATHS: JSON.stringify(paths), JARVIS_TEST_ACTION: action }, encoding: 'utf8', timeout: 10_000, windowsHide: true })
+  try {
+    run('private')
+    const before = run('read')
+    await verifyIntegrationSnapshot({ snapshot: destination, manifestSha256: result.manifestSha256, integration })
+    assert.equal(run('read'), before)
+    run('shared')
+    const shared = run('read')
+    await assert.rejects(verifyIntegrationSnapshot({ snapshot: destination, manifestSha256: result.manifestSha256, integration }))
+    assert.equal(run('read'), shared)
+  } finally { run('restore') }
+}))
+test('private snapshots remain bounded when manifests are oversized', async () => fixture('win32', false, async ({ integration, destination }) => {
+  const result = await createIntegrationSnapshot({ integration, destination })
+  await writeFile(join(destination, 'manifest.json'), Buffer.alloc(16 * 1024 + 1))
+  await assert.rejects(verifyIntegrationSnapshot({ snapshot: destination, manifestSha256: result.manifestSha256, integration }), /size limit/)
+}))

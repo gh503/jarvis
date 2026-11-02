@@ -201,7 +201,7 @@ async function boundedIntegrationRead(path: string, limit: number, userRoots: st
     return { bytes: bytes.subarray(0, length), identity: initial }
   } finally { await handle.close() }
 }
-interface IntegrationReceipt {
+export interface IntegrationReceipt {
   schemaVersion: 1
   platform: Platform
   root: string
@@ -232,6 +232,22 @@ function parseReceipt(bytes: Buffer, platform: Platform, files: string[]): Integ
   return receipt as unknown as IntegrationReceipt
 }
 
+/** Pure fixed-location description; does not inspect the original installation. */
+export function describeNativeIntegration(options: InstallOptions): { receiptPath: string; artifactPaths: string[] } {
+  if (!['darwin', 'win32'].includes(options.platform)) throw new Error('Unsupported integration platform')
+  const { state, files } = locations(options)
+  for (const path of [options.root, options.home, options.appData, options.localAppData]) {
+    if (path !== undefined && (!isAbsolute(path) || /[\0\r\n]/.test(path) || resolve(path) !== path)) throw new Error('Unsafe integration option path')
+  }
+  return { receiptPath: state, artifactPaths: files }
+}
+
+/** Validate captured receipt bytes without accessing their original source paths. */
+export function parseNativeIntegrationReceipt(bytes: Buffer, options: InstallOptions): IntegrationReceipt {
+  if (!Buffer.isBuffer(bytes) || bytes.length > 64 * 1024) throw new Error('Unsafe integration receipt size')
+  return parseReceipt(bytes, options.platform, describeNativeIntegration(options).artifactPaths)
+}
+
 async function inspectDetailed(options: InstallOptions, state: string, files: string[]) {
   const userRoots = [options.home, options.appData, options.localAppData].filter((path): path is string => path !== undefined).map(path => resolve(path))
   const receiptSnapshot = await boundedIntegrationRead(state, 64 * 1024, userRoots, true)
@@ -255,10 +271,7 @@ export async function inspectNativeIntegration(options: InstallOptions): Promise
   binding: { root: string; autostart: boolean; configFile?: string; dataDir?: string }
   platform: Platform
 } | undefined> {
-  const { state, files } = locations(options)
-  for (const path of [options.root, options.home, options.appData, options.localAppData]) {
-    if (path !== undefined && (!isAbsolute(path) || /[\0\r\n]/.test(path) || resolve(path) !== path)) throw new Error('Unsafe integration option path')
-  }
+  const { receiptPath: state, artifactPaths: files } = describeNativeIntegration(options)
   const detailed = await inspectDetailed(options, state, files)
   if (!detailed) return undefined
   const { userRoots, receiptSnapshot, receipt, preflight } = detailed
