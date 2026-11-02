@@ -304,7 +304,15 @@ foreach ($p in (ConvertFrom-Json $env:JARVIS_TEST_PATHS)) {
     for (const path of paths.toReversed()) {
       run('shared', [path])
       const shared = run('read')
-      await assert.rejects(verifyIntegrationSnapshot({ snapshot: destination, manifestSha256: result.manifestSha256, integration }))
+      await assert.rejects(verifyIntegrationSnapshot({ snapshot: destination, manifestSha256: result.manifestSha256, integration }), (error: unknown) => {
+        assert.ok(error instanceof Error)
+        assert.equal(error.message, 'Native integration snapshot permission verification failed')
+        const diagnostic = sanitizeDiagnostic(error)
+        assert.equal(diagnostic.stage, 'integration-permission-check')
+        assert.equal(diagnostic.kind, 'process-exit', 'termination or unrelated I/O must not satisfy ACL policy refusal')
+        assert.equal(diagnostic.code, 71)
+        return true
+      })
       assert.equal(run('read'), shared)
       run('private', [path])
       assert.equal(run('read'), before)
