@@ -23,9 +23,10 @@ function remoteSha(tag) {
   if (!shaPattern.test(sha ?? '')) throw new Error('Remote release tag missing');
   return sha;
 }
-export function selectPublishedRelease(releases, tag, sha, resolveTag) {
+export function selectPublishedRelease(releases, tag, sha, resolveTag, currentMain) {
   const candidates = releases.filter(r => !r.draft && !r.prerelease && stableTag.test(r.tag_name) && (!tag || r.tag_name === tag));
   const matching = candidates.filter(r => resolveTag(r.tag_name) === sha);
+  if (matching.length === 0 && tag === undefined && shaPattern.test(sha) && shaPattern.test(currentMain ?? '') && currentMain !== sha) return undefined;
   if (matching.length !== 1) throw new Error(`Expected one published stable release for exact source; found ${matching.length}`);
   return matching[0];
 }
@@ -39,7 +40,10 @@ export function resolveRelease() {
   const sha = manual ? remoteSha(tag) : event.workflow_run.head_sha;
   if (!shaPattern.test(sha ?? '')) throw new Error('Invalid source SHA');
   const releases = JSON.parse(run('gh', ['api', '--paginate', '--slurp', `repos/${repo()}/releases?per_page=100`])).flat();
-  const release = selectPublishedRelease(releases, tag, sha, remoteSha);
+  const currentMain = manual ? undefined : run('git', ['ls-remote', 'origin', 'refs/heads/main']).split(/\s+/)[0];
+  if (!manual && !shaPattern.test(currentMain ?? '')) throw new Error('Remote main identity unavailable');
+  const release = selectPublishedRelease(releases, tag, sha, remoteSha, currentMain);
+  if (!release) { console.log('Skipping unpublished stale main commit'); return; }
   appendFileSync(process.env.GITHUB_OUTPUT, `tag=${release.tag_name}\nversion=${release.tag_name.slice(1)}\nsha=${sha}\n`);
 }
 export function assetStem(version, platform, arch, sha) {

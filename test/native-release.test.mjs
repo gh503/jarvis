@@ -16,6 +16,17 @@ test('resolves the published release for exact CI SHA, not latest or package ver
   assert.throws(() => assetStem('2.0.0', 'linux', 'x64', 'short'), /Invalid/);
 });
 
+test('only confirmed unpublished stale automatic sources may skip native publication', () => {
+  const other = 'b'.repeat(40);
+  assert.equal(selectPublishedRelease([], undefined, sha, () => sha, other), undefined);
+  for (const main of [undefined, '', 'invalid', sha]) assert.throws(() => selectPublishedRelease([], undefined, sha, () => sha, main), /found 0/);
+  assert.throws(() => selectPublishedRelease([], 'v2.0.1', sha, () => sha, other), /found 0/);
+  const release = { tag_name: 'v2.0.1' };
+  assert.equal(selectPublishedRelease([release], undefined, sha, () => sha, other), release);
+  assert.throws(() => selectPublishedRelease([release, { tag_name: 'v2.0.2' }], undefined, sha, () => sha, other), /found 2/);
+  assert.throws(() => selectPublishedRelease([release], undefined, sha, () => { throw new Error('remote failure'); }, other), /remote failure/);
+});
+
 test('publication requires all three platforms and rejects tampered asset bytes', () => {
   const root = mkdtempSync(join(tmpdir(), 'jarvis-assets-'));
   try {
