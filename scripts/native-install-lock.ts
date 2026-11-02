@@ -163,6 +163,10 @@ export async function withNativeInstallLock<T>(
   finally {
     state.active = false
     state.acceptingOperations = false
+    // A caller may retain an expired capability indefinitely. Do not retain its
+    // settled writes, results or errors through the capability's WeakMap entry.
+    heldLocks.delete(capability)
+    state.operations.length = 0
     try { release() } catch (error) {
       if (failed) throw new AggregateError([failure, error], 'Native installation and lock release failed', { cause: failure })
       throw error
