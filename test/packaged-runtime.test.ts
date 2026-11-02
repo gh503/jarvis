@@ -283,6 +283,61 @@ test('native artifact verifies and starts/stops using only its bundled Node', { 
       assert.equal(await readFile(sentinel, 'utf8'), sentinelBytes)
       await assert.rejects(lstat(data), { code: 'ENOENT' })
     }
+    nextStage('bundled recovery set create/verify with empty PATH')
+    {
+      const recoveryRoot = join(temporary, 'recovery fixture 中文')
+      const configParent = join(recoveryRoot, 'private config'), sourceData = join(recoveryRoot, 'data')
+      const configFile = join(configParent, 'original.env'), destination = join(recoveryRoot, 'recovery set')
+      const configBytes = Buffer.from(`# Packaged recovery fixture 中文\nJARVIS_DATA_DIR="${sourceData}"\n`)
+      const sample = join(sourceData, 'sample.txt'), sampleBytes = Buffer.from('packaged recovery data 中文\n')
+      const options = { env, cwd: temporary, encoding: 'utf8' as const, timeout: 60_000, maxBuffer: 64 * 1024 }
+      // Bundled permission setup also supplies private inherited Windows ACLs.
+      const setupScript = `import {ensurePrivateDataDirectory} from ${JSON.stringify(pathToFileURL(join(bundle, 'src/private-directory.ts')).href)};for (const directory of ${JSON.stringify([recoveryRoot, configParent, sourceData])}) await ensurePrivateDataDirectory(directory);`
+      const setup = spawnSync(binary, ['--experimental-transform-types', '--input-type=module', '-e', setupScript], options)
+      assert.ifError(setup.error)
+      assert.equal(setup.status, 0, setup.stderr)
+      await writeFile(configFile, configBytes, { mode: 0o600 })
+      await writeFile(sample, sampleBytes, { mode: 0o600 })
+      const runRecovery = (args: string[]) => {
+        const result = spawnSync(binary, ['--experimental-transform-types', join(bundle, 'scripts/recovery-native.ts'), ...args], options)
+        assert.ifError(result.error)
+        return result
+      }
+      const created = runRecovery(['create', '--bundle', bundle, '--bundle-manifest-sha256', manifestDigest,
+        '--config', configFile, '--data', sourceData, '--destination', destination])
+      // Preserve the archive's real identity: never turn development bytes into a release fixture.
+      if (manifest.dirty === false && manifest.sourceTag === `v${manifest.version}` && /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/.test(manifest.version)) {
+        assert.equal(created.status, 0, created.stderr)
+        const receipt = JSON.parse(created.stdout)
+        assert.deepEqual(Object.keys(receipt).sort(), ['manifestSha256', 'recoverySet'])
+        assert.equal(receipt.recoverySet, destination)
+        assert.match(receipt.manifestSha256, /^[a-f0-9]{64}$/)
+        assert.equal(await sha256(join(destination, 'recovery-manifest.json')), receipt.manifestSha256)
+        const captured = JSON.parse(await readFile(join(destination, 'recovery-manifest.json'), 'utf8'))
+        assert.deepEqual(captured.baseline, { root: bundle, manifestSha256: manifestDigest, version: manifest.version,
+          sourceSha: manifest.sourceSha, platform: manifest.platform, arch: manifest.arch, runtime: manifest.runtime.version })
+        assert.equal(captured.sourceConfigFile, configFile)
+        assert.equal(captured.sourceDataDir, sourceData)
+        assert.equal(captured.scope.activation, 'none')
+        assert.equal(captured.scope.baselineBundle, 'not-copied-must-remain-available')
+        // Keep the original baseline available and unchanged for actual CLI verification.
+        const verified = runRecovery(['verify', '--recovery-set', destination, '--manifest-sha256', receipt.manifestSha256])
+        assert.equal(verified.status, 0, verified.stderr)
+        assert.deepEqual(JSON.parse(verified.stdout), { verified: true, ...receipt })
+        console.log('[artifact] tagged baseline recovery create/verify passed; capture only, no activation')
+      } else {
+        assert.equal(created.status, 1, created.stderr)
+        assert.equal(created.stdout, '')
+        assert.match(created.stderr, /Native recovery failed: Incompatible release identity/)
+        await assert.rejects(lstat(destination), { code: 'ENOENT' })
+        console.log('[artifact] development baseline rejected for recovery; no successful create/verify coverage asserted')
+      }
+      assert.deepEqual(await readFile(configFile), configBytes)
+      assert.deepEqual(await readFile(sample), sampleBytes)
+      assert.equal(await sha256(join(bundle, 'manifest.json')), manifestDigest)
+      await assert.rejects(lstat(join(sourceData, 'runtime-instance.json')), { code: 'ENOENT' })
+      await assert.rejects(lstat(data), { code: 'ENOENT' })
+    }
     nextStage('bundled native helper with empty PATH')
     const helperRoot = join(temporary, 'approved files')
     await mkdir(helperRoot)
