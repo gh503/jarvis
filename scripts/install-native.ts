@@ -132,10 +132,13 @@ function runPowerShell(script: string, env: NodeJS.ProcessEnv): void {
     throw new Error(`Windows shortcut creation failed (${failure.code ?? failure.status ?? 'unknown'}): ${failure.stderr?.trim() || 'PowerShell returned no diagnostic'}`)
   }
 }
+function validateOptionPath(path: unknown): asserts path is string {
+  if (typeof path !== 'string' || Buffer.byteLength(path) > 4096 || !isAbsolute(path) || resolve(path) !== path || /[\x00-\x1f\x7f\ud800-\udfff]/u.test(path)) throw new Error('Unsafe integration option path')
+  // Use host semantics: mocked Windows integrations on POSIX still use POSIX paths.
+  // Windows aliases must fail even when the destination does not yet exist.
+  if (process.platform === 'win32' && (!/^[a-z]:\\/i.test(path) || path.slice(2).includes(':') || path.includes('/') || !path.slice(3).split('\\').every(part => !/[. ]$/.test(part) && !/^(con|prn|aux|nul|com[1-9¹²³]|lpt[1-9¹²³])(?:\.|$)/i.test(part)))) throw new Error('Unsafe integration option path: native Windows alias')
+}
 function locations(options: InstallOptions) {
-  for (const value of [options.home, options.root, ...(options.platform === 'win32' ? [options.appData, options.localAppData] : [])]) {
-    if (!value || !isAbsolute(value) || /[\0\r\n]/.test(value)) throw new Error('Native installation requires absolute paths without line breaks')
-  }
   const app = join(options.home, 'Applications', 'Jarvis.app')
   const state = options.platform === 'darwin' ? join(options.home, 'Library', 'Application Support', 'Jarvis', 'native-install.json') : join(options.localAppData!, 'Jarvis', 'native-install.json')
   const menu = join(options.appData ?? options.home, 'Microsoft', 'Windows', 'Start Menu', 'Programs')
@@ -235,10 +238,12 @@ function parseReceipt(bytes: Buffer, platform: Platform, files: string[]): Integ
 /** Pure fixed-location description; does not inspect the original installation. */
 export function describeNativeIntegration(options: InstallOptions): { receiptPath: string; artifactPaths: string[] } {
   if (!['darwin', 'win32'].includes(options.platform)) throw new Error('Unsupported integration platform')
-  const { state, files } = locations(options)
-  for (const path of [options.root, options.home, options.appData, options.localAppData]) {
-    if (path !== undefined && (!isAbsolute(path) || /[\0\r\n]/.test(path) || resolve(path) !== path)) throw new Error('Unsafe integration option path')
+  validateOptionPath(options.root)
+  validateOptionPath(options.home)
+  for (const path of [options.appData, options.localAppData]) {
+    if (options.platform === 'win32' || path !== undefined) validateOptionPath(path)
   }
+  const { state, files } = locations(options)
   return { receiptPath: state, artifactPaths: files }
 }
 
@@ -303,10 +308,11 @@ export async function inspectNativeIntegration(options: InstallOptions): Promise
 
 export async function nativeIntegration(options: InstallOptions, args: string[]): Promise<string[]> {
   const { action, autostart, configFile } = parseArgs(args)
+  const { receiptPath: state, artifactPaths: files } = describeNativeIntegration(options)
   // Validate on the host before any integration mutation; never snapshot secrets.
   const externalConfig = configFile === undefined ? undefined : loadExternalConfig(configFile)
   const binding = configFile === undefined ? {} : { configFile: await realpath(configFile), dataDir: externalConfig!.JARVIS_DATA_DIR }
-  const { app, state, files } = locations(options)
+  const { app } = locations(options)
   for (const path of [state, ...files]) await safeAncestors(path)
   if (action === 'uninstall') {
     const detailed = await inspectDetailed(options, state, files)

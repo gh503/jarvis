@@ -5,9 +5,9 @@ import { existsSync, writeFileSync } from 'node:fs'
 import fsPromises, { chmod, link, lstat, mkdtemp, mkdir, open, readFile, realpath, rename, rm, truncate, unlink, writeFile, symlink } from 'node:fs/promises'
 import { syncBuiltinESMExports } from 'node:module'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { join, sep } from 'node:path'
 import { test } from 'node:test'
-import { inspectNativeIntegration, nativeIntegration, parseArgs, POWERSHELL_LINK, shellQuote, validatePackage, windowsQuote, xml } from '../scripts/install-native.ts'
+import { describeNativeIntegration, inspectNativeIntegration, nativeIntegration, parseArgs, POWERSHELL_LINK, shellQuote, validatePackage, windowsQuote, xml } from '../scripts/install-native.ts'
 import type { InstallOptions, Platform } from '../scripts/install-native.ts'
 import { WINDOWS_AUMID } from '../src/windows-notification.ts'
 import { ensurePrivateDataDirectory } from '../src/private-directory.ts'
@@ -152,6 +152,66 @@ test('inspection rejects noncanonical option paths before reads', async () => fi
   for (const key of ['root', 'home', 'appData', 'localAppData'] as const) {
     await assert.rejects(inspectNativeIntegration({ ...options, [key]: options[key] + '/.' }), /option path/)
   }
+}))
+
+for (const platform of ['darwin', 'win32'] as const) test(`${platform} option validation precedes configuration reads and mutations`, async () => fixture(platform, async options => {
+  options.runPowerShell = () => { throw new Error('invalid options must not invoke COM') }
+  const missingConfig = join(options.root, 'missing-config.env')
+  for (const key of ['root', 'home', 'appData', 'localAppData'] as const) {
+    const base = options[key]!
+    const invalid: unknown[] = ['relative', '', null, 42, base + sep + '.', base + sep + '..' + sep + 'other', base + '\0', base + '\r', base + '\n', base + '\t', base + '\x01', base + '\x1f', base + '\x7f', base + '\ud800', base + '\udfff', base + '\ud800x\udfff', base + '中'.repeat(1400)]
+    if (key === 'root' || key === 'home' || platform === 'win32') invalid.push(undefined)
+    for (const value of invalid) {
+      const bad = { ...options, [key]: value } as InstallOptions
+      assert.throws(() => describeNativeIntegration(bad), /option path/)
+      for (const args of [['--install'], ['--install', '--config', missingConfig], ['--uninstall']]) {
+        await assert.rejects(nativeIntegration(bad, args), /option path/)
+      }
+    }
+  }
+  const unsupported = { ...options, platform: 'linux' } as unknown as InstallOptions
+  assert.throws(() => describeNativeIntegration(unsupported), /Unsupported integration platform/)
+  for (const args of [['--install', '--config', missingConfig], ['--uninstall']]) await assert.rejects(nativeIntegration(unsupported, args), /Unsupported integration platform/)
+  for (const path of [options.home, options.appData!, options.localAppData!]) assert.equal(existsSync(path), false)
+  assert.equal(await readFile(join(options.root, 'scripts', 'app.ts'), 'utf8'), 'fixture')
+}))
+
+test('pure option validation permits missing roots and well-formed Unicode with conditional app-data fields', async () => fixture('darwin', async options => {
+  const optional = { ...options, appData: undefined, localAppData: undefined, root: join(options.root, 'missing-😀') }
+  assert.doesNotThrow(() => describeNativeIntegration(optional))
+  assert.deepEqual(await nativeIntegration(optional, ['--uninstall']), [])
+  const boundary = options.root + 'a'.repeat(4096 - Buffer.byteLength(options.root))
+  assert.doesNotThrow(() => describeNativeIntegration({ ...optional, root: boundary }))
+  assert.throws(() => describeNativeIntegration({ ...optional, root: boundary + 'a' }), /option path/)
+}))
+
+test('mock Windows options retain host path semantics', { skip: process.platform === 'win32' }, async () => fixture('win32', async options => {
+  assert.doesNotThrow(() => describeNativeIntegration({ ...options, root: join(options.root, 'NUL', 'COM¹', 'with:colon', 'trailing.') }))
+}))
+
+test('native Windows rejects path aliases before creating missing destination directories', { skip: process.platform !== 'win32' }, async () => fixture('win32', async options => {
+  options.runPowerShell = () => { throw new Error('invalid options must not invoke COM') }
+  for (const key of ['root', 'home', 'appData', 'localAppData'] as const) {
+    const missing = join(options.root, `missing-${key}`)
+    const aliases = [missing + '.', missing + ' ', missing + ':stream', missing.replaceAll('\\', '/'), '\\\\server\\share\\missing', '\\\\?\\' + missing,
+      ...['CON', 'prn.txt', 'AUX', 'nul', 'COM1', 'LPT9.log', 'COM¹', 'COM².txt', 'COM³', 'LPT¹', 'LPT².txt', 'LPT³'].map(name => join(missing, name, 'child'))]
+    for (const path of aliases) {
+      const bad = { ...options, [key]: path }
+      assert.throws(() => describeNativeIntegration(bad), /option path/)
+      for (const args of [['--install'], ['--install', '--config', join(options.root, 'missing-config.env')], ['--uninstall']]) await assert.rejects(nativeIntegration(bad, args), /option path/)
+      assert.equal(existsSync(missing), false)
+    }
+  }
+  for (const path of [options.home, options.appData!, options.localAppData!]) assert.equal(existsSync(path), false)
+  assert.equal(await readFile(join(options.root, 'scripts', 'app.ts'), 'utf8'), 'fixture')
+}))
+
+for (const platform of ['darwin', 'win32'] as const) test(`${platform} uninstall allows a different nonexistent package root`, async () => fixture(platform, async options => {
+  options.runPowerShell = (_script, env) => writeFileSync(env.JARVIS_LINK_PATH!, 'shortcut', { mode: 0o600 })
+  const created = await nativeIntegration(options, ['--install'])
+  await rename(options.root, options.root + '-moved')
+  await nativeIntegration({ ...options, root: options.root + '-unrelated' }, ['--uninstall'])
+  for (const path of created) assert.equal(existsSync(path), false)
 }))
 
 test('native CLI requires explicit action and opt-in startup', () => {
