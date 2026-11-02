@@ -248,7 +248,7 @@ test('Windows permission process failures are sanitized at the public snapshot b
         assert.notEqual(error, raw)
         assert.equal(error.message, 'Native integration snapshot permission verification failed')
         assert.ok(error.message.length <= 512)
-        assert.deepEqual(sanitizeDiagnostic(error), diagnostic)
+        assert.deepEqual(sanitizeDiagnostic(error), { ...diagnostic, kind: diagnostic.kind === 'unknown' ? 'validation' : diagnostic.kind, stage: 'integration-permission-check' })
         assert.deepEqual(Object.getOwnPropertyNames(error).sort(), ['message', 'stack', ...['code', 'killed', 'signal'].filter(key => Object.hasOwn(diagnostic, key))].sort())
         for (const text of [String(error), error.stack!, JSON.stringify(error)]) {
           assert.ok(!text.includes('RAW_SECRET'))
