@@ -222,6 +222,40 @@ test('unawaited registered failure is observed, propagated and releases the lock
   await withNativeInstallLock({ controlDirectory }, async () => {})
 })
 
+test('callback failure drains registered work and preserves distinct failures before release', { timeout: 60_000 }, async t => {
+  const { controlDirectory } = await fixture(t)
+  const callbackFailure = new Error('callback failed'), writeFailure = new Error('registered write failed')
+  let unblock!: () => void, entered!: () => void
+  const gate = new Promise<void>(resolve => { unblock = resolve })
+  const started = new Promise<void>(resolve => { entered = resolve })
+  let completed = false, saved: NativeInstallLock | undefined
+  const pending = withNativeInstallLock({ controlDirectory }, async lock => {
+    saved = lock
+    void runWithNativeInstallLockHeld(lock, controlDirectory, async () => { entered(); await gate; throw writeFailure })
+    void runWithNativeInstallLockHeld(lock, controlDirectory, async () => { throw callbackFailure })
+    throw callbackFailure
+  })
+  const checked = assert.rejects(pending, error => {
+    assert.ok(error instanceof AggregateError)
+    assert.deepEqual(error.errors, [callbackFailure, writeFailure])
+    assert.equal(error.cause, callbackFailure)
+    return true
+  }).finally(() => { completed = true })
+  try {
+    await started
+    // Let the callback rejection close registration while the write is suspended.
+    await new Promise<void>(resolve => setImmediate(resolve))
+    assert.equal(completed, false)
+    assert.throws(() => runWithNativeInstallLockHeld(saved!, controlDirectory, async () => {}), /scope is closing/)
+    await assert.rejects(withNativeInstallLock({ controlDirectory }, async () => assert.fail('released before drain')), /Another launcher is still working/)
+  } finally {
+    unblock()
+    await checked
+  }
+  assert.throws(() => assertNativeInstallLockHeld(saved, controlDirectory), /capability/)
+  await withNativeInstallLock({ controlDirectory }, async () => {})
+})
+
 test('operation failure releases the existing lock inode', async t => {
   const { controlDirectory } = await fixture(t)
   const failure = new Error('operation failed')
