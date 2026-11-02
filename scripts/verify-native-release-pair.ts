@@ -116,7 +116,7 @@ export async function main(): Promise<void> {
         const entries = JSON.parse(run(powershell, ['-NoProfile', '-NonInteractive', '-Command', "Add-Type -AssemblyName System.IO.Compression.FileSystem; $z=[IO.Compression.ZipFile]::OpenRead($env:ARCHIVE); try { @($z.Entries | ForEach-Object { @{name=$_.FullName; mode=(($_.ExternalAttributes -shr 16) -band 61440)} }) | ConvertTo-Json -Compress } finally { $z.Dispose() }"], env))
         for (const entry of entries) { validateMember(entry.name, stem); assert.ok([0, 32768, 16384].includes(entry.mode), 'Nonregular ZIP member') }
         progress(`extract ZIP v${release.version}`)
-        run(powershell, ['-NoProfile', '-NonInteractive', '-Command', 'Expand-Archive -LiteralPath $env:ARCHIVE -DestinationPath $env:DEST -ErrorAction Stop'], env)
+        run(powershell, ['-NoProfile', '-NonInteractive', '-Command', "$ErrorActionPreference='Stop'; Add-Type -AssemblyName System.IO.Compression.FileSystem; [IO.Compression.ZipFile]::ExtractToDirectory($env:ARCHIVE, $env:DEST)"], env)
       } else {
         for (const name of run(tar, ['-tzf', archive]).split('\n')) validateMember(name, stem)
         for (const line of run(tar, ['-tvzf', archive]).split('\n')) assert.ok(['-', 'd'].includes(line[0]!), 'Nonregular tar member')
