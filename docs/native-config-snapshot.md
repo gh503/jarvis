@@ -1,20 +1,20 @@
 # Native config-only snapshots
 
-Status: **upcoming source-only functionality**. These commands are not a claim of availability in the recommended [v2.0.40 preview](https://github.com/gh503/jarvis/releases/tag/v2.0.40); portable-package availability must be established by a verified release. This is a private external-configuration recovery primitive, not a complete installation snapshot or an automatic updater. See [Native update staging and recovery](native-update.md).
+Status: **released in [v2.0.42](https://github.com/gh503/jarvis/releases/tag/v2.0.42)**, including the offline CLI in the recommended portable preview packages. This is a private external-configuration recovery primitive, not a complete installation snapshot or an automatic updater. See [Native update staging and recovery](native-update.md).
 
 A config snapshot preserves the exact original bytes of one validated external configuration file, including secrets, comments, quotes, whitespace, and line endings. It does not serialize parsed settings or rewrite `JARVIS_DATA_DIR`. The selected data directory is checked and locked, but its data tree is **not copied**. The separate [data-only snapshot CLI](native-state-snapshot.md) captures that tree; invoking both commands does not make them an atomic coupled snapshot or bind them to a compatible baseline binary or database schema.
 
 ## Commands and trust
 
-Use a trusted Node 24 executable and the CLI from a trusted source checkout:
+Run from a trusted v2.0.42 portable package using its bundled Node 24. On Linux/macOS, from the extracted package directory:
 
 ```sh
-node --experimental-transform-types scripts/snapshot-native-config.ts create --config /absolute/private-config/config.env --data /absolute/data --destination /absolute/snapshots/new-config-snapshot
-node --experimental-transform-types scripts/snapshot-native-config.ts verify --snapshot /absolute/snapshots/new-config-snapshot --manifest-sha256 TRUSTED_MANIFEST_SHA256
-node --experimental-transform-types scripts/snapshot-native-config.ts restore --snapshot /absolute/snapshots/new-config-snapshot --manifest-sha256 TRUSTED_MANIFEST_SHA256 --destination /absolute/restores/new-config-directory
+./runtime/node --experimental-transform-types scripts/snapshot-native-config.ts create --config /absolute/private-config/config.env --data /absolute/data --destination /absolute/snapshots/new-config-snapshot
+./runtime/node --experimental-transform-types scripts/snapshot-native-config.ts verify --snapshot /absolute/snapshots/new-config-snapshot --manifest-sha256 TRUSTED_MANIFEST_SHA256
+./runtime/node --experimental-transform-types scripts/snapshot-native-config.ts restore --snapshot /absolute/snapshots/new-config-snapshot --manifest-sha256 TRUSTED_MANIFEST_SHA256 --destination /absolute/restores/new-config-directory
 ```
 
-For a future verified portable release containing this CLI, Linux/macOS commands use the bundled `./runtime/node` in place of `node`, from the extracted package directory. Windows PowerShell commands use `runtime/node.exe`, for example:
+Source checkout users can substitute a trusted `node` 24 executable for the bundled runtime. Windows PowerShell uses the bundled executable, for example:
 
 ```powershell
 & '.\runtime\node.exe' --experimental-transform-types '.\scripts\snapshot-native-config.ts' create --config 'C:\private-config\config.env' --data 'C:\data' --destination 'C:\snapshots\new-config-snapshot'
@@ -22,9 +22,9 @@ For a future verified portable release containing this CLI, Linux/macOS commands
 & '.\runtime\node.exe' --experimental-transform-types '.\scripts\snapshot-native-config.ts' restore --snapshot 'C:\snapshots\new-config-snapshot' --manifest-sha256 TRUSTED_MANIFEST_SHA256 --destination 'C:\restores\new-config-directory'
 ```
 
-Use canonical absolute paths without linked ancestors, and quote paths containing spaces. Create requires an explicit existing canonical `--data` directory matching the validated `JARVIS_DATA_DIR` value exactly. There is no implicit environment/config discovery. Destination parents must already exist; destination directories must not exist, even as empty directories. Unknown, repeated, or missing options are rejected.
+Use canonical absolute paths without linked ancestors, and quote paths containing spaces. Create requires an explicit existing canonical `--data` directory matching the validated `JARVIS_DATA_DIR` value exactly. There is no implicit environment/config discovery, and snapshot operations do not load settings into or mutate the process environment. Destination parents must already exist; destination directories must not exist, even as empty directories. Unknown, repeated, or missing options are rejected.
 
-Before acquiring locks, create also rejects overlap between the original config file's **parent directory** and the data directory, in either direction, so data-root permission preflight cannot change the config parent. Create rejects a destination that overlaps either the original config parent or the selected data directory, in either direction. Restore also rejects overlap with the snapshot tree and with the original config parent and data directory recorded in the manifest. A sibling config snapshot beneath the original config parent is therefore not permitted. Use separate private locations for source configuration, snapshots, and restored configuration.
+Before acquiring locks, create also rejects overlap between the original config file's **parent directory** and the data directory, in either direction, so data-root permission preflight cannot change the config parent. Create rejects a destination that overlaps either the original config parent or the selected data directory, in either direction. Restore also rejects overlap with the snapshot tree and with the original config parent and data directory recorded in the manifest. A sibling config snapshot beneath the original config parent is therefore not permitted. Use separate private locations for source configuration, snapshots, and restored configuration. This is a snapshot-specific restriction: existing explicit config binding can place a validated config inside the data root, but that layout is unsupported by config snapshot creation.
 
 Create prints JSON containing `snapshot` and `manifestSha256`. Keep the lowercase 64-character SHA256 digest in a separate private trusted record. Verify and restore require this externally supplied digest of the exact manifest bytes; they never trust a digest stored inside the snapshot. Computing a digest from an untrusted snapshot does not authenticate it. Verify prints `verified: true`, `snapshot`, and `manifestSha256`; restore prints `destination` and `manifestSha256`. These receipts contain paths and hashes, not configuration values or secrets. Paths themselves may be sensitive. Invalid CLI arguments exit with status 2; operation failures exit with status 1.
 
