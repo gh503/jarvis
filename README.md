@@ -8,7 +8,7 @@ Start with [上手指南](docs/getting-started.md) for **native preview or sourc
 and [分发说明](docs/distribution.md) for platform limits and release gates.
 Windows, macOS and Linux have native runtime lifecycle support and Node 24 portable
 package matrices. **Unsigned native portable previews are published** for Linux x64, Windows x64
-and macOS arm64 at [v2.0.27](https://github.com/gh503/jarvis/releases/tag/v2.0.27). They are
+and macOS arm64 at [v2.0.31](https://github.com/gh503/jarvis/releases/tag/v2.0.31). They are
 not signed installers or a guarantee of stable production readiness or full feature parity.
 The in-app `/providers` and `/install` pages help configure models and browser clients.
 
@@ -47,13 +47,13 @@ repository write permission limited to the release job.
 
 ## Native preview status
 
-The three-platform automated release gates passed for runtime lifecycle and
+For the pinned v2.0.31 preview, the three-platform automated release gates passed for runtime lifecycle and
 bundled Node 24 packages, including packaged privacy, backup and updater checks
 and Windows Unicode shortcut activation. This covers the hosted runner targets,
 not every OS/CPU pair or interactive desktop environment.
 
 Download the archive matching your OS/CPU, its SHA256 and provenance from
-[v2.0.27](https://github.com/gh503/jarvis/releases/tag/v2.0.27), verify the archive,
+[v2.0.31](https://github.com/gh503/jarvis/releases/tag/v2.0.31), verify the archive,
 and extract into a stable writable folder. Each of the three targets has these
 three files. Other builds may be available as conditional unsigned CI previews in
 [Actions](https://github.com/gh503/jarvis/actions); source instructions remain below.
@@ -91,9 +91,13 @@ confirmation. Questions collect information and do not grant tool permissions.
 See [本地工具与权限说明](docs/ui.md#本地工具任务与目录授权) for the exact names,
 API routes, privacy boundaries and recurrence behavior.
 
-External scoped file tools (including modification) and Shell remain fail-closed
-on macOS/Windows. Read-only Markdown skills are implemented on all three platforms;
-macOS/Windows use the native filesystem helper.
+The v2.0.31 preview supports `file_read`, `file_list` and `file_search` on macOS/Windows
+through the native filesystem helper: explicitly authorize at most 16 read roots;
+text reads are UTF-8 and limited to 1 MiB, with secret-path filtering and private-key content rejection.
+Native writes, output workspace operations, artifact delivery, image inspection
+and Shell remain unavailable on macOS/Windows. Linux retains its existing scoped
+file writes and sandboxed Shell. Read-only Markdown skills were already supported
+on all three platforms; macOS/Windows use the native filesystem helper.
 External file grants are empty by default; web and Shell are disabled, and no
 skill directory or external account is configured. File replacement requires
 the version returned by a prior read and creates private recovery history.
@@ -196,7 +200,7 @@ installer; `npm start` alone still serves <http://127.0.0.1:3081>. First-run
 users who do not want to configure anything by hand should open
 <http://127.0.0.1:3081/providers>, pick a provider, and paste one API key.
 
-Source requires **Node.js >=24** and Git. For optional native skills on macOS/Windows,
+Source requires **Node.js >=24** and Git. For optional native file reading and skills on macOS/Windows,
 run `npm run native:build` with Rust 1.94+ and the platform build toolchain.
 Portable builds bundle the compiled helper; users do not need a compiler to run it.
 Core chat with a configured remote
