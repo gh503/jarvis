@@ -49,7 +49,8 @@ export async function main(): Promise<void> {
   const started = Date.now(), deadline = started + 600_000
   let step = 'setup'
   const operations: { index: number; step: string; elapsedMs: number; completed: boolean; failure?: ReturnType<typeof processFailureMetadata> }[] = []
-  const report: Record<string, unknown> = { repository, platform: process.platform, arch: process.arch, releases, passed: false, operations }
+  const authenticatedArchives: { version: string; sourceSha: string; archive: string; sha256: string }[] = []
+  const report: Record<string, unknown> = { repository, platform: process.platform, arch: process.arch, releases, passed: false, operations, authenticatedArchives }
   const run = (binary: string, args: string[], env: NodeJS.ProcessEnv = process.env, cwd?: string) => {
     assert.ok(Date.now() < deadline, 'Acceptance deadline exceeded')
     const operation: (typeof operations)[number] = { index: operations.length + 1, step, elapsedMs: 0, completed: false }
@@ -109,6 +110,7 @@ export async function main(): Promise<void> {
         schemaVersion: 1, version: release.version, sourceSha: release.sha, sourceTag: tag,
         platform: process.platform, arch: process.arch, signing: 'unsigned', archive: archiveName, sha256: archiveHash,
       })
+      authenticatedArchives.push({ version: release.version, sourceSha: release.sha, archive: archiveName, sha256: archiveHash })
       progress(`inspect and extract v${release.version}`)
       if (process.platform === 'win32') {
         const env = { SystemRoot: systemRoot, WINDIR: systemRoot, ARCHIVE: archive, DEST: extracted }
