@@ -5,7 +5,7 @@ import { execFileSync } from 'node:child_process'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { loadConfig } from '../src/config.ts'
-import { loadExternalConfig } from '../src/external-config.ts'
+import { loadExternalConfig, readExternalConfig, readPrivateConfigurationFile } from '../src/external-config.ts'
 import { ensurePrivateDataDirectory } from '../src/private-directory.ts'
 
 async function fixture(run: (dir: string, file: string) => void) {
@@ -47,6 +47,19 @@ test('explicit config uses file plus defaults, preserves internal/generic enviro
       process.chdir(dir)
       assert.deepEqual(loadConfig(), config)
     } finally { process.chdir(previousCwd) }
+  })
+})
+
+test('shared private reader preserves raw bytes and enforces caller bounds without parsing JSON', async () => {
+  await fixture((dir, file) => {
+    const bytes = Buffer.from(`# 中文\r\nJARVIS_DATA_DIR='${join(dir, 'data')}'\r\n`)
+    writeFileSync(file, bytes)
+    assert.deepEqual(readExternalConfig(file), { bytes, values: { JARVIS_DATA_DIR: join(dir, 'data') } })
+    assert.deepEqual(readPrivateConfigurationFile(file, bytes.length), bytes)
+    for (const limit of [0, -1, 1.5, 65537, bytes.length - 1]) assert.throws(() => readPrivateConfigurationFile(file, limit))
+    writeFileSync(file, '{"schemaVersion":1}\n')
+    assert.equal(readPrivateConfigurationFile(file, 16384).toString(), '{"schemaVersion":1}\n')
+    assert.throws(() => loadExternalConfig(file))
   })
 })
 
@@ -186,6 +199,8 @@ for (const target of ['file', 'parent'] as const) {
       const beforeFile = windowsAcl(file)
       const beforeParent = windowsAcl(dir)
       assert.throws(() => loadExternalConfig(file), /Invalid JARVIS_CONFIG_FILE/)
+      // The same read-only ACL policy must protect JSON manifests too.
+      assert.throws(() => readPrivateConfigurationFile(file, 16384), /Invalid JARVIS_CONFIG_FILE/)
       assert.equal(windowsAcl(file), beforeFile)
       assert.equal(windowsAcl(dir), beforeParent)
     })

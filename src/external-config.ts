@@ -67,7 +67,7 @@ function privateMode(stat: BigIntStats): boolean {
 function same(a: BigIntStats, b: BigIntStats): boolean {
   return a.dev === b.dev && a.ino === b.ino && a.mode === b.mode && a.uid === b.uid && a.nlink === b.nlink && a.size === b.size && a.mtimeNs === b.mtimeNs && a.ctimeNs === b.ctimeNs
 }
-function inspect(file: string): BigIntStats {
+function inspect(file: string, maxBytes = limit): BigIntStats {
   if (!file || file.includes('\0') || !isAbsolute(file) || resolve(file) !== file || realpathSync(file) !== file) throw invalid()
   if (process.platform === 'win32' && (!/^[a-z]:\\/i.test(file) || file.slice(2).includes(':') || file.split(/[\\/]/).slice(1).some(part => /[. ]$/.test(part) || /^(con|prn|aux|nul|com[1-9]|lpt[1-9])(?:\.|$)/i.test(part)))) throw invalid()
   for (let part = dirname(file); ; part = dirname(part)) {
@@ -76,17 +76,18 @@ function inspect(file: string): BigIntStats {
     if (part === dirname(part)) break
   }
   const stat = lstatSync(file, { bigint: true })
-  if (!stat.isFile() || stat.isSymbolicLink() || stat.nlink !== 1n || stat.size > BigInt(limit) || !privateMode(stat)) throw invalid()
+  if (!stat.isFile() || stat.isSymbolicLink() || stat.nlink !== 1n || stat.size > BigInt(maxBytes) || !privateMode(stat)) throw invalid()
   return stat
 }
 
 /** Validate without modifying the file, its ACL, or process.env. Portable checks
  * trust the OS account boundary, as private-storage does; this is not a sandbox
  * against a malicious process already running as the same account. */
-export function loadExternalConfig(file: string): Record<string, string> {
+export function readPrivateConfigurationFile(file: string, maxBytes = limit): Buffer {
   let fd: number | undefined
   try {
-    const before = inspect(file)
+    if (!Number.isSafeInteger(maxBytes) || maxBytes < 1 || maxBytes > limit) throw invalid()
+    const before = inspect(file, maxBytes)
     if (process.platform === 'win32') {
       const root = process.env.SystemRoot
       if (!root || !isAbsolute(root)) throw invalid()
@@ -96,15 +97,24 @@ export function loadExternalConfig(file: string): Record<string, string> {
     }
     fd = openSync(file, C.O_RDONLY | (C.O_NOFOLLOW || 0) | (C.O_NONBLOCK || 0))
     if (!same(before, fstatSync(fd, { bigint: true }))) throw invalid()
-    const bytes = Buffer.alloc(limit + 1)
+    const bytes = Buffer.alloc(maxBytes + 1)
     let total = 0
     while (total < bytes.length) {
       const count = readSync(fd, bytes, total, bytes.length - total, null)
       if (!count) break
       total += count
     }
-    if (total > limit || !same(before, fstatSync(fd, { bigint: true })) || !same(before, inspect(file))) throw invalid()
-    const text = new TextDecoder('utf-8', { fatal: true }).decode(bytes.subarray(0, total))
+    if (total > maxBytes || BigInt(total) !== before.size || !same(before, fstatSync(fd, { bigint: true })) || !same(before, inspect(file, maxBytes))) throw invalid()
+    return Buffer.from(bytes.subarray(0, total))
+  } catch { throw invalid() }
+  finally { if (fd !== undefined) closeSync(fd) }
+}
+
+/** Return the validated original bytes and settings from the same bounded read. */
+export function readExternalConfig(file: string): { bytes: Buffer; values: Record<string, string> } {
+  try {
+    const bytes = readPrivateConfigurationFile(file)
+    const text = new TextDecoder('utf-8', { fatal: true }).decode(bytes)
     if (text.includes('\0')) throw invalid()
     const parsed: Record<string, string> = {}
     for (const raw of text.split(/\r?\n/)) {
@@ -121,7 +131,10 @@ export function loadExternalConfig(file: string): Record<string, string> {
       parsed[match[1]] = value
     }
     if (!parsed.JARVIS_DATA_DIR) throw invalid()
-    return parsed
+    return { bytes, values: parsed }
   } catch { throw invalid() }
-  finally { if (fd !== undefined) closeSync(fd) }
+}
+
+export function loadExternalConfig(file: string): Record<string, string> {
+  return readExternalConfig(file).values
 }
