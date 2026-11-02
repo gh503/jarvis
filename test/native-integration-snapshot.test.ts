@@ -275,7 +275,7 @@ test('Windows permission process failures are sanitized at the public snapshot b
     syncBuiltinESMExports()
   }
 }))
-test('native Windows verification accepts readonly private ACLs and rejects shared ACLs without repair', { skip: process.platform !== 'win32' }, async () => fixture('win32', true, async ({ integration, destination }) => {
+test('native Windows ACL readers agree and reject shared or deny rules without repair', { skip: process.platform !== 'win32' }, async t => fixture('win32', true, async ({ integration, destination }) => {
   const result = await createIntegrationSnapshot({ integration, destination })
   const paths = [destination, join(destination, 'payload'), join(destination, 'manifest.json'), join(destination, 'receipt.bin'), join(destination, 'payload', '0.bin'), join(destination, 'payload', '1.bin')]
   const run = (action: string, selectedPaths = paths) => execFileSync(join(process.env.SystemRoot!, 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe'), ['-NoLogo', '-NoProfile', '-NonInteractive', '-EncodedCommand', Buffer.from(String.raw`$ErrorActionPreference='Stop'
@@ -329,6 +329,7 @@ foreach ($p in (ConvertFrom-Json $env:JARVIS_TEST_PATHS)) {
       assert.equal(run('read'), shared)
       run('private', [path])
       assert.equal(run('read'), before)
+      t.diagnostic(`ACL policy fixture passed: action=${action}, slot=${paths.indexOf(path)}`)
     }
     await verifyIntegrationSnapshot({ snapshot: destination, manifestSha256: result.manifestSha256, integration })
     assert.equal(run('read'), before)
