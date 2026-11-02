@@ -228,6 +228,24 @@ test('Windows missing-item recovery requires a private root', { skip: !windows }
   assert.notEqual(await powershell('(Get-Acl -LiteralPath $env:JARVIS_TEST_DIRECTORY).Sddl', root), before)
 })
 
+test('Windows PermissionDenied category fails closed after a descendant vanishes', { skip: !windows }, async t => {
+  const root = join(await fixture(t), 'data')
+  await ensurePrivateDataDirectory(root)
+  const child = join(root, 'ephemeral')
+  await writeFile(child, 'temporary')
+  // Exercise the category branch independently of UnauthorizedAccessException.
+  // Any absence recheck must fail distinctly, even if stage 56 was already set.
+  await assert.rejects(scanWithMutation(root,
+    '      try { $security = Get-Acl -LiteralPath $childPath -ErrorAction Stop }', `
+    Remove-Item -LiteralPath $childPath -Force -ErrorAction Stop
+    $failure = [Management.Automation.ErrorRecord]::new([System.Exception]::new('fixture'), 'Fixture', [Management.Automation.ErrorCategory]::PermissionDenied, $null)
+    function Get-Item { exit 99 }
+    function Test-Path { exit 99 }
+    Confirm-Vanished $childPath $failure
+  `), { code: 56 })
+  await assert.rejects(lstat(child), { code: 'ENOENT' })
+})
+
 for (const [exception, code] of [
   ["[UnauthorizedAccessException]::new('fixture')", 56],
   ["[IO.IOException]::new('fixture', -2147024864)", 57],
