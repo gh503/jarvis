@@ -1,6 +1,6 @@
 # Native install intent codec, storage, and diagnosis (unreleased source)
 
-The source [native-install-intent.ts](../scripts/native-install-intent.ts) defines a pure, bounded intent format as a prerequisite for future installer transaction work. It describes a proposed binding and expected fixed-location artifacts. The codec itself performs no filesystem I/O, persists nothing, and acquires no locks. The separate [native-install-intent-store.ts](../scripts/native-install-intent-store.ts) provides write-once storage and read-only inspection of that format. The separate [native-install-diagnose.ts](../scripts/native-install-diagnose.ts) observes stored intent and actual fixed integration locations under the shared install lock, then uses the unchanged pure classifier. The installer calls neither storage nor diagnosis automatically; installer intent persistence is not implemented. There is no CLI. These additions are unreleased; native Windows validation, including the pending Windows lock fix result, remains pending. The recommended preview remains v2.0.52; no new verified release is claimed.
+The source [native-install-intent.ts](../scripts/native-install-intent.ts) defines a pure, bounded intent format as a prerequisite for future installer transaction work. It describes a proposed binding and expected fixed-location artifacts. The codec itself performs no filesystem I/O, persists nothing, and acquires no locks. The separate [native-install-intent-store.ts](../scripts/native-install-intent-store.ts) provides write-once storage and read-only inspection of that format. The separate [native-install-diagnose.ts](../scripts/native-install-diagnose.ts) observes stored intent and actual fixed integration locations under the shared install lock, then uses the unchanged pure classifier. The installer calls neither storage nor diagnosis automatically; installer intent persistence is not implemented. The source-only diagnosis CLI is described below; it does not write intent. These additions are unreleased. The recommended preview remains v2.0.52; no new verified release is claimed.
 
 An intent is caller-supplied metadata, not an ownership receipt, publisher signature, record of operation progress, or permission to execute, replay, delete, or automatically clean up anything. Even a complete set of expected hashes does not prove that any output was created. The format adds no journal writer, crash reconciliation, rollback, activation, or recoverable multi-file transaction.
 
@@ -103,7 +103,7 @@ The report contains an overall `status`, ordered artifact entries, a receipt ent
 
 Conflict takes priority over unknown expectations, and unknown expectations take priority over incompleteness. All-absent observations yield `unpublished` even when intent expectations are unknown. A missing receipt with present payloads yields `incomplete`, `indeterminate`, or `conflict`, never ownership. Present receipt bytes are strictly parsed even when the expected receipt digest is unknown; malformed receipt bytes conflict. Receipt artifact hashes are compared with both known intent expectations and supplied present artifact bytes. Contradictory observed bytes conflict even when the intent's artifact expectation is unknown; matching a receipt does not fill that unknown expectation, so otherwise matching observations remain `indeterminate`. The intent binding is authoritative for receipt comparison. The layout option `integration.root` remains syntactic and need not equal that binding root; neither root is inspected.
 
-`consistent` never means committed, owned, or safe. Report scope is exactly `{ ownership: false, execution: false, automaticCleanup: false, atomicity: false }`; the intent format's existing three scope flags are unchanged. Callers must capture observations with all writers quiescent and separately establish actual filesystem identity, permissions, and boundary safety. The classifier cannot prove that supplied observations came from real files, form an atomic snapshot, or authorize replay, execution, deletion, or cleanup. The classifier itself has no filesystem observation reader or crash recovery; the separate observer below supplies actual observations without changing these classification semantics. These additions remain unreleased; native Windows validation and the current Windows lock-fix result remain unverified, with no new verified release claim.
+`consistent` never means committed, owned, or safe. Report scope is exactly `{ ownership: false, execution: false, automaticCleanup: false, atomicity: false }`; the intent format's existing three scope flags are unchanged. Callers must capture observations with all writers quiescent and separately establish actual filesystem identity, permissions, and boundary safety. The classifier cannot prove that supplied observations came from real files, form an atomic snapshot, or authorize replay, execution, deletion, or cleanup. The classifier itself has no filesystem observation reader or crash recovery; the separate observer below supplies actual observations without changing these classification semantics. These additions remain unreleased. The prior reconcile/store directory fix passed all three native jobs and the overall [native CI run 41502735174](https://github.com/gh503/jarvis/actions/runs/41502735174). That evidence does not verify a released package or the later diagnosis CLI.
 
 ## Filesystem diagnosis API
 
@@ -125,10 +125,50 @@ The unchanged classifier compares the stable observations. A missing receipt wit
 
 On Windows the original integration reader retains its legacy mode-bit checks: these **do not validate source integration ACL privacy**. The private Windows ACL checks cover the operational control boundary, not all original receipts, shortcuts, or their parents. Diagnosis does not strengthen the legacy source ACL contract.
 
-The lock coordinates only cooperating installer, intent-writer, and diagnosis calls. Legacy scripts, manual edits, sync tools, and other external writers must remain stopped. Two passes and file identity checks are not an atomic OS snapshot or protection against all same-account pathname races. This standalone source API is unused by the installer and updater; it adds no CLI, persistent journal, crash recovery, automatic action, or activation. Existing release evidence and the recommended v2.0.52 preview are unchanged; no new native CI success or verified release is claimed.
+The lock coordinates only cooperating installer, intent-writer, and diagnosis calls. Legacy scripts, manual edits, sync tools, and other external writers must remain stopped. Two passes and file identity checks are not an atomic OS snapshot or protection against all same-account pathname races. This standalone source API is unused by the installer and updater; the diagnosis CLI below calls it explicitly. Neither adds a persistent journal, crash recovery, automatic action, or activation. The recommended v2.0.52 preview and existing package-release evidence are unchanged. The distinct earlier diagnosis-source run [41504460541](https://github.com/gh503/jarvis/actions/runs/41504460541), for `dabafea`, was queued at the last recorded check; no success is claimed for that run or the new CLI.
+
+## Source diagnosis CLI
+
+The unreleased [diagnose-native-install.ts](../scripts/diagnose-native-install.ts) exposes only `diagnose`. Run it from a trusted source checkout with trusted Node 24; inclusion in a verified portable package is not claimed. It requires explicit `--platform darwin|win32`, `--arch x64|arm64`, `--home ABS`, and `--root ABS`. Windows layout additionally requires `--app-data ABS` and `--local-app-data ABS`; macOS layout forbids both. Unknown or duplicate flags, missing values, extra positionals, unsupported actions/platforms/architectures, control characters, and nonabsolute paths are usage errors. The strict argument parser completes before the operational diagnosis module is imported; existing option-path and filesystem checks still apply during diagnosis.
+
+There are no ambient home, package-root, AppData, platform, or architecture defaults. The CLI loads neither `.env` nor an external config file and ignores inherited Jarvis configuration selectors/settings for its layout. This does not sandbox Node or clear its inherited process environment. `--platform` selects the integration layout, not proof that the running host/runtime or artifacts are compatible with it; `--arch` is syntactic context, not binary architecture verification. Paths must be absolute in the **running host's** syntax and satisfy existing canonical path checks. The layout root need not match the stored binding root, and original package/config/data paths need not exist.
+
+Replace every placeholder path below with the intended explicit absolute path on the same host; do not paste a Windows path into a POSIX-host invocation or use `~` or environment-derived defaults. The source-checkout path selects trusted code, while `--root` supplies layout context.
+
+POSIX shell (macOS layout):
+
+```sh
+'/absolute/path/to/trusted-node24/bin/node' --experimental-transform-types \
+  '/absolute/path/to/trusted-checkout/scripts/diagnose-native-install.ts' diagnose \
+  --platform darwin --arch arm64 \
+  --home '/absolute/path/to/intended-home' \
+  --root '/absolute/path/to/package-root'
+```
+
+Windows PowerShell (Windows layout):
+
+```powershell
+& 'C:\absolute\trusted-node24\node.exe' --experimental-transform-types `
+  'C:\absolute\trusted-checkout\scripts\diagnose-native-install.ts' diagnose `
+  --platform win32 --arch x64 `
+  --home 'C:\absolute\intended-home' `
+  --root 'C:\absolute\package-root' `
+  --app-data 'C:\absolute\intended-home\AppData\Roaming' `
+  --local-app-data 'C:\absolute\intended-home\AppData\Local'
+```
+
+Standard output is one JSON serialization of the existing diagnosis report: either an object containing `status: 'no-intent'` and `scope`, or the classifier's status, ordered fixed-path artifact entries, receipt entry, and scope. Entries contain classification and optional bounded reason codes. No raw captured bytes or package/config/data binding fields are printed; fixed integration paths can still identify the local account, so handle reports privately. All four authority flags remain false: `ownership`, `execution`, `automaticCleanup`, and `atomicity`.
+
+| Exit code | Meaning |
+| --- | --- |
+| `0` | Diagnosis completed and emitted a report, for **every** status: `no-intent`, `conflict`, `incomplete`, `indeterminate`, `unpublished`, or `consistent`. |
+| `2` | Usage error; stderr contains the fixed bounded usage message. |
+| `1` | Operational failure; stderr contains a fixed bounded nonsecret message, without raw exception text, captured contents, bindings, or stack traces. |
+
+This is **not a health command**: exit `0`, including a `consistent` report, does not mean safely installed, committed, owned, or authorized for any action. Inspect the JSON status and reasons within their limited observation semantics. `no-intent` does not scan integrations or certify absence. The shared lock may create control directories, parents, and operational SQLite files even for `no-intent`; original intent, receipt, and integration artifacts are only read. Stop noncooperating writers throughout diagnosis. There is no CLI action to write intent, install/uninstall, recover, replay, repair, clean up, or activate. The existing storage and diagnosis APIs remain unused by the installer and updater.
 
 ## Relationship to existing installer safeguards
 
-The [source shared install/uninstall lock](native-install.md#unreleased-shared-installuninstall-lock) coordinates cooperating installer calls, the separate intent writer, and diagnosis. The codec remains pure, and intent reading, inventory inspection, and integration snapshot capture/verification remain unlocked and require quiescent writers. No successful native Windows result or released package inclusion is claimed for the new storage API.
+The [source shared install/uninstall lock](native-install.md#unreleased-shared-installuninstall-lock) coordinates cooperating installer calls, the separate intent writer, and diagnosis. The codec remains pure, and intent reading, inventory inspection, and integration snapshot capture/verification remain unlocked and require quiescent writers. The prior reconcile/store directory fix has the native CI success recorded above; released package inclusion is not claimed.
 
 The existing in-process cleanup guards still govern installer failures; they do not clean up intent-store output. Persisting a proposed intent does not connect it to installer execution. A future persistent transaction design still needs an installer publication, actual-byte verification, crash handling, ownership, and recovery contract. These APIs do not change [the update activation boundary](native-update.md#activation-boundary).
