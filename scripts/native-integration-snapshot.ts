@@ -67,7 +67,6 @@ const WINDOWS_PRIVATE = String.raw`$ErrorActionPreference='Stop'
 $ProgressPreference='SilentlyContinue'
 trap { exit 71 }
 $env:PSModulePath="$PSHOME\Modules"
-Import-Module "$PSHOME\Modules\Microsoft.PowerShell.Security\Microsoft.PowerShell.Security.psd1" -ErrorAction Stop
 $user=[Security.Principal.WindowsIdentity]::GetCurrent().User
 $principal=[Security.Principal.WindowsPrincipal]::new([Security.Principal.WindowsIdentity]::GetCurrent())
 $elevated=$principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
@@ -75,10 +74,16 @@ foreach ($p in (ConvertFrom-Json $env:JARVIS_INTEGRATION_PATHS)) {
  $c=$p
  while ($c) {
   $a=[IO.File]::GetAttributes($c)
+  if ($c -eq $p) { $leafAttributes=$a }
   if ($a -band [IO.FileAttributes]::ReparsePoint) { throw 'Reparse boundary' }
   $parent=[IO.Directory]::GetParent($c); if (!$parent) { break }; $c=$parent.FullName
  }
- $acl=Get-Acl -LiteralPath $p
+ # Windows PowerShell uses .NET Framework: read ACLs without provider dispatch.
+ $acl=if ($leafAttributes -band [IO.FileAttributes]::Directory) {
+  [IO.Directory]::GetAccessControl($p)
+ } else {
+  [IO.File]::GetAccessControl($p)
+ }
  $owner=$acl.GetOwner([Security.Principal.SecurityIdentifier]).Value
  if ($owner -ne $user.Value -and !($owner -eq 'S-1-5-32-544' -and $elevated)) { throw 'Owner' }
  $full=$false

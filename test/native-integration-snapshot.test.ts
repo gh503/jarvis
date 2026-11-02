@@ -231,7 +231,11 @@ test('Windows permission process failures are sanitized at the public snapshot b
         assert.equal(file, join(process.env.SystemRoot!, 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe'))
         assert.deepEqual(args.slice(0, -1), ['-NoLogo', '-NoProfile', '-NonInteractive', '-EncodedCommand'])
         encodedCommand = args.at(-1)!
-        assert.ok(Buffer.from(encodedCommand, 'base64').toString('utf16le').includes('Get-Acl -LiteralPath $p'))
+        const script = Buffer.from(encodedCommand, 'base64').toString('utf16le')
+        assert.ok(script.includes('[IO.Directory]::GetAccessControl($p)'))
+        assert.ok(script.includes('[IO.File]::GetAccessControl($p)'))
+        assert.ok(script.includes('if ($c -eq $p) { $leafAttributes=$a }'))
+        assert.ok(!script.includes('Get-Acl') && !script.includes('Import-Module'))
         assert.equal(options.timeout, 10_000)
         assert.equal(options.maxBuffer, 16 * 1024)
         assert.equal(options.windowsHide, true)
