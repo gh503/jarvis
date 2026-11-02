@@ -114,6 +114,7 @@ for (const platform of ['darwin', 'win32'] as const) test(`${platform} direct sn
   const parameters = { platform, arch: integration.arch, home: integration.home, root: integration.root, destination,
     ...(platform === 'win32' ? { appData: integration.appData, localAppData: integration.localAppData } : {}) }
   const diagnostic = fileURLToPath(new URL('./fixtures/native-snapshot-diagnostic.ts', import.meta.url))
+  const started = performance.now()
   const result = await new Promise<{ error: unknown; stdout: string; stderr: string }>(resolve => {
     execFile(process.execPath, ['--experimental-transform-types', diagnostic], {
       timeout: childTimeout, maxBuffer: 64 * 1024, encoding: 'utf8', windowsHide: true,
@@ -121,9 +122,12 @@ for (const platform of ['darwin', 'win32'] as const) test(`${platform} direct sn
         JARVIS_CONFIG_FILE: join(root, 'missing.env'), JARVIS_DATA_DIR: join(root, 'missing-data'), JARVIS_PORT: 'invalid' },
     }, (error, stdout, stderr) => resolve({ error, stdout, stderr }))
   })
+  const timing = { elapsedMs: Math.round(performance.now() - started), limitMs: childTimeout }
+  // Fixed provenance distinguishes parent process/protocol failures from a valid
+  // child-reported error without echoing output, arguments, paths or environment.
   // Protocol failures also use fixed diagnostics; assertions must not echo child output.
   if (result.stderr !== '' || Buffer.byteLength(result.stdout) > 512 || !/^\{[^\r\n]*\}\n$/.test(result.stdout)) {
-    assert.fail(JSON.stringify(result.error ? sanitizeDiagnostic(result.error) : { ok: false, kind: 'unknown' }))
+    assert.fail(JSON.stringify({ origin: 'parent-process-or-protocol', ...timing, diagnostic: result.error ? sanitizeDiagnostic(result.error) : { ok: false, kind: 'unknown' } }))
   }
   let response: unknown
   try { response = JSON.parse(result.stdout) } catch { assert.fail(JSON.stringify({ ok: false, kind: 'unknown' })) }
@@ -133,9 +137,9 @@ for (const platform of ['darwin', 'win32'] as const) test(`${platform} direct sn
     const safe = sanitizeDiagnostic({ code: value.code, killed: value.killed, signal: value.signal,
       message: typeof value.stage === 'string' ? `Cannot establish private Windows data permissions [${value.stage}]: use a dedicated current-account-owned local directory without links or explicit shared ACLs` : undefined })
     if (safe.kind === 'unknown' && value.kind === 'validation') safe.kind = 'validation'
-    assert.fail(JSON.stringify(safe))
+    assert.fail(JSON.stringify({ origin: 'child-report', ...timing, diagnostic: safe }))
   }
-  if (result.error) assert.fail(JSON.stringify(sanitizeDiagnostic(result.error)))
+  if (result.error) assert.fail(JSON.stringify({ origin: 'parent-process', ...timing, diagnostic: sanitizeDiagnostic(result.error) }))
   assert.ok(response && typeof response === 'object' && Object.keys(response).length === 1 && (response as { ok: unknown }).ok === true, 'Invalid diagnostic success receipt')
 }))
 
