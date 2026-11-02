@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import { execFileSync, spawnSync } from 'node:child_process'
 import { closeSync, openSync, readFileSync, realpathSync } from 'node:fs'
-import { mkdir, mkdtemp, readFile, readdir, realpath, rm, writeFile } from 'node:fs/promises'
+import { lstat, mkdir, mkdtemp, readFile, readdir, realpath, rm, writeFile } from 'node:fs/promises'
 import { pathToFileURL } from 'node:url'
 import { createServer } from 'node:net'
 import { tmpdir } from 'node:os'
@@ -81,6 +81,51 @@ test('native artifact verifies and starts/stops using only its bundled Node', { 
     const binary = join(bundle, 'runtime', process.platform === 'win32' ? 'node.exe' : 'node')
     const identity = JSON.parse(execFileSync(binary, ['-p', 'JSON.stringify({version:process.version,platform:process.platform,arch:process.arch})'], { env, encoding: 'utf8', timeout: 15_000 }))
     assert.equal(identity.version, manifest.runtime.version)
+    nextStage('bundled native install diagnosis with empty PATH')
+    const diagnosisCli = join(bundle, 'scripts', 'diagnose-native-install.ts')
+    assert.ok((await lstat(diagnosisCli)).isFile())
+    assert.ok(['x64', 'arm64'].includes(process.arch))
+    // Linux exercises the Darwin layout as a simulation, not native macOS coverage.
+    const diagnosisPlatform = process.platform === 'win32' ? 'win32' : 'darwin'
+    const diagnosisHome = join(temporary, 'diagnosis home 中文')
+    const diagnosisAppData = join(temporary, 'diagnosis roaming')
+    const diagnosisLocalAppData = join(temporary, 'diagnosis local')
+    await mkdir(diagnosisHome, { mode: 0o755 })
+    if (diagnosisPlatform === 'win32') {
+      await mkdir(diagnosisAppData, { mode: 0o755 })
+      await mkdir(diagnosisLocalAppData, { mode: 0o755 })
+    }
+    const sentinel = join(diagnosisHome, 'unrelated.txt')
+    const sentinelBytes = 'unrelated home fixture must survive diagnosis'
+    await writeFile(sentinel, sentinelBytes, { mode: 0o600 })
+    // Keep this packaged CLI check independent of source-tree integration APIs.
+    const diagnosisState = diagnosisPlatform === 'win32'
+      ? join(diagnosisLocalAppData, 'Jarvis')
+      : join(diagnosisHome, 'Library', 'Application Support', 'Jarvis')
+    const controlDirectory = join(diagnosisState, 'native-install-control')
+    const diagnosisArgs = ['diagnose', '--platform', diagnosisPlatform, '--arch', process.arch,
+      '--root', bundle,
+      ...(diagnosisPlatform === 'win32' ? ['--app-data', diagnosisAppData, '--local-app-data', diagnosisLocalAppData] : [])]
+    const diagnosisOptions = { env, cwd: temporary, encoding: 'utf8' as const, timeout: 60_000 }
+    const invalidDiagnosis = spawnSync(binary, ['--experimental-transform-types', diagnosisCli, ...diagnosisArgs], diagnosisOptions)
+    assert.ifError(invalidDiagnosis.error)
+    assert.equal(invalidDiagnosis.status, 2, invalidDiagnosis.stderr)
+    assert.equal(invalidDiagnosis.stdout, '')
+    assert.match(invalidDiagnosis.stderr, /Usage: diagnose-native-install\.ts diagnose/)
+    await assert.rejects(lstat(diagnosisState), { code: 'ENOENT' })
+    assert.equal(await readFile(sentinel, 'utf8'), sentinelBytes)
+    const diagnosis = spawnSync(binary, ['--experimental-transform-types', diagnosisCli, ...diagnosisArgs, '--home', diagnosisHome], diagnosisOptions)
+    assert.ifError(diagnosis.error)
+    assert.equal(diagnosis.status, 0, diagnosis.stderr)
+    // No intent makes no claim that the installation is clean or healthy.
+    assert.deepEqual(JSON.parse(diagnosis.stdout), {
+      status: 'no-intent',
+      scope: { ownership: false, execution: false, automaticCleanup: false, atomicity: false },
+    })
+    assert.ok((await lstat(join(controlDirectory, 'launcher.lock.sqlite'))).isFile())
+    await assert.rejects(lstat(join(controlDirectory, 'install-intent.json')), { code: 'ENOENT' })
+    await assert.rejects(lstat(join(diagnosisState, 'native-install.json')), { code: 'ENOENT' })
+    assert.equal(await readFile(sentinel, 'utf8'), sentinelBytes)
     nextStage('bundled native helper with empty PATH')
     const helperRoot = join(temporary, 'approved files')
     await mkdir(helperRoot)
