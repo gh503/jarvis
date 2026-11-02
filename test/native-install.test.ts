@@ -91,6 +91,23 @@ for (const platform of ['darwin', 'win32'] as const) for (const kind of ['matchi
   }
 }))
 
+for (const platform of ['darwin', 'win32'] as const) test(`${platform} unpublished intent refuses before package and config observations`, async () => fixture(platform, async options => {
+  const intent = createNativeInstallIntent({ integration: options, binding: { root: options.root, autostart: false } })
+  await writeNativeInstallIntent({ integration: options, intent })
+  const layout = describeNativeIntegration(options)
+  const intentPath = join(dirname(layout.receiptPath), 'native-install-control', 'install-intent.json')
+  const before = await readFile(intentPath)
+  let invoked = false
+  options.runPowerShell = () => { invoked = true; throw new Error('must not invoke COM') }
+  // Neither path exists: an intent must be rejected before either is inspected.
+  const unavailable = { ...options, root: join(options.root, 'missing-package') }
+  await assert.rejects(nativeIntegration(unavailable, ['--install', '--config', join(options.root, 'missing.env')]), /Existing native install intent requires review/)
+  await assert.rejects(nativeIntegration(unavailable, ['--uninstall']), /Existing native install intent requires review/)
+  assert.equal(invoked, false)
+  assert.deepEqual(await readFile(intentPath), before)
+  for (const path of [layout.receiptPath, ...layout.artifactPaths]) await assert.rejects(lstat(path), { code: 'ENOENT' })
+}))
+
 for (const platform of ['darwin', 'win32'] as const) test(`${platform} absent intent allows install uninstall reinstall`, async () => fixture(platform, async options => {
   options.runPowerShell = (_script, env) => writeFileSync(env.JARVIS_LINK_PATH!, 'fixture-link', { mode: 0o600 })
   const first = await nativeIntegration(options, ['--install'])
