@@ -1,7 +1,7 @@
 import { DatabaseSync } from 'node:sqlite'
 import { createConnection, createServer, type Server } from 'node:net'
 import { randomBytes, timingSafeEqual } from 'node:crypto'
-import { chmodSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs'
+import { chmodSync, closeSync, constants, fstatSync, lstatSync, mkdirSync, mkdtempSync, openSync, readFileSync, realpathSync, renameSync, rmSync, statSync, writeFileSync, type BigIntStats } from 'node:fs'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 import { ensurePrivateDataDirectory } from './private-directory.ts'
@@ -12,26 +12,95 @@ export function canonicalDataDir(dataDir: string): string {
   return realpathSync(dataDir)
 }
 
+const lockSuffixes = ['', '-journal', '-wal', '-shm'] as const
+
+function checkLockStat(file: string, stat: BigIntStats, expected?: BigIntStats): void {
+  if (!stat.isFile() || stat.nlink !== 1n ||
+      (process.platform !== 'win32' && stat.uid !== BigInt(process.getuid!()))) {
+    throw new Error(`Unsafe lifecycle lock file: ${file}`)
+  }
+  if (expected && (stat.dev !== expected.dev || stat.ino !== expected.ino)) {
+    throw new Error(`Lifecycle lock file changed during validation: ${file}`)
+  }
+}
+
+function inspectLockFile(file: string, expected?: BigIntStats): BigIntStats | undefined {
+  let stat: BigIntStats
+  try { stat = lstatSync(file, { bigint: true }) } catch (error) {
+    // SQLite removes journals normally, including while another owner is active.
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return undefined
+    throw error
+  }
+  checkLockStat(file, stat, expected)
+  return stat
+}
+
+function inspectLockFamily(file: string, expected: (BigIntStats | undefined)[] = [], requireMain = false): (BigIntStats | undefined)[] {
+  return lockSuffixes.map((suffix, index) => {
+    // Sidecars are ephemeral even before open: another live owner may commit
+    // while the asynchronous directory permission check is running.
+    const stat = inspectLockFile(file + suffix, index === 0 ? expected[0] : undefined)
+    if (index === 0 && requireMain && !stat) throw new Error(`Lifecycle lock file disappeared: ${file}`)
+    return stat
+  })
+}
+
 /** OS-managed SQLite locks are released on crashes; never infer ownership from a PID. */
 export async function acquireLifecycleLock(dataDir: string, name: 'runtime' | 'launcher', timeoutMs = 0): Promise<() => void> {
+  // Preflight before even the root ACL migration: a hardlinked SQLite file or
+  // sidecar must never cause mutations to another tree. Same-account malicious
+  // races are outside this boundary; bind identities to catch ordinary changes.
+  const initial = inspectLockFamily(join(dataDir, `${name}.lock.sqlite`))
   await ensurePrivateDataDirectory(dataDir)
   const file = join(canonicalDataDir(dataDir), `${name}.lock.sqlite`)
-  const db = new DatabaseSync(file)
-  if (process.platform !== 'win32') chmodSync(file, 0o600)
-  db.exec('PRAGMA busy_timeout=0')
-  const deadline = Date.now() + timeoutMs
-  while (true) {
+  const bound = inspectLockFamily(file, initial, !!initial[0])
+  if (!bound[0]) {
+    let fd: number | undefined
     try {
-      db.exec('BEGIN IMMEDIATE')
-      let closed = false
-      return () => { if (!closed) { closed = true; db.close() } }
+      // Create only after the parent is private. Never replace or unlink a lock:
+      // doing so would let two processes lock different database inodes.
+      fd = openSync(file, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL |
+        (constants.O_NOFOLLOW ?? 0) | (constants.O_NONBLOCK ?? 0), 0o600)
+      bound[0] = fstatSync(fd, { bigint: true })
+      checkLockStat(file, bound[0])
     } catch (error) {
-      if (!/locked|busy/i.test(String(error)) || Date.now() >= deadline) {
-        db.close()
-        throw new Error(`${name === 'runtime' ? 'Jarvis already owns this data directory' : 'Another launcher is still working'}: ${dataDir}`, { cause: error })
-      }
-      await delay(100)
+      if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error
+    } finally {
+      if (fd !== undefined) closeSync(fd)
     }
+  }
+  const beforeOpen = inspectLockFamily(file, bound, true)
+  const db = new DatabaseSync(file)
+  let closed = false
+  const close = () => { if (!closed) { closed = true; db.close() } }
+  try {
+    inspectLockFamily(file, beforeOpen, true)
+    // Preserve migration of ordinary legacy files to 0600, after owner/link and
+    // inode checks. SQLite may change size/timestamps as it opens its sidecars.
+    if (process.platform !== 'win32') chmodSync(file, 0o600)
+    db.exec('PRAGMA busy_timeout=0')
+    const deadline = Date.now() + timeoutMs
+    while (true) {
+      // Other owners and SQLite itself can remove/recreate journals normally.
+      // Only the database identity persists across transactions and retries.
+      inspectLockFamily(file, [beforeOpen[0]], true)
+      try {
+        db.exec('BEGIN IMMEDIATE')
+      } catch (error) {
+        if (!/locked|busy/i.test(String(error)) || Date.now() >= deadline) {
+          throw new Error(`${name === 'runtime' ? 'Jarvis already owns this data directory' : 'Another launcher is still working'}: ${dataDir}`, { cause: error })
+        }
+        await delay(100)
+        continue
+      }
+      // Other owners and SQLite itself can remove/recreate journals normally.
+      // Only the database identity persists across transactions and retries.
+      inspectLockFamily(file, [beforeOpen[0]], true)
+      return close
+    }
+  } catch (error) {
+    try { close() } catch { /* Preserve the acquisition failure; close is never retried. */ }
+    throw error
   }
 }
 
