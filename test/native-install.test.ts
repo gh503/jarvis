@@ -514,6 +514,32 @@ test('failed shortcut creation rolls back owned files', async () => fixture('win
   assert.equal(existsSync(join(options.appData!, 'Microsoft', 'Windows', 'Start Menu', 'Programs', 'Jarvis.lnk')), false)
 }))
 
+for (const platform of ['darwin', 'win32'] as const) test(`${platform} invalid prepared receipt refuses before final artifact creation`, async t => fixture(platform, async options => {
+  const { receiptPath, artifactPaths } = describeNativeIntegration(options)
+  options.runPowerShell = (_script, env) => writeFileSync(env.JARVIS_LINK_PATH!, 'prepared shortcut', { mode: 0o600 })
+  const originalStringify = JSON.stringify, originalOpen = fsPromises.open
+  let injected = false
+  const finalWrites: string[] = []
+  t.mock.method(JSON, 'stringify', ((value: unknown, replacer: never, space: number) => {
+    if (!injected && value && typeof value === 'object' && (value as { schemaVersion?: unknown }).schemaVersion === 1 && (value as { root?: unknown }).root === options.root && Object.hasOwn(value, 'autostart') && space === 2) {
+      injected = true
+      return originalStringify({ ...value, files: [] }, replacer, space)
+    }
+    return originalStringify(value, replacer, space)
+  }) as typeof JSON.stringify)
+  t.mock.method(fsPromises, 'open', async (...args: Parameters<typeof open>) => {
+    if (args[1] === 'wx' && [receiptPath, ...artifactPaths].includes(String(args[0]))) finalWrites.push(String(args[0]))
+    return originalOpen(...args)
+  })
+  syncBuiltinESMExports()
+  try {
+    await assert.rejects(nativeIntegration(options, ['--install', '--autostart']), /Unsafe integration receipt/)
+    assert.equal(injected, true)
+    assert.deepEqual(finalWrites, [], 'validation must precede publication, not merely roll it back')
+    for (const path of [receiptPath, ...artifactPaths]) assert.equal(existsSync(path), false)
+  } finally { t.mock.restoreAll(); syncBuiltinESMExports() }
+}))
+
 for (const scenario of ['second output', 'receipt', 'replacement', 'modification', 'unlink failure', 'partial write', 'partial receipt'] as const) test(`install rollback protects ownership after ${scenario}`, async t => fixture('darwin', async options => {
   const first = join(options.home, 'Applications', 'Jarvis.app', 'Contents', 'Info.plist')
   const second = join(options.home, 'Applications', 'Jarvis.app', 'Contents', 'MacOS', 'Jarvis')
