@@ -201,7 +201,16 @@ async function boundedIntegrationRead(path: string, limit: number, userRoots: st
     return { bytes: bytes.subarray(0, length), identity: initial }
   } finally { await handle.close() }
 }
-interface IntegrationReceipt { files: { path: string; sha256: string }[] }
+interface IntegrationReceipt {
+  schemaVersion: 1
+  platform: Platform
+  root: string
+  autostart: boolean
+  configFile?: string
+  dataDir?: string
+  notificationAumid?: string
+  files: { path: string; sha256: string }[]
+}
 function parseReceipt(bytes: Buffer, platform: Platform, files: string[]): IntegrationReceipt {
   const invalid = () => new Error('Unsafe integration receipt')
   const object = (value: unknown): value is Record<string, unknown> => value !== null && typeof value === 'object' && !Array.isArray(value)
@@ -223,6 +232,62 @@ function parseReceipt(bytes: Buffer, platform: Platform, files: string[]): Integ
   return receipt as unknown as IntegrationReceipt
 }
 
+async function inspectDetailed(options: InstallOptions, state: string, files: string[]) {
+  const userRoots = [options.home, options.appData, options.localAppData].filter((path): path is string => path !== undefined).map(path => resolve(path))
+  const receiptSnapshot = await boundedIntegrationRead(state, 64 * 1024, userRoots, true)
+  if (!receiptSnapshot) return undefined
+  const receipt = parseReceipt(receiptSnapshot.bytes, options.platform, files)
+  const preflight = new Map<string, Snapshot | undefined>()
+  for (const entry of receipt.files) {
+    const snapshot = await boundedIntegrationRead(entry.path, 1024 * 1024, userRoots)
+    if (snapshot && digest(snapshot.bytes) !== entry.sha256) throw new Error('Integration changed')
+    preflight.set(entry.path, snapshot)
+  }
+  return { userRoots, receiptSnapshot, receipt, preflight }
+}
+
+/** Read-only inspection. Callers must keep writers quiescent: revalidation is not an atomic OS snapshot. */
+export async function inspectNativeIntegration(options: InstallOptions): Promise<{
+  receiptPath: string
+  receipt: Buffer
+  receiptMode: number
+  artifacts: Array<{ path: string; bytes: Buffer | undefined; mode: number | undefined }>
+  binding: { root: string; autostart: boolean; configFile?: string; dataDir?: string }
+  platform: Platform
+} | undefined> {
+  const { state, files } = locations(options)
+  for (const path of [options.root, options.home, options.appData, options.localAppData]) {
+    if (path !== undefined && (!isAbsolute(path) || /[\0\r\n]/.test(path) || resolve(path) !== path)) throw new Error('Unsafe integration option path')
+  }
+  const detailed = await inspectDetailed(options, state, files)
+  if (!detailed) return undefined
+  const { userRoots, receiptSnapshot, receipt, preflight } = detailed
+  for (const path of files) {
+    if (preflight.has(path)) continue
+    const snapshot = await boundedIntegrationRead(path, 1024 * 1024, userRoots)
+    if (snapshot) throw new Error('Unowned integration location exists')
+    preflight.set(path, undefined)
+  }
+  for (const path of files) {
+    const before = preflight.get(path)
+    const current = await boundedIntegrationRead(path, 1024 * 1024, userRoots)
+    if (before === undefined ? current !== undefined : !current || !sameIdentity(before.identity, current.identity) || !before.bytes.equals(current.bytes)) throw new Error('Integration changed during inspection')
+  }
+  const currentReceipt = await boundedIntegrationRead(state, 64 * 1024, userRoots, true)
+  if (!currentReceipt || !sameIdentity(receiptSnapshot.identity, currentReceipt.identity) || !receiptSnapshot.bytes.equals(currentReceipt.bytes)) throw new Error('Integration receipt changed during inspection')
+  return {
+    receiptPath: state,
+    receipt: Buffer.from(receiptSnapshot.bytes),
+    receiptMode: Number(receiptSnapshot.identity.mode & 0o7777n),
+    artifacts: files.map(path => {
+      const snapshot = preflight.get(path)
+      return { path, bytes: snapshot && Buffer.from(snapshot.bytes), mode: snapshot && Number(snapshot.identity.mode & 0o7777n) }
+    }),
+    binding: { root: receipt.root, autostart: receipt.autostart, ...(receipt.configFile === undefined ? {} : { configFile: receipt.configFile, dataDir: receipt.dataDir! }) },
+    platform: receipt.platform,
+  }
+}
+
 export async function nativeIntegration(options: InstallOptions, args: string[]): Promise<string[]> {
   const { action, autostart, configFile } = parseArgs(args)
   // Validate on the host before any integration mutation; never snapshot secrets.
@@ -231,16 +296,9 @@ export async function nativeIntegration(options: InstallOptions, args: string[])
   const { app, state, files } = locations(options)
   for (const path of [state, ...files]) await safeAncestors(path)
   if (action === 'uninstall') {
-    const userRoots = [options.home, options.appData, options.localAppData].filter((path): path is string => path !== undefined).map(path => resolve(path))
-    const receiptSnapshot = await boundedIntegrationRead(state, 64 * 1024, userRoots, true)
-    if (!receiptSnapshot) return []
-    const receipt = parseReceipt(receiptSnapshot.bytes, options.platform, files)
-    const preflight = new Map<string, Snapshot | undefined>()
-    for (const entry of receipt.files) {
-      const snapshot = await boundedIntegrationRead(entry.path, 1024 * 1024, userRoots)
-      if (snapshot && digest(snapshot.bytes) !== entry.sha256) throw new Error('Integration changed; refusing to remove')
-      preflight.set(entry.path, snapshot)
-    }
+    const detailed = await inspectDetailed(options, state, files)
+    if (!detailed) return []
+    const { userRoots, receiptSnapshot, receipt, preflight } = detailed
     // These checks narrow races; portable pathname unlink is not atomic with validation.
     for (const entry of receipt.files) {
       const before = preflight.get(entry.path)

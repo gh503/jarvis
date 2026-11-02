@@ -130,6 +130,12 @@ Source commit `f50e2b4` adds installation-failure cleanup hardening and remains 
 
 These are in-process failure safeguards, not a persistent recovery journal. A crash can still leave partial integrations. Path validation and unlink are separate operations; this is not protection against hostile same-account pathname races, and it does not provide a recoverable version switch or automatic activation.
 
+### Unreleased read-only integration inventory
+
+The source API `inspectNativeIntegration(options)` is being added as a prerequisite for integration snapshots. It reuses the bounded receipt and artifact validators and returns the original receipt bytes, original package/config/data binding, and each fixed integration location's exact bytes and permission mode or absence. A present startup artifact not listed in the receipt is rejected rather than treated as owned. No receipt returns `undefined`, meaning no receipt-backed integration was found; it does not certify that all integration locations are empty.
+
+Inspection does not create files, repair permissions, run COM, launch Jarvis, or require the original package/config/data to exist. All writers must be stopped: repeated identity/content/absence checks detect observed changes but are not an atomic filesystem snapshot. The same Windows ACL limitation applies. Returned buffers can contain sensitive local paths and must be handled privately. This API adds no snapshot format, restore command, persistent transaction, or activation capability.
+
 ## Signing and platform validation
 
 These portable packages and the generated macOS app wrapper are unsigned and not notarized. Download quarantine and Gatekeeper can block the wrapper or bundled executable. The installer neither clears quarantine nor changes Gatekeeper policy, signs binaries, invokes an execution-policy bypass, or promises a warning-free first launch. Follow your organization's policy and Apple's supported approval process for software you trust; releases need a separate signing/notarization process for normal trusted distribution. Windows SmartScreen, antivirus or organization policy may also block unsigned downloads or PowerShell COM access.
