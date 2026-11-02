@@ -189,15 +189,16 @@ test('persisted LocalToolSettings skills update enables list/load without broade
   assert.equal(JSON.parse(loaded.content).instructions,'# Saved guidance λ')
   assert.equal(JSON.parse(loaded.content).settingsRevision,saved.revision)
   if(process.platform==='win32'||process.platform==='darwin'){
-    for(const field of ['readRoots','writeRoots'] as const){
-      await assert.rejects(reopened.update({expectedRevision:saved.revision,[field]:[f.root]}))
-      assert.deepEqual(reopened.snapshot(),saved)
-    }
+    await assert.rejects(reopened.update({expectedRevision:saved.revision,writeRoots:[f.root]}))
+    assert.deepEqual(reopened.snapshot(),saved)
+    const reads=await reopened.update({expectedRevision:saved.revision,readRoots:[f.root]})
+    assert.deepEqual(reads.readRoots,[f.root]);assert.deepEqual(reads.writeRoots,[])
     const unchanged=new LocalToolSettings(file,output);await unchanged.load()
-    assert.deepEqual(unchanged.snapshot(),saved)
+    assert.deepEqual(unchanged.snapshot(),reads)
   }
-  const reset=await reopened.update({expectedRevision:saved.revision,skillsDir:null})
-  assert.equal(reset.revision,saved.revision+1);assert.equal(reset.skillsDir,null)
+  const revision=reopened.snapshot().revision
+  const reset=await reopened.update({expectedRevision:revision,skillsDir:null})
+  assert.equal(reset.revision,revision+1);assert.equal(reset.skillsDir,null)
   assert.deepEqual(skillTools({settings:reopened}),[])
   assert.equal((await tools[0]!.execute({},ctx)).isError,true)
 })

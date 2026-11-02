@@ -69,7 +69,7 @@ jobs:
         run: npm run native:build
       - name: Native filesystem protocol and handle acceptance
         timeout-minutes: 3
-        run: node --experimental-transform-types --test test/native-filesystem.test.ts test/native-skill-tools.test.ts
+        run: node --experimental-transform-types --test test/native-filesystem.test.ts test/native-skill-tools.test.ts test/native-file-tools.test.ts test/native-read-settings.test.ts
         env:
           JARVIS_NATIVE_HELPER_REQUIRED: '1'
       - name: Native and release acceptance

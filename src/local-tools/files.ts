@@ -6,6 +6,9 @@ import type { ToolDefinition } from '../tools.ts'
 import { LocalToolSettings, absolute, openDirectory, serialized, atomicPrivateJson } from './settings.ts'
 import { scopedFilesystemCapability, requireScopedFilesystem } from './scoped-filesystem.ts'
 import { readPrivateJson } from './private-storage.ts'
+import { existsSync } from 'node:fs'
+import { nativeFilesystemExecutable } from './native-filesystem.ts'
+import { nativeFileDefinitions } from './native-file-tools.ts'
 const MAX=1024*1024
 const hash=(b:Buffer|string)=>createHash('sha256').update(b).digest('hex')
 const within=(root:string,path:string)=>path===root||path.startsWith(root==='/'?'/':root+'/')
@@ -24,7 +27,11 @@ export class FileTools {
   private catalog:Artifact[]=[]
   private catalogLoaded=false
   constructor(private readonly deps:{settings:LocalToolSettings;bus?:EventBus;storageFile?:string;localVision?:(bytes:Buffer,prompt:string,signal:AbortSignal)=>Promise<string>}){}
-  capabilities(){return scopedFilesystemCapability()}
+  capabilities(){
+    const scoped=scopedFilesystemCapability()
+    const native=(process.platform==='win32'||process.platform==='darwin')&&existsSync(nativeFilesystemExecutable())
+    return {...scoped,supported:scoped.supported||native,readSupported:scoped.supported||native,writeSupported:scoped.supported,reason:native?'此平台支持明确授权目录的只读访问；文件修改、产物登记和本地图片分析尚未开放。':scoped.reason}
+  }
   private authorize(input:string,write=false):Handle {
     requireScopedFilesystem()
     const path=absolute(input),settings=this.deps.settings.snapshot()
@@ -65,7 +72,7 @@ export class FileTools {
     }
   }
   private clear(sessionId?:string):void {
-    if(!this.capabilities().supported){this.assertPortableCleanupEmpty();return}
+    if(!this.capabilities().writeSupported){this.assertPortableCleanupEmpty();return}
     this.loadCatalog()
     for(const item of this.catalog.filter(a=>(sessionId===undefined||a.sessionId===sessionId)&&a.managed)) {
       // Only app-created output artifacts are owned; imported sources are never removed.
@@ -85,7 +92,7 @@ export class FileTools {
   }
   clearSession(sessionId:string):void {this.clear(sessionId)}
   clearAll():void {
-    if(!this.capabilities().supported){this.assertPortableCleanupEmpty();return}
+    if(!this.capabilities().writeSupported){this.assertPortableCleanupEmpty();return}
     const output=absolute(this.deps.settings.snapshot().outputDir)
     if(output.split('/').filter(Boolean).length<3||[dirname(this.deps.settings.file),dirname(this.storagePath())].some(p=>within(output,p)))throw new Error('Unsafe generated workspace for erase')
     const erase=(fd:number)=>{const base=`/proc/self/fd/${fd}`;for(const name of readdirSync(base)){const target=join(base,name),st=lstatSync(target);if(st.isDirectory()){const child=openSync(target,C.O_RDONLY|C.O_DIRECTORY|C.O_NOFOLLOW);try{erase(child)}finally{closeSync(child)}rmdirSync(target)}else unlinkSync(target)}fsyncSync(fd)}
@@ -136,6 +143,7 @@ export class FileTools {
     visit(absolute(path),0);return {results,truncated,filesScanned:files,bytesScanned:bytes}
   }
   definitions():ToolDefinition[]{
+    if(process.platform==='win32'||process.platform==='darwin')return nativeFileDefinitions(this.deps)
     if(!this.capabilities().supported)return []
     const str={type:'string'},integer={type:'integer',minimum:1},path={path:str},version={expectedVersion:str}
     const def=(name:string,description:string,properties:Record<string,unknown>,required:string[],write:boolean,run:(a:Record<string,unknown>,c:Parameters<ToolDefinition['execute']>[1])=>unknown|Promise<unknown>):ToolDefinition=>{

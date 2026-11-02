@@ -71,10 +71,15 @@ test('native artifact verifies and starts/stops using only its bundled Node', { 
     const helperRoot = join(temporary, 'approved files')
     await mkdir(helperRoot)
     await writeFile(join(helperRoot, 'hello.txt'), 'native scoped fixture')
-    const helperScript = `import assert from 'node:assert/strict';import {NativeFilesystem} from ${JSON.stringify(pathToFileURL(join(bundle, 'src/local-tools/native-filesystem.ts')).href)};const {filesystem,roots}=await NativeFilesystem.start([${JSON.stringify(helperRoot)}]);try{assert.equal((await filesystem.read(roots[0],['hello.txt'])).toString(),'native scoped fixture');const result=await filesystem.list(roots[0],[]);assert.ok(result.entries.some(x=>x.name==='hello.txt'));}finally{filesystem.dispose()}`
+    const helperScript = `import assert from 'node:assert/strict';import {NativeFilesystem} from ${JSON.stringify(pathToFileURL(join(bundle, 'src/local-tools/native-filesystem.ts')).href)};const {filesystem,roots}=await NativeFilesystem.start([${JSON.stringify(helperRoot)}]);try{assert.equal((await filesystem.read(roots[0],['hello.txt'])).toString(),'native scoped fixture');const result=await filesystem.list(roots[0],[]);assert.ok(result.entries.some(x=>x.name==='hello.txt'));}finally{await filesystem.disposeAsync()}`
     const helperResult = spawnSync(binary, ['--experimental-transform-types', '--input-type=module', '-e', helperScript], { env, cwd: temporary, encoding: 'utf8', timeout: 20_000 })
     assert.ifError(helperResult.error)
     assert.equal(helperResult.status, 0, helperResult.stderr)
+    nextStage('bundled explicit read authorization with empty PATH')
+    const fileScript = `import assert from 'node:assert/strict';import {LocalToolSettings} from ${JSON.stringify(pathToFileURL(join(bundle, 'src/local-tools/settings.ts')).href)};import {FileTools} from ${JSON.stringify(pathToFileURL(join(bundle, 'src/local-tools/files.ts')).href)};const settings=new LocalToolSettings(${JSON.stringify(join(data, 'readonly-test.json'))},${JSON.stringify(join(data, 'readonly-output'))});await settings.load();await settings.update({expectedRevision:settings.snapshot().revision,readRoots:[${JSON.stringify(helperRoot)}]});const tools=new FileTools({settings}).definitions();const read=tools.find(x=>x.name==='file_read');assert.ok(read);if(process.platform!=='linux')assert.ok(!tools.some(x=>x.name==='file_write'));const result=await read.execute({path:${JSON.stringify(join(helperRoot, 'hello.txt'))}},{sessionId:'packaged',turnId:'packaged',callId:'packaged',signal:new AbortController().signal});assert.ok(!result.isError,result.content);assert.equal(JSON.parse(result.content).content,'native scoped fixture');`
+    const fileResult = spawnSync(binary, ['--experimental-transform-types', '--input-type=module', '-e', fileScript], {env,cwd:temporary,encoding:'utf8',timeout:30_000})
+    assert.ifError(fileResult.error)
+    assert.equal(fileResult.status,0,fileResult.stderr)
     const powershell = join(process.env.SystemRoot ?? 'C:\\Windows', 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe')
     let invocation = 0
     launch = args => {

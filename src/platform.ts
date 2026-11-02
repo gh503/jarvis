@@ -11,6 +11,7 @@ import { accessSync, constants, existsSync, statSync } from 'node:fs'
 import { delimiter, isAbsolute, join } from 'node:path'
 import { scopedFilesystemCapability } from './local-tools/scoped-filesystem.ts'
 import { windowsNotificationAvailability } from './windows-notification.ts'
+import { nativeFilesystemExecutable } from './local-tools/native-filesystem.ts'
 
 export type PlatformOs = 'linux' | 'darwin' | 'win32' | 'other'
 
@@ -84,7 +85,8 @@ export function capabilities(rootDir: string): Capabilities {
   const autostart = os === 'linux' ? commandExists('systemctl') : os === 'darwin' || os === 'win32'
   reasons.autostart = `supported=${os === 'linux' || os === 'darwin' || os === 'win32'}; installed=${autostart}; configured=unknown; readiness=unknown; permission=unknown (${os === 'linux' ? 'user service not queried' : 'explicit native installation with --autostart required; login launch not verified'})`
   const scoped = scopedFilesystemCapability()
-  reasons.scopedFilesystem = `supported=${scoped.supported}; readiness=unknown; permission=unknown; ${scoped.reason ?? 'Linux descriptor-relative backend; configured roots and /proc access not probed'}`
+  const nativeRead = (os === 'darwin' || os === 'win32') && existsSync(nativeFilesystemExecutable())
+  reasons.scopedFilesystem = `supported=${scoped.supported || nativeRead}; readSupported=${scoped.supported || nativeRead}; writeSupported=${scoped.supported}; readiness=unknown; permission=unknown; ${nativeRead ? 'Native read-only backend; explicit read roots required, configured roots not probed; modification and artifacts unavailable' : scoped.reason ?? 'Linux descriptor-relative backend; configured roots and /proc access not probed'}`
 
   return { os, label, screenCapture, camera, localAsr, localTts, notify, autostart, reasons }
 }

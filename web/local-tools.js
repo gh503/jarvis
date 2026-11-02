@@ -72,9 +72,10 @@
     advanced.append(node('p', 'Shell 的文件工作区仅限上方输出目录，用于生成文件；文件工具的只读、可写授权目录不会挂载到 Shell。沙箱禁用网络。取消任务不会撤销已完成的写入。', 'lt-help'))
     if (!capabilities.shellAvailable) { advanced.open = true; advanced.append(node('p', `Shell 不可用：${text(capabilities.reason || '当前环境未提供沙箱能力')}`, 'lt-warning')) }
     const skills = field(advanced, '技能目录（可选，绝对路径）', settings.skillsDir)
-    if (capabilities.filesystem?.supported === false) {
-      reads.disabled = true; writes.disabled = true
-      controls.prepend(node('p', text(capabilities.filesystem.reason || '此平台暂未提供安全的本地文件与技能访问。'), 'lt-warning'))
+    reads.disabled = (capabilities.filesystem?.readSupported ?? capabilities.filesystem?.supported) === false
+    writes.disabled = (capabilities.filesystem?.writeSupported ?? capabilities.filesystem?.supported) === false
+    if (reads.disabled || writes.disabled) {
+      controls.prepend(node('p', text(capabilities.filesystem?.reason || '此平台尚未提供所选文件能力。'), 'lt-warning'))
     }
     if (capabilities.skills?.supported === false || (!capabilities.skills && capabilities.filesystem?.supported === false)) {
       skills.disabled = true

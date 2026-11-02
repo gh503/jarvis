@@ -1,12 +1,13 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { mkdtempSync, readFileSync, readdirSync, writeFileSync, symlinkSync } from 'node:fs'
+import { existsSync, mkdtempSync, readFileSync, readdirSync, writeFileSync, symlinkSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { spawn } from 'node:child_process'
 import { once } from 'node:events'
 import { LocalToolSettings } from '../src/local-tools/settings.ts'
 import { FileTools } from '../src/local-tools/files.ts'
+import { nativeFilesystemExecutable } from '../src/local-tools/native-filesystem.ts'
 import { skillTools, skillCapability } from '../src/local-tools/skills.ts'
 import { atomicPrivateJson, readPrivateJson, withPrivateFileLock } from '../src/local-tools/private-storage.ts'
 
@@ -25,11 +26,17 @@ test('portable private settings initialize, reload, update and reset; scoped too
       const settings=new LocalToolSettings(f.file,f.out);await settings.load()
       await settings.update({expectedRevision:0,webEnabled:true})
       const reopened=new LocalToolSettings(f.file,f.out);await reopened.load();assert.equal(reopened.snapshot().webEnabled,true)
-      const files=new FileTools({settings:reopened});assert.equal(files.capabilities().supported,false);assert.match(files.capabilities().reason!,/native descriptor-relative/)
-      assert.deepEqual(files.definitions(),[]);assert.deepEqual(files.artifacts('session'),[])
+      const files=new FileTools({settings:reopened}),available=existsSync(nativeFilesystemExecutable())
+      assert.equal(files.capabilities().supported,available);assert.equal(files.capabilities().readSupported,available);assert.equal(files.capabilities().writeSupported,false)
+      if(!available)assert.match(files.capabilities().reason!,/native descriptor-relative/)
+      assert.deepEqual(files.definitions().map(tool=>tool.name),available?['file_list','file_search','file_read']:[]);assert.deepEqual(files.artifacts('session'),[])
+      if(available){
+        const result=await files.definitions().find(tool=>tool.name==='file_read')!.execute({path:join(f.dir,'outside.txt')},{signal:new AbortController().signal,sessionId:'test',turnId:'test',callId:'test'})
+        assert.equal(result.isError,true)
+      }
       const skills=skillTools({settings:{snapshot:()=>({revision:0,skillsDir:f.out})}})
       assert.deepEqual(skills.map(tool=>tool.name),skillCapability().supported?['skill_list','skill_load']:[])
-      await assert.rejects(reopened.update({expectedRevision:1,readRoots:[f.out]}),{code:'SCOPED_FILESYSTEM_UNAVAILABLE'})
+      await assert.rejects(reopened.update({expectedRevision:1,writeRoots:[f.out]}),{code:'SCOPED_FILESYSTEM_UNAVAILABLE'})
       assert.doesNotThrow(()=>files.clearSession('session'));assert.doesNotThrow(()=>files.clearAll())
       await reopened.reset();assert.equal(reopened.snapshot().revision,2)
     }finally{Object.defineProperty(process,'platform',descriptor)}
