@@ -268,7 +268,8 @@ test('invalid external configuration causes no integration mutations', async () 
   const file = join(dir, 'invalid.env')
   await writeFile(file, 'JARVIS_DATA_DIR=relative\n', { mode: 0o600 })
   await assert.rejects(nativeIntegration(options, ['--install', '--config', file]), /JARVIS_CONFIG_FILE/)
-  assert.equal(existsSync(options.home), false)
+  const layout = describeNativeIntegration(options)
+  for (const path of [layout.receiptPath, ...layout.artifactPaths]) assert.equal(existsSync(path), false)
   assert.equal(await readFile(file, 'utf8'), 'JARVIS_DATA_DIR=relative\n')
 }))
 
@@ -540,7 +541,8 @@ test('shortcut staging cleanup failure does not mask COM failure', async t => fi
 test('tampered runtime and unsafe manifest prevent integration writes', async () => fixture('darwin', async options => {
   await writeFile(join(options.root, 'runtime', 'node'), 'changed')
   await assert.rejects(nativeIntegration(options, ['--install']), /checksum/)
-  assert.equal(existsSync(options.home), false)
+  const layout = describeNativeIntegration(options)
+  for (const output of [layout.receiptPath, ...layout.artifactPaths]) assert.equal(existsSync(output), false)
   const path = join(options.root, 'manifest.json')
   const manifest = JSON.parse(await readFile(path, 'utf8'))
   manifest.files[0].path = '../outside'
@@ -738,7 +740,7 @@ test('uninstall accepts missing artifacts and removed package; unsafe absent-sta
 }))
 
 test('symlink integration ancestors are refused', { skip: process.platform === 'win32' }, async () => fixture('darwin', async options => {
-  await mkdir(options.home)
+  await mkdir(options.home, { mode: 0o755 })
   await symlink(options.root, join(options.home, 'Applications'))
   await assert.rejects(nativeIntegration(options, ['--install']), /symlink/)
 }))

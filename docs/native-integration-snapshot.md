@@ -1,14 +1,14 @@
 # Native integration snapshots
 
-Status: **persistent capture/verification API verified in v2.0.53; create/verify CLI verified in v2.0.54 and retained in v2.0.55; recovery copy unreleased**. The recommended release intentionally remains the [v2.0.52 unsigned preview](https://github.com/gh503/jarvis/releases/tag/v2.0.52) until the unreleased installer path fix is proved on native platforms; it includes neither the persistent snapshot API nor CLI. The read-only inventory prerequisite and in-process installation-failure cleanup are included in v2.0.52; this persistent snapshot format is separate.
+Status: **persistent capture/verification API verified in v2.0.53; create/verify CLI verified in v2.0.54 and retained in v2.0.55; recovery copy verified in v2.0.56**. The recommended release intentionally remains the [v2.0.52 unsigned preview](https://github.com/gh503/jarvis/releases/tag/v2.0.52) until the unreleased installer path fix is proved on native platforms; it includes neither the persistent snapshot API nor CLI. The read-only inventory prerequisite and in-process installation-failure cleanup are included in v2.0.52; this persistent snapshot format is separate.
 
 [v2.0.53](https://github.com/gh503/jarvis/releases/tag/v2.0.53) includes the capture/verification API in [native-integration-snapshot.ts](../scripts/native-integration-snapshot.ts) at source `bbaf9d783b5bc145114419d903d95f0307192c81`. All three jobs in [native CI 41489076014](https://github.com/gh503/jarvis/actions/runs/41489076014) and [release run 41489351802](https://github.com/gh503/jarvis/actions/runs/41489351802) succeeded; publication was separately verified with nine assets. The [snapshot CLI](../scripts/snapshot-native-integration.ts) shipped in [v2.0.54](https://github.com/gh503/jarvis/releases/tag/v2.0.54) at exact source `e655060f21496c4b1a0539cd8548536c411a0e17`: [release run 41491135172](https://github.com/gh503/jarvis/actions/runs/41491135172) succeeded with nine verified assets, [native CI 41490813672](https://github.com/gh503/jarvis/actions/runs/41490813672) succeeded on all three platforms, and the full regression had 935 tests, 910 passed, 25 skipped, and no failures. [v2.0.55](https://github.com/gh503/jarvis/releases/tag/v2.0.55), from documentation-only source `391e965`, contains the same code; [release run 41491889648](https://github.com/gh503/jarvis/actions/runs/41491889648) succeeded with nine verified assets.
 
-The source recovery-copy API and explicit `restore-copy` action at `46fe7a0` remain unreleased. [Native CI 41493371126](https://github.com/gh503/jarvis/actions/runs/41493371126) was last observed with Windows still running; native success is not yet established. They copy recovery material to a fresh private directory and provide no system installation restore, activation, or writeback to installed integration locations. The current [installer option-path preflight hardening](native-install.md#unreleased-option-path-preflight-hardening) also remains unreleased and awaits native proof; none of these verified releases validates that fix.
+The source recovery-copy API and explicit `restore-copy` action at `46fe7a0` passed [native CI 41493371126](https://github.com/gh503/jarvis/actions/runs/41493371126) on all three platforms. They shipped in [v2.0.56](https://github.com/gh503/jarvis/releases/tag/v2.0.56) at exact source `46fe7a00d4e3fab935449eae4607f8641e4902a7`: [release run 41493639480](https://github.com/gh503/jarvis/actions/runs/41493639480) succeeded with nine verified assets. The full regression had 947 tests, 921 passed, 26 skipped, and no failures. This release also includes snapshot option preflight and Windows alias guards, but excludes the later installer option-path guard at `70f804` and the new shared installer lock. They copy recovery material to a fresh private directory and provide no system installation restore, activation, or writeback to installed integration locations. The current [installer option-path preflight hardening](native-install.md#unreleased-option-path-preflight-hardening) also remains unreleased and awaits native proof; none of these verified releases validates that fix.
 
 ## Source CLI
 
-Run from a current source checkout with a trusted source-development Node 24 executable. `create`, `verify`, and the upcoming `restore-copy` action require all of `--platform darwin|win32`, `--arch x64|arm64`, `--home ABS`, and `--root ABS`. Windows layout additionally requires `--app-data ABS` and `--local-app-data ABS`; macOS layout rejects both AppData flags. `create` requires `--destination ABS`; `verify` requires `--snapshot ABS` and `--manifest-sha256` with exactly 64 lowercase hexadecimal characters. `restore-copy` requires all three of `--snapshot ABS`, `--manifest-sha256` in that same digest format, and `--destination ABS`. Unknown, duplicate, missing, or action-inappropriate options are usage errors. `restore-copy` is a recovery-material copy, not a system restore command.
+Run from a current source checkout with a trusted source-development Node 24 executable. `create`, `verify`, and the `restore-copy` action require all of `--platform darwin|win32`, `--arch x64|arm64`, `--home ABS`, and `--root ABS`. Windows layout additionally requires `--app-data ABS` and `--local-app-data ABS`; macOS layout rejects both AppData flags. `create` requires `--destination ABS`; `verify` requires `--snapshot ABS` and `--manifest-sha256` with exactly 64 lowercase hexadecimal characters. `restore-copy` requires all three of `--snapshot ABS`, `--manifest-sha256` in that same digest format, and `--destination ABS`. Unknown, duplicate, missing, or action-inappropriate options are usage errors. `restore-copy` is a recovery-material copy, not a system restore command.
 
 Every location is explicit: the CLI does not derive integration paths from ambient `HOME`, `USERPROFILE`, `APPDATA`, or `LOCALAPPDATA`. It parses and validates the complete argument list before importing the operational snapshot module. It does not load `.env` or external configuration, run the installer CLI, install integrations, or execute captured launchers or shortcuts. Native Windows privacy checks still use the system PowerShell program described below.
 
@@ -32,7 +32,7 @@ POSIX shell, with a macOS layout and source Node 24 (replace `arm64` with `x64` 
   --snapshot /Users/EXAMPLE_USER/private-snapshots/integration-001 \
   --manifest-sha256 REPLACE_WITH_TRUSTED_MANIFEST_SHA256
 
-# Upcoming source recovery-copy action; not a verified release command.
+# Recovery-copy action, included in v2.0.56.
 /absolute/path/to/source-node24/bin/node --experimental-transform-types scripts/snapshot-native-integration.ts restore-copy \
   --platform darwin --arch arm64 \
   --home /Users/EXAMPLE_USER/temporary-integration-fixture/home \
@@ -62,7 +62,7 @@ Windows PowerShell, with source Node 24 (replace `x64` with `arm64` if appropria
   --snapshot 'C:\Users\EXAMPLE_USER\private-snapshots\integration-001' `
   --manifest-sha256 REPLACE_WITH_TRUSTED_MANIFEST_SHA256
 
-# Upcoming source recovery-copy action; not a verified release command.
+# Recovery-copy action, included in v2.0.56.
 & 'C:\absolute\path\to\source-node24\node.exe' --experimental-transform-types '.\scripts\snapshot-native-integration.ts' restore-copy `
   --platform win32 --arch x64 `
   --home 'C:\Users\EXAMPLE_USER\temporary-integration-fixture\home' `
@@ -83,7 +83,7 @@ Trusted source callers use these asynchronous APIs with the installer's [Install
 ```ts
 createIntegrationSnapshot({ integration: InstallOptions, destination })
 verifyIntegrationSnapshot({ snapshot, manifestSha256, integration: InstallOptions })
-// Upcoming recovery-copy API; release verification pending.
+// Recovery-copy API, included in v2.0.56.
 restoreIntegrationSnapshot({ snapshot, manifestSha256, integration: InstallOptions, destination })
 ```
 
@@ -95,13 +95,15 @@ Verification reads the snapshot, not the original installation. The original pac
 
 ## Capture scope and stopped writers
 
-Stop all writers before capture and keep them stopped for the entire operation: installer/uninstaller invocations, integration editors, sync tools, and any other process that could change the sources. The operation acquires no installer or lifecycle locks, stops no processes, and is not an atomic filesystem snapshot.
+Stop all writers before capture and keep them stopped for the entire operation: installer/uninstaller invocations, integration editors, sync tools, and any other process that could change the sources. Inventory inspection and snapshot capture/verification do **not** acquire installer or lifecycle locks in this source change, stop no processes, and are not atomic filesystem snapshots.
+
+The unreleased [shared install/uninstall lock](native-install.md#unreleased-shared-installuninstall-lock) coordinates only cooperating `nativeIntegration` writers. It uses the existing SQLite launcher lifecycle lock under the fixed receipt parent's `native-install-control` child, independently of package/config/data paths, architecture, or autostart. It does not make snapshot operations safe alongside an active installer; keep writers quiescent. Lock preparation rejects unsafe existing private boundaries, but successful acquisition can reassert already-private permissions/ACLs and write operational files. Its Windows FullControl requirement applies to operational lock storage, not a broad ACL guarantee for captured source artifacts. OS lock release after a crash adds no persistent intent journal, ownership adoption, reconciliation, automatic rollback, or activation.
 
 Creation requires an existing valid ownership receipt; a missing receipt fails instead of inventing an empty backup. Every fixed integration location is represented, including missing artifacts. Present artifacts must be owned by and match the receipt. A present startup artifact not listed in the receipt is rejected. Source inspection retains the installer's bounded receipt validation, safe-path checks, and applicable ownership/permission checks.
 
 Capture performs inspection before and after copying and compares receipt/artifact content, modes, and absence. Bigint file identities are sampled across the whole capture window, including device, inode, mode, link count, owner/group, size, and nanosecond modification/change/birth times. These checks detect observed changes; equal observations cannot prove that no intervening mutation occurred or protect against hostile same-account races. Source files are opened read-only and their permissions are not repaired. OS-managed access-time updates can still occur from reading.
 
-The destination must be disjoint in both directions from the receipt parent, every fixed artifact parent, and the **actual receipt-bound original package root**. If an external config binding exists, its parent directory and selected data directory are also protected. Existing source boundaries must be canonical and free of symlink/reparse aliases; original package/config/data paths may be absent. This rejects placing the snapshot inside a protected source or placing a protected source beneath the snapshot.
+The destination must be disjoint in both directions from the receipt parent, every fixed artifact parent, and the **actual receipt-bound original package root**. If an external config binding exists, its parent directory and selected data directory are also protected. Existing source boundaries must be canonical and free of symlink/reparse aliases; original package/config/data paths may be absent. This rejects placing the snapshot inside a protected source or placing a protected source beneath the snapshot. These overlap protections are unchanged: the entire receipt parent is protected, so a snapshot cannot be placed in its `native-install-control` child either.
 
 Only raw native integration bytes and the original receipt are copied. External configuration contents, data, package files, TLS material, models, and other referenced files are excluded. Embedded absolute paths remain unchanged. A captured launcher or shortcut is data: capture and verification do not execute it, invoke shortcut COM creation, or launch Jarvis. Windows privacy checks do invoke a fixed system PowerShell program.
 
@@ -131,7 +133,7 @@ Output files are created exclusively and individually flushed with file `fsync`.
 
 ## Recovery copy to a fresh private directory
 
-The upcoming `restoreIntegrationSnapshot({ snapshot, manifestSha256, integration, destination })` API and `restore-copy` CLI action copy recovery material, not an actual installation. They fully verify the source snapshot against the externally trusted manifest digest and expected integration layout before creating the fresh destination. The original receipt, artifacts, package, config, and data need not exist. Their recorded locations remain bindings and protected boundaries.
+The `restoreIntegrationSnapshot({ snapshot, manifestSha256, integration, destination })` API and `restore-copy` CLI action copy recovery material, not an actual installation. They fully verify the source snapshot against the externally trusted manifest digest and expected integration layout before creating the fresh destination. The original receipt, artifacts, package, config, and data need not exist. Their recorded locations remain bindings and protected boundaries.
 
 The destination must not already exist, even as an empty directory, and must have an existing canonical parent. It must be disjoint in both directions from the source snapshot, original receipt parent, every fixed artifact parent, receipt-bound original package root, and any bound config parent and selected data directory. Existing ancestors must pass canonical-path checks, including when original files are absent. Nothing is overwritten or merged.
 
