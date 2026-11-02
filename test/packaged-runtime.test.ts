@@ -172,6 +172,45 @@ test('native artifact verifies and starts/stops using only its bundled Node', { 
       assert.equal(await readFile(sentinel, 'utf8'), sentinelBytes)
       await assert.rejects(lstat(data), { code: 'ENOENT' })
     }
+    nextStage('bundled config snapshot create/verify/restore with empty PATH')
+    {
+      const snapshotRoot = join(temporary, 'config snapshot fixture 中文')
+      const configParent = join(snapshotRoot, 'private config')
+      const sourceData = join(snapshotRoot, 'data')
+      const configFile = join(configParent, 'original.env')
+      const snapshot = join(snapshotRoot, 'snapshot')
+      const destination = join(snapshotRoot, 'restored')
+      const configBytes = Buffer.from(`# Packaged config fixture 中文\nJARVIS_DATA_DIR="${sourceData}"\nJARVIS_PORT='32123'\n`)
+      const options = { env, cwd: temporary, encoding: 'utf8' as const, timeout: 60_000, maxBuffer: 64 * 1024 }
+      // Fresh private parents give Windows configuration files inherited private ACLs.
+      const setupScript = `import {ensurePrivateDataDirectory} from ${JSON.stringify(pathToFileURL(join(bundle, 'src/private-directory.ts')).href)};for (const directory of ${JSON.stringify([snapshotRoot, configParent, sourceData])}) await ensurePrivateDataDirectory(directory);`
+      const setup = spawnSync(binary, ['--experimental-transform-types', '--input-type=module', '-e', setupScript], options)
+      assert.ifError(setup.error)
+      assert.equal(setup.status, 0, setup.stderr)
+      await writeFile(configFile, configBytes, { mode: 0o600 })
+      const snapshotCli = join(bundle, 'scripts', 'snapshot-native-config.ts')
+      const runSnapshot = (args: string[]) => {
+        const result = spawnSync(binary, ['--experimental-transform-types', snapshotCli, ...args], options)
+        assert.ifError(result.error)
+        assert.equal(result.status, 0, result.stderr)
+        return JSON.parse(result.stdout)
+      }
+      const receipt = runSnapshot(['create', '--config', configFile, '--data', sourceData, '--destination', snapshot])
+      assert.deepEqual(Object.keys(receipt).sort(), ['manifestSha256', 'snapshot'])
+      assert.equal(receipt.snapshot, snapshot)
+      assert.match(receipt.manifestSha256, /^[a-f0-9]{64}$/)
+      const snapshotArgs = ['--snapshot', snapshot, '--manifest-sha256', receipt.manifestSha256]
+      assert.deepEqual(runSnapshot(['verify', ...snapshotArgs]), { verified: true, ...receipt })
+      assert.deepEqual(runSnapshot(['restore', ...snapshotArgs, '--destination', destination]), {
+        destination, manifestSha256: receipt.manifestSha256,
+      })
+      // Restore is a config-only copy retaining the original data binding, not activation.
+      assert.deepEqual(await readdir(destination), ['config.env'])
+      assert.deepEqual(await readFile(join(destination, 'config.env')), configBytes)
+      assert.deepEqual(await readFile(configFile), configBytes)
+      await assert.rejects(lstat(join(sourceData, 'runtime-instance.json')), { code: 'ENOENT' })
+      await assert.rejects(lstat(data), { code: 'ENOENT' })
+    }
     nextStage('bundled native helper with empty PATH')
     const helperRoot = join(temporary, 'approved files')
     await mkdir(helperRoot)
