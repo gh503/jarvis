@@ -1,0 +1,32 @@
+name: Native installer acceptance
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  installer:
+    name: Installer and intent (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: npm
+      - run: npm ci --ignore-scripts
+      - name: Verify installer rendering and retained intent refusal
+        run: node --experimental-transform-types --test test/native-install.test.ts
+      - name: Verify installation lock capabilities and failure draining
+        run: node --experimental-transform-types --test test/native-install-lock.test.ts
+      - name: Verify exclusive intent storage and scoped publication
+        run: node --experimental-transform-types --test test/native-install-intent-store.test.ts
