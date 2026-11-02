@@ -5,7 +5,9 @@ import { existsSync, writeFileSync } from 'node:fs'
 import fsPromises, { chmod, link, lstat, mkdtemp, mkdir, open, readFile, realpath, rename, rm, truncate, unlink, writeFile, symlink } from 'node:fs/promises'
 import { syncBuiltinESMExports } from 'node:module'
 import { tmpdir } from 'node:os'
-import { join, sep } from 'node:path'
+import { dirname, join, sep } from 'node:path'
+import { createNativeInstallIntent } from '../scripts/native-install-intent.ts'
+import { writeNativeInstallIntent } from '../scripts/native-install-intent-store.ts'
 import { test } from 'node:test'
 import { describeNativeIntegration, inspectNativeIntegration, nativeIntegration, parseArgs, POWERSHELL_LINK, shellQuote, validatePackage, windowsQuote, xml } from '../scripts/install-native.ts'
 import type { InstallOptions, Platform } from '../scripts/install-native.ts'
@@ -66,6 +68,35 @@ for (const platform of ['darwin', 'win32'] as const) for (const autostart of [fa
   }
   assert.ok(JSON.stringify({ ...process.env }) === JSON.stringify(environment), 'inspection must preserve the environment')
   assert.deepEqual({ ...options, runPowerShell: originalOptions.runPowerShell }, originalOptions)
+}))
+
+for (const platform of ['darwin', 'win32'] as const) for (const kind of ['matching', 'different', 'partial', 'hardlink'] as const) test(`${platform} retained ${kind} intent blocks install and uninstall without changing integration`, async () => fixture(platform, async options => {
+  options.runPowerShell = (_script, env) => writeFileSync(env.JARVIS_LINK_PATH!, 'fixture-link', { mode: 0o600 })
+  const created = await nativeIntegration(options, ['--install'])
+  const intent = createNativeInstallIntent({ integration: options, binding: { root: kind === 'different' ? join(options.root, 'other') : options.root, autostart: false } })
+  await writeNativeInstallIntent({ integration: options, intent })
+  const intentPath = join(dirname(describeNativeIntegration(options).receiptPath), 'native-install-control', 'install-intent.json')
+  if (kind === 'partial') await writeFile(intentPath, '{')
+  if (kind === 'hardlink') await link(intentPath, join(options.root, 'retained-intent-alias'))
+  const paths = [...created, intentPath]
+  const before = await Promise.all(paths.map(async path => ({ bytes: await readFile(path), stat: await lstat(path, { bigint: true }) })))
+  options.runPowerShell = () => { throw new Error('must not invoke COM') }
+  for (const action of ['--install', '--uninstall']) {
+    await assert.rejects(nativeIntegration(options, [action]), kind === 'matching' || kind === 'different' ? /Existing native install intent requires review/ : () => true)
+    for (const [index, path] of paths.entries()) {
+      assert.deepEqual(await readFile(path), before[index]!.bytes)
+      const after = await lstat(path, { bigint: true })
+      for (const key of ['ino', 'mode', 'size', 'nlink', 'mtimeNs', 'ctimeNs'] as const) assert.equal(after[key], before[index]!.stat[key])
+    }
+  }
+}))
+
+for (const platform of ['darwin', 'win32'] as const) test(`${platform} absent intent allows install uninstall reinstall`, async () => fixture(platform, async options => {
+  options.runPowerShell = (_script, env) => writeFileSync(env.JARVIS_LINK_PATH!, 'fixture-link', { mode: 0o600 })
+  const first = await nativeIntegration(options, ['--install'])
+  await nativeIntegration(options, ['--uninstall'])
+  for (const path of first) assert.equal(existsSync(path), false)
+  assert.deepEqual(await nativeIntegration(options, ['--install']), first)
 }))
 
 test('inspection preserves read-only receipt and special permission bits', { skip: process.platform === 'win32' }, async () => fixture('darwin', async options => {

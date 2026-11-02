@@ -323,6 +323,10 @@ export async function nativeIntegration(options: InstallOptions, args: string[])
   const { receiptPath: state, artifactPaths: files } = describeNativeIntegration(options)
   return withNativeInstallLock({ controlDirectory: join(dirname(state), 'native-install-control') }, async () => {
     // Hold the shared writer lock before configuration/package observation, through cleanup.
+    // The store reader is deliberately unlocked; never reacquire this writer lock.
+    // Retained plans (including malformed/unsafe files) require review before mutation.
+    const { readNativeInstallIntent } = await import('./native-install-intent-store.ts')
+    if (await readNativeInstallIntent({ integration: options })) throw new Error('Existing native install intent requires review; refusing integration mutation')
     // Validate on the host before any integration mutation; never snapshot secrets.
     const externalConfig = configFile === undefined ? undefined : loadExternalConfig(configFile)
     const binding = configFile === undefined ? {} : { configFile: await realpath(configFile), dataDir: externalConfig!.JARVIS_DATA_DIR }
