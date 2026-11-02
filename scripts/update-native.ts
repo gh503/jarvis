@@ -87,7 +87,6 @@ export async function verifyBundle(root: string, expected: string, platform = pr
     if (m.files.length > entryLimit) fail('Bundle entry limit exceeded')
     const expectedFiles = new Map<string, { bytes: number; sha256: string }>()
     const folded = new Set<string>()
-    const expectedDirectories = new Set<string>()
     let total = 0
     for (const file of m.files) {
       checkDeadline()
@@ -95,12 +94,7 @@ export async function verifyBundle(root: string, expected: string, platform = pr
       total += file.bytes
       if (file.bytes > payloadLimit || total > totalPayloadLimit) fail('Declared payload exceeds size limit')
       expectedFiles.set(file.path, file); folded.add(file.path.toLowerCase())
-      let parent = file.path.lastIndexOf('/')
-      while (parent !== -1) {
-        expectedDirectories.add(file.path.slice(0, parent))
-        if (expectedDirectories.size + m.files.length + 1 > entryLimit) fail('Bundle entry limit exceeded')
-        parent = file.path.lastIndexOf('/', parent - 1)
-      }
+
     }
     const seen = new Set<string>()
     let entries = 0
@@ -120,7 +114,7 @@ export async function verifyBundle(root: string, expected: string, platform = pr
           if (/[\ufffd\ud800-\udfff]/u.test(entry.name) || Buffer.byteLength(entry.name, 'utf8') > 255 || Buffer.byteLength(name, 'utf8') > 4096) fail('Unsafe filesystem entry')
           const info = await checked(lstat(file, { bigint: true }))
           if (info.isDirectory()) {
-            if (!expectedDirectories.has(name)) fail('Unlisted bundle directory')
+            // Manifests inventory files only; shipped packages may contain empty directories.
             await walk(file, name + '/', depth + 1); continue
           }
           regular(info)

@@ -165,6 +165,34 @@ test('verification rejects shared permissions without changing them', { skip: pr
   assert.equal((await stat(f.destination)).mode & 0o777, 0o755)
 })
 
+test('Windows verifier accepts private current-account and elevated Administrators owners without mutation', { skip: process.platform !== 'win32' }, async t => {
+  const f = await fixture(t)
+  await mkdir(join(f.dataDir, 'nested')); await writeFile(join(f.dataDir, 'nested', 'file'), 'secret')
+  const created = await createStateSnapshot(f)
+  await verifyStateSnapshot(created)
+  const script = String.raw`$ErrorActionPreference='Stop'
+$env:PSModulePath="$PSHOME\Modules"
+Import-Module "$PSHOME\Modules\Microsoft.PowerShell.Security\Microsoft.PowerShell.Security.psd1"
+$identity=[Security.Principal.WindowsIdentity]::GetCurrent()
+$principal=[Security.Principal.WindowsPrincipal]::new($identity)
+if (!$principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) { exit 77 }
+$acl=Get-Acl -LiteralPath $env:JARVIS_OWNER_FIXTURE
+$acl.SetOwner([Security.Principal.SecurityIdentifier]::new($env:JARVIS_OWNER_SID))
+Set-Acl -LiteralPath $env:JARVIS_OWNER_FIXTURE -AclObject $acl`
+  const file = join(f.destination, 'payload', 'nested', 'file')
+  const tool = join(process.env.SystemRoot!, 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe')
+  const owner = spawnSync(tool, ['-NoProfile', '-NonInteractive', '-EncodedCommand', Buffer.from(script, 'utf16le').toString('base64')], { encoding: 'utf8', env: { ...process.env, JARVIS_OWNER_FIXTURE: file, JARVIS_OWNER_SID: 'S-1-5-32-544' } })
+  if (owner.status === 77) { t.diagnostic('Non-elevated token: current-account owner verified; elevated owner fixture unavailable'); return }
+  assert.equal(owner.status, 0, owner.stderr)
+  const info = String.raw`$env:PSModulePath="$PSHOME\Modules"; Import-Module "$PSHOME\Modules\Microsoft.PowerShell.Security\Microsoft.PowerShell.Security.psd1"; (Get-Acl -LiteralPath $env:JARVIS_OWNER_FIXTURE).Sddl`
+  const inspect = () => spawnSync(tool, ['-NoProfile', '-NonInteractive', '-EncodedCommand', Buffer.from(info, 'utf16le').toString('base64')], { encoding: 'utf8', env: { ...process.env, JARVIS_OWNER_FIXTURE: file } })
+  const before = inspect(); assert.equal(before.status, 0)
+  assert.match(before.stdout, /O:BA/)
+  await verifyStateSnapshot(created)
+  await restoreStateSnapshot({ ...created, destination: join(f.root, 'restored') })
+  const after = inspect(); assert.equal(after.status, 0); assert.equal(after.stdout, before.stdout)
+})
+
 test('Windows verification rejects shared ACL without repairing it', { skip: process.platform !== 'win32' }, async t => {
   const f = await fixture(t); await writeFile(join(f.dataDir, 'file'), 'secret')
   const created = await createStateSnapshot(f), file = join(f.destination, 'payload', 'file')

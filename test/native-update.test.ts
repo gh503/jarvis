@@ -113,17 +113,7 @@ for (const mode of ['healthy', 'wrong-version', 'nonzero', 'signal', 'redirect',
 test('real packaged candidate starts with separate home and data and shuts down', { timeout: 120_000 }, async () => fixture(async (root, old, next, oldHash) => {
   const source = dirname(dirname(fileURLToPath(import.meta.url)))
   // Real application and runtime, copied into a fully hashed portable layout. No symlink to the checkout.
-  // Release source packaging copies a file inventory, which excludes empty checkout directories.
-  const populated = new Map<string, boolean>()
-  async function hasPayload(path: string): Promise<boolean> {
-    if (!(await stat(path)).isDirectory()) return true
-    if (populated.has(path)) return populated.get(path)!
-    let result = false
-    for (const name of await readdir(path)) if (await hasPayload(join(path, name))) result = true
-    populated.set(path, result)
-    return result
-  }
-  for (const directory of ['src', 'web', 'node_modules']) await cp(join(source, directory), join(next, directory), { recursive: true, dereference: true, filter: hasPayload })
+  for (const directory of ['src', 'web', 'node_modules']) await cp(join(source, directory), join(next, directory), { recursive: true, dereference: true })
   await copyFile(join(source, 'package.json'), join(next, 'package.json'))
   await copyFile(process.execPath, join(next, 'runtime', process.platform === 'win32' ? 'node.exe' : 'node'))
   const nextHash = await refreshManifest(next)
@@ -243,9 +233,9 @@ test('filesystem and JSON failures do not expose paths or parser content', async
   await assert.rejects(verifyBundle(next, digest(text)), { message: 'Invalid manifest JSON or UTF-8' })
 }))
 
-test('unlisted empty directories are rejected', async () => fixture(async (_root, _old, next, _oldHash, nextHash) => {
+test('empty directories remain compatible with file-only release manifests', async () => fixture(async (_root, _old, next, _oldHash, nextHash) => {
   await mkdir(join(next, 'unlisted-empty'))
-  await assert.rejects(verifyBundle(next, nextHash), { message: 'Unlisted bundle directory' })
+  assert.equal((await verifyBundle(next, nextHash)).version, '1.0.1')
 }))
 for (const name of ['manifest.json', 'src/main.ts']) {
   test(`replacement of an opened ${name} is rejected`, async t => fixture(async (root, _old, next, _oldHash, nextHash) => {

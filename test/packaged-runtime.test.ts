@@ -8,6 +8,7 @@ import { tmpdir } from 'node:os'
 import { join, resolve, sep } from 'node:path'
 import { test } from 'node:test'
 import { payloadFiles, sha256 } from '../scripts/packaging.ts'
+import { verifyBundle } from '../scripts/update-native.ts'
 
 // Opt in after npm run package. The default test suite never launches a server.
 const archiveInput = process.env.JARVIS_PACKAGE_ARCHIVE
@@ -55,6 +56,19 @@ test('native artifact verifies and starts/stops using only its bundled Node', { 
     assert.equal(manifest.platform, process.platform)
     assert.equal(manifest.arch, process.arch)
     console.log(`[artifact] verified ${manifest.files.length} payload files`)
+    nextStage('bounded updater bundle verification')
+    // The archive checksum was verified against its external sidecar before extraction.
+    // Exercise the production verifier against the actual shipped layout on every OS.
+    const manifestDigest = await sha256(join(bundle, 'manifest.json'))
+    if (process.env.JARVIS_RELEASE_VERSION || (manifest.dirty === false && manifest.sourceTag === `v${manifest.version}` && /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/.test(manifest.version))) {
+      const verified = await verifyBundle(bundle, manifestDigest)
+      assert.equal(verified.version, manifest.version)
+      assert.equal(verified.sourceSha, manifest.sourceSha)
+    } else {
+      // Native CI also builds untagged development artifacts, which cannot be update releases.
+      await assert.rejects(verifyBundle(bundle, manifestDigest), /Incompatible release identity/)
+      console.log('[artifact] development identity correctly rejected for release updates; no release verification asserted')
+    }
     nextStage('runtime identity and port allocation')
     const server = createServer()
     await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve))

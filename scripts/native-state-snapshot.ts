@@ -180,14 +180,27 @@ async function windowsBoundaries(root: string, ctx: Context, privateTree = false
   const systemRoot = process.env.SystemRoot
   assert(systemRoot && isAbsolute(systemRoot), 'Cannot locate Windows boundary checker')
   const script = String.raw`$ErrorActionPreference='Stop'
+$ProgressPreference='SilentlyContinue'
+$stage=61
+trap { exit $stage }
 $env:PSModulePath="$PSHOME\Modules"
 Import-Module "$PSHOME\Modules\Microsoft.PowerShell.Security\Microsoft.PowerShell.Security.psd1" -ErrorAction Stop
 $p=$env:JARVIS_SNAPSHOT_ROOT
+$stage=62
 $user=[Security.Principal.WindowsIdentity]::GetCurrent().User
+$admins='S-1-5-32-544'
+$principal=[Security.Principal.WindowsPrincipal]::new([Security.Principal.WindowsIdentity]::GetCurrent())
+# Match private-directory.ts: an enabled elevated token may create children
+# owned by Administrators. Filtered administrator membership is insufficient.
+$elevated=$principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
 function Check-Private($path) {
  if ($env:JARVIS_SNAPSHOT_PRIVATE -ne '1') { return }
+ $script:stage=63
  $acl=Get-Acl -LiteralPath $path
- if ($acl.GetOwner([Security.Principal.SecurityIdentifier]).Value -ne $user.Value) { throw 'Untrusted owner' }
+ $script:stage=64
+ $owner=$acl.GetOwner([Security.Principal.SecurityIdentifier]).Value
+ if ($owner -ne $user.Value -and !($owner -eq $admins -and $elevated)) { throw 'Untrusted owner' }
+ $script:stage=65
  $full=$false
  $rules=@($acl.GetAccessRules($true,$true,[Security.Principal.SecurityIdentifier]))
  foreach ($rule in $rules) {
@@ -199,6 +212,7 @@ function Check-Private($path) {
 Check-Private $p
 $c=$p
 while ($c) {
+ $script:stage=66
  $a=[IO.File]::GetAttributes($c)
  if (($a -band [IO.FileAttributes]::ReparsePoint) -or !($a -band [IO.FileAttributes]::Directory)) { throw 'Unsafe boundary' }
  $parent=[IO.Directory]::GetParent($c)
@@ -208,7 +222,9 @@ $q=New-Object 'Collections.Generic.Queue[string]'
 $q.Enqueue($p); $count=0
 while ($q.Count) {
  $d=$q.Dequeue()
+ $script:stage=67
  foreach ($child in [IO.Directory]::EnumerateFileSystemEntries($d)) {
+  $script:stage=68
   $count++; if ($count -gt 100002) { throw 'Entry limit' }
   $a=[IO.File]::GetAttributes($child)
   if ($a -band [IO.FileAttributes]::ReparsePoint) { throw 'Reparse point' }
@@ -219,7 +235,12 @@ while ($q.Count) {
   check(ctx)
   try {
     await promisify(execFile)(join(systemRoot, 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe'), ['-NoLogo', '-NoProfile', '-NonInteractive', '-EncodedCommand', Buffer.from(script, 'utf16le').toString('base64')], { env: { ...process.env, JARVIS_SNAPSHOT_ROOT: root, JARVIS_SNAPSHOT_PRIVATE: privateTree ? '1' : '0' }, windowsHide: true, timeout: Math.max(1, Math.min(30_000, ctx.deadline - performance.now())), maxBuffer: 65536 })
-  } catch { throw new Error('Windows snapshot boundary or private permission check failed') }
+  } catch (error) {
+    const stages: Record<number, string> = { 61: 'native-module', 62: 'native-identity', 63: 'acl-read', 64: 'owner', 65: 'private-acl', 66: 'ancestor-boundary', 67: 'enumeration', 68: 'descendant-boundary' }
+    const code = (error as { code?: unknown }).code
+    const stage = typeof code === 'number' ? stages[code] ?? 'native-process' : 'native-process'
+    throw new Error(`Windows snapshot boundary or private permission check failed [${stage}]`)
+  }
 }
 async function verify(snapshot: string, manifestSha256: string, ctx: Context) {
   assert(typeof manifestSha256 === 'string' && /^[a-f0-9]{64}$/.test(manifestSha256), 'Explicit trusted manifest SHA256 required')
