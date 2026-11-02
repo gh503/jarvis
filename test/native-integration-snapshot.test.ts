@@ -305,6 +305,11 @@ foreach ($p in (ConvertFrom-Json $env:JARVIS_TEST_PATHS)) {
  Set-Acl -LiteralPath $p -AclObject $acl
 }`, 'utf16le').toString('base64')], { env: { ...process.env, JARVIS_TEST_PATHS: JSON.stringify(selectedPaths), JARVIS_TEST_ACTION: action }, encoding: 'utf8', timeout: 10_000, windowsHide: true })
   try {
+    // Compare the original creation ACLs before replacing them with explicit
+    // readonly rules; retain any inheritance present in the native fixture.
+    const original = run('read')
+    await verifyIntegrationSnapshot({ snapshot: destination, manifestSha256: result.manifestSha256, integration })
+    assert.equal(run('read'), original)
     run('private')
     const before = run('read')
     await verifyIntegrationSnapshot({ snapshot: destination, manifestSha256: result.manifestSha256, integration })
