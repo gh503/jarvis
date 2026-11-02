@@ -1,15 +1,24 @@
 # Native recovery sets
 
-Status: **upcoming source functionality, not yet released**. This CLI and API are not included in the v2.0.45 release. A recovery set binds a verified baseline portable package identity to private config and data snapshots captured sequentially under one continuously held [stopped-data scope](stopped-data-scope.md). It provides coordinated capture and verification, not an automatic updater or a restore/activation transaction. See [Native update staging and recovery](native-update.md).
+Status: **released in [v2.0.47](https://github.com/gh503/jarvis/releases/tag/v2.0.47)**, including the offline CLI in portable packages. A recovery set binds a verified baseline portable package identity to private config and data snapshots captured sequentially under one continuously held [stopped-data scope](stopped-data-scope.md). It provides coordinated capture and verification, not an automatic updater or a restore/activation transaction. See [Native update staging and recovery](native-update.md).
 
 ## Commands and trust
 
-Use a trusted Node 24 executable and the CLI from a trusted source checkout containing this implementation:
+Run from a trusted v2.0.47 portable package using its bundled Node 24. On Linux/macOS, from the extracted package directory:
 
 ```sh
-node --experimental-transform-types scripts/recovery-native.ts create --bundle /absolute/baseline-bundle --bundle-manifest-sha256 TRUSTED_BUNDLE_MANIFEST_SHA256 --config /absolute/private-config/config.env --data /absolute/data --destination /absolute/private-snapshots/new-recovery-set
-node --experimental-transform-types scripts/recovery-native.ts verify --recovery-set /absolute/private-snapshots/new-recovery-set --manifest-sha256 TRUSTED_RECOVERY_MANIFEST_SHA256
+./runtime/node --experimental-transform-types scripts/recovery-native.ts create --bundle /absolute/baseline-bundle --bundle-manifest-sha256 TRUSTED_BUNDLE_MANIFEST_SHA256 --config /absolute/private-config/config.env --data /absolute/data --destination /absolute/private-snapshots/new-recovery-set
+./runtime/node --experimental-transform-types scripts/recovery-native.ts verify --recovery-set /absolute/private-snapshots/new-recovery-set --manifest-sha256 TRUSTED_RECOVERY_MANIFEST_SHA256
 ```
+
+Windows PowerShell, from the extracted package directory:
+
+```powershell
+& '.\runtime\node.exe' --experimental-transform-types '.\scripts\recovery-native.ts' create --bundle 'C:\baseline-bundle' --bundle-manifest-sha256 TRUSTED_BUNDLE_MANIFEST_SHA256 --config 'C:\private-config\config.env' --data 'C:\data' --destination 'C:\private-snapshots\new-recovery-set'
+& '.\runtime\node.exe' --experimental-transform-types '.\scripts\recovery-native.ts' verify --recovery-set 'C:\private-snapshots\new-recovery-set' --manifest-sha256 TRUSTED_RECOVERY_MANIFEST_SHA256
+```
+
+Source checkout users can substitute a trusted `node` 24 executable for the bundled runtime.
 
 On Windows use canonical absolute Windows paths and quote paths containing spaces. Both digest arguments require lowercase 64-character SHA256 values. Unknown, repeated, missing, or malformed options fail before an operation starts. There is no implicit environment/config discovery. Existing update, config-snapshot, and data-snapshot CLI interfaces remain unchanged; no `--scope` flag is added to them.
 
@@ -62,7 +71,7 @@ This binding does not establish cross-version configuration or database compatib
 
 ## Source API
 
-The upcoming source module [native-recovery-set.ts](../scripts/native-recovery-set.ts) exports asynchronous operations:
+The source module [native-recovery-set.ts](../scripts/native-recovery-set.ts) exports asynchronous operations:
 
 ```ts
 createRecoverySet({ bundle, bundleManifestSha256, configFile, dataDir, destination })

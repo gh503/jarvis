@@ -1,12 +1,12 @@
 # Native data-only state snapshots
 
-Status: **first released in [v2.0.38](https://github.com/gh503/jarvis/releases/tag/v2.0.38)**, including the offline CLI in portable packages. The current recommended preview is [v2.0.45](https://github.com/gh503/jarvis/releases/tag/v2.0.45). This is the data-filesystem snapshot prerequisite for native update recovery, not a complete installation snapshot or an automatic updater. See [Native update staging and recovery](native-update.md).
+Status: **first released in [v2.0.38](https://github.com/gh503/jarvis/releases/tag/v2.0.38)**, including the offline CLI in portable packages. The current recommended preview is [v2.0.47](https://github.com/gh503/jarvis/releases/tag/v2.0.47). This is the data-filesystem snapshot prerequisite for native update recovery, not a complete installation snapshot or an automatic updater. See [Native update staging and recovery](native-update.md).
 
 The snapshot copies the complete stopped data directory as raw files and directories, with only the nine root-level ownership/coordination files listed below excluded. It preserves empty directories, secrets, keys, tokens, and application SQLite database sidecars, including WAL. It does not export logical records, open application databases to migrate them, or promise logical/schema compatibility with another binary.
 
 ## Commands and trust
 
-Run this offline CLI from a trusted v2.0.45 portable package using its bundled Node 24. Stop the runtime and all other writers before creation; this command does not stop them for you. On Linux/macOS, from the extracted package directory:
+Run this offline CLI from a trusted v2.0.47 portable package using its bundled Node 24. Stop the runtime and all other writers before creation; this command does not stop them for you. On Linux/macOS, from the extracted package directory:
 
 ```sh
 ./runtime/node --experimental-transform-types scripts/snapshot-native.ts create --data /absolute/data --destination /absolute/new-snapshot
@@ -106,3 +106,5 @@ restoreStateSnapshot({ snapshot, manifestSha256, destination })
 All three are asynchronous. Create and verify return `{ snapshot, manifestSha256, manifest }`; restore returns `{ destination, manifestSha256, manifest }`. The module also exports `StateSnapshotManifest` and `STATE_SNAPSHOT_LIMITS`. The CLI exposes only the path/hash results described above. The API has the same explicit trust, stopped-writer, fresh-destination, data-only, and compatibility boundaries as the CLI.
 
 **Internal API released in v2.0.45:** trusted internal modules can pass `createStateSnapshot({ dataDir, destination, scope })` inside `withStoppedDataScope(dataDir, async scope => ...)`. The [stopped-data scope contract and example](stopped-data-scope.md) describe optional config-then-data capture with both locks held continuously for the same canonical root. Operations must be awaited sequentially; invalid or concurrent admission rejects before snapshot preflight, pending work drains before lock release, and caught operation/admission failures still fail the outer scope. Without `scope`, create retains its own lock ownership and existing manifest format. CLI behavior is unchanged; there is no `--scope` flag. No aggregate recovery manifest, installed-version binding, or cross-version compatibility guarantee is added.
+
+Released in v2.0.47, [native recovery sets](native-recovery-set.md) bind a verified baseline package identity to private config and data snapshots captured sequentially under one continuously held stopped-data scope. The aggregate captures baseline identity and child manifest digests, not installer integrations or a copy of the bundle. Verification requires the original baseline package to remain unchanged and available at its recorded path. This adds no schema compatibility guarantee, recovery-set restore, or activation command.
