@@ -1,6 +1,8 @@
 # Native integration snapshots
 
-Status: **upcoming source feature; no verified release yet**. The recommended release remains the [v2.0.49 unsigned preview](https://github.com/gh503/jarvis/releases/tag/v2.0.49), which includes neither this API nor this CLI. The source module [native-integration-snapshot.ts](../scripts/native-integration-snapshot.ts) and source CLI [snapshot-native-integration.ts](../scripts/snapshot-native-integration.ts) capture and verify receipt-backed macOS or Windows native integration bytes. They provide no restore, activation, or writeback to installed integration locations.
+Status: **upcoming source feature; no verified release yet**. The recommended release remains the [v2.0.52 unsigned preview](https://github.com/gh503/jarvis/releases/tag/v2.0.52), which includes neither this API nor this CLI. The source module [native-integration-snapshot.ts](../scripts/native-integration-snapshot.ts) and source CLI [snapshot-native-integration.ts](../scripts/snapshot-native-integration.ts) capture and verify receipt-backed macOS or Windows native integration bytes. They provide no restore, activation, or writeback to installed integration locations.
+
+The read-only inventory prerequisite and in-process installation-failure cleanup are included in v2.0.52; this persistent snapshot format is separate. API source `bbaf` passed all three jobs in [native CI 41489076014](https://github.com/gh503/jarvis/actions/runs/41489076014), but [release packaging/publication 41489351802](https://github.com/gh503/jarvis/actions/runs/41489351802) was still in progress at this evidence check. CLI source `e655` had [native CI 41490813672](https://github.com/gh503/jarvis/actions/runs/41490813672) still running. Neither the snapshot API nor CLI is included in v2.0.52.
 
 ## Source CLI
 
@@ -107,4 +109,4 @@ Output files are created exclusively and individually flushed with file `fsync`.
 
 Integration snapshots are separate from [native recovery sets](native-recovery-set.md). Recovery-set v1 retains its exact existing root layout and baseline/config/data contract; do not insert an integration snapshot into it. Coupling integration capture to a recovery set requires a separately designed future format version and coordination contract.
 
-The source API and CLI add no restore command, permission/ACL restoration, persistent recovery journal, installation transaction, activation, or automatic rollback. It does not establish compatibility between package code, configuration, and database schemas. Keep the original compatible bundle and private config/data recovery material separately, and follow the operator-controlled boundaries in [native update staging and recovery](native-update.md).
+The source API and CLI add no restore command, permission/ACL restoration, persistent recovery journal, installation transaction, activation, or automatic rollback. They do not establish compatibility between package code, configuration, and database schemas. Keep the original compatible bundle and private config/data recovery material separately, and follow the operator-controlled boundaries in [native update staging and recovery](native-update.md).

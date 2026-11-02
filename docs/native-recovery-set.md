@@ -1,10 +1,10 @@
 # Native recovery sets
 
-Status: **first released in [v2.0.47](https://github.com/gh503/jarvis/releases/tag/v2.0.47)**. The current recommended [v2.0.49 preview](https://github.com/gh503/jarvis/releases/tag/v2.0.49) includes the offline CLI with the same v1 recovery-set format. A recovery set binds a verified baseline portable package identity to private config and data snapshots captured sequentially under one continuously held [stopped-data scope](stopped-data-scope.md). It provides coordinated capture and verification, not an automatic updater or a restore/activation transaction. See [Native update staging and recovery](native-update.md).
+Status: **first released in [v2.0.47](https://github.com/gh503/jarvis/releases/tag/v2.0.47)**. The current recommended [v2.0.52 preview](https://github.com/gh503/jarvis/releases/tag/v2.0.52) includes the offline CLI with the same v1 recovery-set format. A recovery set binds a verified baseline portable package identity to private config and data snapshots captured sequentially under one continuously held [stopped-data scope](stopped-data-scope.md). It provides coordinated capture and verification, not an automatic updater or a restore/activation transaction. See [Native update staging and recovery](native-update.md).
 
 ## Commands and trust
 
-Run from a trusted v2.0.49 portable package using its bundled Node 24. On Linux/macOS, from the extracted package directory:
+Run from a trusted v2.0.52 portable package using its bundled Node 24. On Linux/macOS, from the extracted package directory:
 
 ```sh
 ./runtime/node --experimental-transform-types scripts/recovery-native.ts create --bundle /absolute/baseline-bundle --bundle-manifest-sha256 TRUSTED_BUNDLE_MANIFEST_SHA256 --config /absolute/private-config/config.env --data /absolute/data --destination /absolute/private-snapshots/new-recovery-set

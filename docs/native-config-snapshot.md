@@ -1,12 +1,12 @@
 # Native config-only snapshots
 
-Status: **first released in [v2.0.42](https://github.com/gh503/jarvis/releases/tag/v2.0.42)**, including the offline CLI in portable packages. The current recommended preview is [v2.0.49](https://github.com/gh503/jarvis/releases/tag/v2.0.49). This is a private external-configuration recovery primitive, not a complete installation snapshot or an automatic updater. See [Native update staging and recovery](native-update.md).
+Status: **first released in [v2.0.42](https://github.com/gh503/jarvis/releases/tag/v2.0.42)**, including the offline CLI in portable packages. The current recommended preview is [v2.0.52](https://github.com/gh503/jarvis/releases/tag/v2.0.52). This is a private external-configuration recovery primitive, not a complete installation snapshot or an automatic updater. See [Native update staging and recovery](native-update.md).
 
 A config snapshot preserves the exact original bytes of one validated external configuration file, including secrets, comments, quotes, whitespace, and line endings. It does not serialize parsed settings or rewrite `JARVIS_DATA_DIR`. The selected data directory is checked and locked, but its data tree is **not copied**. The separate [data-only snapshot CLI](native-state-snapshot.md) captures that tree; invoking both commands does not make them an atomic coupled snapshot or bind them to a compatible baseline binary or database schema.
 
 ## Commands and trust
 
-Run from a trusted v2.0.49 portable package using its bundled Node 24. On Linux/macOS, from the extracted package directory:
+Run from a trusted v2.0.52 portable package using its bundled Node 24. On Linux/macOS, from the extracted package directory:
 
 ```sh
 ./runtime/node --experimental-transform-types scripts/snapshot-native-config.ts create --config /absolute/private-config/config.env --data /absolute/data --destination /absolute/snapshots/new-config-snapshot
@@ -74,4 +74,4 @@ Create and verify return `{ snapshot, manifestSha256, manifest }`; restore retur
 
 **Internal API released in v2.0.45:** trusted internal modules can pass `createConfigSnapshot({ configFile, dataDir, destination, scope })` inside `withStoppedDataScope(dataDir, async scope => ...)`, then optionally await data snapshot creation under the same continuously held locks. The explicit `dataDir` must still match the config and the scope's canonical root; source config and destination separation rules remain unchanged. See the [stopped-data scope contract and example](stopped-data-scope.md). Operations must be awaited sequentially; invalid or concurrent admission rejects before snapshot preflight, pending work drains before lock release, and caught operation/admission failures still fail the outer scope. Without `scope`, create retains its own lock ownership and existing manifest format. CLI behavior is unchanged; there is no `--scope` flag. This does not add an aggregate recovery manifest, installer receipt/version capture, or cross-version compatibility.
 
-First released in v2.0.47 and included in v2.0.49, [native recovery sets](native-recovery-set.md) bind a verified baseline package identity to private config and data snapshots captured sequentially under one continuously held stopped-data scope. The aggregate captures baseline identity and child manifest digests, not installer integrations or a copy of the bundle. Verification requires the original baseline package to remain unchanged and available at its recorded path. This adds no schema compatibility guarantee, recovery-set restore, or activation command.
+First released in v2.0.47 and included in v2.0.52, [native recovery sets](native-recovery-set.md) bind a verified baseline package identity to private config and data snapshots captured sequentially under one continuously held stopped-data scope. The aggregate captures baseline identity and child manifest digests, not installer integrations or a copy of the bundle. Verification requires the original baseline package to remain unchanged and available at its recorded path. This adds no schema compatibility guarantee, recovery-set restore, or activation command.
