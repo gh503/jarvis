@@ -132,6 +132,21 @@ test('native artifact verifies and starts/stops using only its bundled Node', { 
     await assert.rejects(lstat(join(controlDirectory, 'install-intent.json')), { code: 'ENOENT' })
     await assert.rejects(lstat(join(diagnosisState, 'native-install.json')), { code: 'ENOENT' })
     assert.equal(await readFile(sentinel, 'utf8'), sentinelBytes)
+    nextStage('bundled transaction inspection with empty PATH')
+    const inspectionCli = join(bundle, 'scripts', 'inspect-native-install-transaction.ts')
+    assert.ok((await lstat(inspectionCli)).isFile())
+    const inspection = spawnSync(binary, ['--experimental-transform-types', inspectionCli, 'inspect', ...diagnosisArgs.slice(1), '--home', diagnosisHome], diagnosisOptions)
+    assert.ifError(inspection.error)
+    assert.equal(inspection.status, 0, inspection.stderr)
+    assert.deepEqual(JSON.parse(inspection.stdout), {
+      status: 'no-transaction', issues: [{ reason: 'preparation-missing' }],
+      scope: { ownership: false, execution: false, automaticCleanup: false, replay: false, atomicity: false, completed: false },
+      limitations: { sourcePolicy: 'legacy-integration', sourceWindowsAcl: false, controlPolicy: 'private-install-control', cooperatingWritersOnly: true, observationsAtomic: false, acknowledgementAuthenticity: false },
+    })
+    assert.ok(!inspection.stdout.includes(temporary))
+    await assert.rejects(lstat(join(controlDirectory, 'prepared-transaction.json')), { code: 'ENOENT' })
+    await assert.rejects(lstat(join(diagnosisState, 'native-install.json')), { code: 'ENOENT' })
+    assert.equal(await readFile(sentinel, 'utf8'), sentinelBytes)
     nextStage('bundled data snapshot create/verify/restore with empty PATH')
     {
       // Synthetic state stays disjoint from both application data and diagnosis.
