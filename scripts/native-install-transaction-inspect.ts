@@ -24,9 +24,15 @@ export interface NativeInstallTransactionInspection {
   readonly issues: readonly Issue[]
   readonly scope: typeof SCOPE
   readonly limitations: typeof LIMITATIONS
+  readonly retainedOperationNames?: Readonly<{ retirement: boolean; uninstall: boolean; observedNamesOnly: true }>
 }
-function report(status: Status, issues: readonly Issue[], declaration: Declaration = 'unavailable'): NativeInstallTransactionInspection {
-  return Object.freeze({ status, declaration, issues: Object.freeze(issues.map(issue => Object.freeze({ ...issue }))), scope: SCOPE, limitations: LIMITATIONS })
+function report(status: Status, issues: readonly Issue[], declaration: Declaration = 'unavailable', names: readonly string[] = []): NativeInstallTransactionInspection {
+  // Names from the existing enumeration only: no target type or contents inferred.
+  // The final assertion also rejects a trailing newline (which JS $ alone permits).
+  const retirement = names.some(name => /^prepared-retiring-[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$(?![\s\S])/.test(name))
+  const uninstall = names.some(name => /^prepared-uninstalling-[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$(?![\s\S])/.test(name))
+  return Object.freeze({ status, declaration, issues: Object.freeze(issues.map(issue => Object.freeze({ ...issue }))), scope: SCOPE, limitations: LIMITATIONS,
+    ...(status === 'blocked' && (retirement || uninstall) ? { retainedOperationNames: Object.freeze({ retirement, uninstall, observedNamesOnly: true as const }) } : {}) })
 }
 const equalIdentity = (a: BigIntStats, b: BigIntStats) => FIELDS.every(key => a[key] === b[key])
 const matchesAck = (a: BigIntStats, b: NativeInstallArtifactIdentity) => FIELDS.every(key => a[key].toString() === b[key])
@@ -41,6 +47,9 @@ type Observation = { slot: Slot; unsafe: boolean }
  * bits do not prove ACL privacy. Control records use the stronger existing
  * private-control checks. Neither authenticates ack authors or stops external
  * writers; repeated observations are not an atomic filesystem snapshot.
+ * Optional retainedOperationNames reports names only from the enumeration causing
+ * the blocked report. Earlier validation/decode failures can omit these hints,
+ * including failures before enumeration; no extra reads are made for diagnostics.
  */
 export async function inspectNativeInstallTransaction({ integration }: { integration: InstallOptions }): Promise<NativeInstallTransactionInspection> {
   const options = { ...integration }
@@ -54,9 +63,10 @@ export async function inspectNativeInstallTransaction({ integration }: { integra
       const namesBefore = await reserved()
       const transaction = await readNativeInstallTransaction({ integration: options })
       if (!transaction) {
-        if (namesBefore.length) return report('blocked', [{ reason: 'orphan-record' }], 'not-inspected')
+        if (namesBefore.length) return report('blocked', [{ reason: 'orphan-record' }], 'not-inspected', namesBefore)
         if (await readNativeInstallTransaction({ integration: options })) return report('blocked', [{ reason: 'store-changed' }])
-        if ((await reserved()).length) return report('blocked', [{ reason: 'orphan-record' }], 'not-inspected')
+        const namesAfter = await reserved()
+        if (namesAfter.length) return report('blocked', [{ reason: 'orphan-record' }], 'not-inspected', namesAfter)
         // No slot observation or absence inference is made without preparation.
         return report('no-transaction', [{ reason: 'preparation-missing' }], 'not-inspected')
       }
@@ -66,7 +76,7 @@ export async function inspectNativeInstallTransaction({ integration }: { integra
         return names.some(name => !allowed.has(name)) ? 'orphan-record' : undefined
       }
       const initialNamespaceIssue = namespaceIssue(namesBefore)
-      if (initialNamespaceIssue) return report('blocked', [{ reason: initialNamespaceIssue }])
+      if (initialNamespaceIssue) return report('blocked', [{ reason: initialNamespaceIssue }], 'unavailable', namesBefore)
       const transactionBytes = encodeNativeInstallTransaction(transaction, options)
       const issues: Issue[] = []
       let blocked = false, conflict = false
@@ -148,7 +158,7 @@ export async function inspectNativeInstallTransaction({ integration }: { integra
       const finalNamespaceIssue = namespaceIssue(namesAfter)
       if (finalNamespaceIssue) add(finalNamespaceIssue)
       else if (JSON.stringify(namesBefore) !== JSON.stringify(namesAfter)) add('store-changed')
-      if (blocked) return report('blocked', issues, declaration)
+      if (blocked) return report('blocked', issues, declaration, namesAfter)
       if (conflict) return report('conflict', issues, declaration)
       return report(receipt.slot ? 'receipt-present' : 'receipt-absent', [{ reason: 'all-artifacts-match' }], completion ? 'matching' : declaration)
     })

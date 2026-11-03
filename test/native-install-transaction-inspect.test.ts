@@ -276,6 +276,102 @@ test('missing preparation rechecks namespace before no-transaction', async t => 
     assert.deepEqual(result.issues, [{ reason: 'orphan-record' }])
   } finally { fs.readdir = original; syncBuiltinESMExports() }
 })
+const retirementName = 'prepared-retiring-12345678-abcd-4abc-8abc-123456789abc'
+const uninstallName = 'prepared-uninstalling-12345678-abcd-4abc-babc-123456789abc'
+for (const platform of ['darwin', 'win32'] as const) {
+  for (const prepared of [false, true]) for (const kind of ['empty-directory', 'file', 'manifest', 'symlink'] as const) test(`${platform}: ${prepared ? 'prepared' : 'orphan'} operation names only on ${kind}`, { skip: kind === 'symlink' && process.platform === 'win32' }, async t => {
+    const f = await fixture(t, platform)
+    if (prepared) await writeNativeInstallTransaction(f)
+    else await inspectNativeInstallTransaction(f)
+    const target = join(f.directory, retirementName)
+    if (kind === 'file') await fs.writeFile(target, 'PRIVATE-SECRET', { mode: 0o600 })
+    else if (kind === 'symlink') await fs.symlink(join(f.root, 'nonexistent-secret'), target)
+    else {
+      await fs.mkdir(target, { mode: 0o700 })
+      if (kind === 'manifest') await fs.writeFile(join(target, 'manifest.json'), 'arbitrary PRIVATE-SECRET', { mode: 0o600 })
+    }
+    const before = await snapshot(f.root)
+    const originals = { open: fs.open, lstat: fs.lstat, stat: fs.stat, readdir: fs.readdir, readFile: fs.readFile, readlink: fs.readlink, realpath: fs.realpath }
+    let forbiddenReads = 0
+    // Fail on the named target itself as well as every descendant; catch-and-ignore
+    // would still fail the counter assertion. No diagnostic path probing is allowed.
+    for (const key of Object.keys(originals) as (keyof typeof originals)[]) {
+      const original = originals[key]
+      Object.assign(fs, { [key]: async (...args: unknown[]) => {
+        if (String(args[0]).includes(retirementName)) { forbiddenReads++; throw new Error('diagnostic target probed') }
+        return Reflect.apply(original, fs, args)
+      } })
+    }
+    syncBuiltinESMExports()
+    let result
+    try { result = await inspectNativeInstallTransaction(f) }
+    finally { Object.assign(fs, originals); syncBuiltinESMExports() }
+    assert.equal(forbiddenReads, 0)
+    assert.equal(result.status, 'blocked')
+    assert.equal(result.declaration, prepared ? 'unavailable' : 'not-inspected')
+    assert.deepEqual(result.issues, [{ reason: 'orphan-record' }])
+    assert.deepEqual(result.retainedOperationNames, { retirement: true, uninstall: false, observedNamesOnly: true })
+    assert.ok(Object.isFrozen(result) && Object.isFrozen(result.retainedOperationNames))
+    assert.throws(() => { (result.retainedOperationNames as { retirement: boolean }).retirement = false }, TypeError)
+    assert.deepEqual(await snapshot(f.root), before)
+    for (const secret of [retirementName, f.root, 'PRIVATE-SECRET', '12345678']) assert.ok(!JSON.stringify(result).includes(secret))
+  })
+  test(`${platform}: multiple operation names mixed with unknown retain existing reason`, async t => {
+    const f = await fixture(t, platform)
+    await writeNativeInstallTransaction(f)
+    for (const name of [retirementName, uninstallName, retirementName.replace('12345678-', 'abcdefab-'), 'prepared-completion-unknown']) await fs.writeFile(join(f.directory, name), '', { mode: 0o600 })
+    const result = await inspectNativeInstallTransaction(f)
+    assert.equal(result.status, 'blocked')
+    assert.deepEqual(result.issues, [{ reason: 'unsafe-or-unavailable' }])
+    assert.deepEqual(result.retainedOperationNames, { retirement: true, uninstall: true, observedNamesOnly: true })
+  })
+  test(`${platform}: malformed and uppercase operation names omit hints`, async t => {
+    const f = await fixture(t, platform)
+    await inspectNativeInstallTransaction(f)
+    for (const name of [retirementName.toUpperCase(), uninstallName.toUpperCase(), retirementName.replace('4abc', '5abc'), uninstallName.replace('babc', '7abc'), retirementName + '.json', uninstallName.slice(0, -1), retirementName + '\n']) {
+      // Windows disallows a trailing newline in a filename.
+      if (process.platform === 'win32' && name.endsWith('\n')) continue
+      await fs.writeFile(join(f.directory, name), '', { mode: 0o600 })
+    }
+    const result = await inspectNativeInstallTransaction(f)
+    assert.equal(result.status, 'blocked')
+    assert.deepEqual(result.issues, [{ reason: 'orphan-record' }])
+    assert.equal(Object.hasOwn(result, 'retainedOperationNames'), false)
+  })
+  test(`${platform}: early decode failure omits hints despite canonical name`, async t => {
+    const f = await fixture(t, platform)
+    await inspectNativeInstallTransaction(f)
+    await fs.writeFile(join(f.directory, retirementName), '', { mode: 0o600 })
+    await fs.writeFile(join(f.directory, 'prepared-transaction.json'), '{}', { mode: 0o600 })
+    const result = await inspectNativeInstallTransaction(f)
+    assert.deepEqual(result.issues, [{ reason: 'unsafe-or-unavailable' }])
+    assert.equal(Object.hasOwn(result, 'retainedOperationNames'), false)
+  })
+}
+for (const prepared of [false, true]) for (const fail of [false, true]) test(`${prepared ? 'prepared' : 'absent'} late namespace ${fail ? 'read error omits' : 'snapshot provides'} names`, async t => {
+  const f = await fixture(t, 'darwin')
+  if (prepared) { await writeNativeInstallTransaction(f); await f.materialize() }
+  else await inspectNativeInstallTransaction(f)
+  const original = fs.readdir
+  let enumerations = 0
+  fs.readdir = (async (...args: Parameters<typeof fs.readdir>) => {
+    const names = await original(...args)
+    if (args[0] === f.directory && ++enumerations === 2) {
+      if (fail) throw new Error('namespace unavailable')
+      return [...names, uninstallName]
+    }
+    return names
+  }) as typeof fs.readdir
+  syncBuiltinESMExports()
+  try {
+    const result = await inspectNativeInstallTransaction(f)
+    assert.equal(enumerations, 2)
+    assert.equal(result.status, 'blocked')
+    assert.deepEqual(result.issues, [{ reason: fail ? 'unsafe-or-unavailable' : 'orphan-record' }])
+    if (fail) assert.equal(Object.hasOwn(result, 'retainedOperationNames'), false)
+    else assert.deepEqual(result.retainedOperationNames, { retirement: false, uninstall: true, observedNamesOnly: true })
+  } finally { fs.readdir = original; syncBuiltinESMExports() }
+})
 test('packaging includes runtime inspector only', () => {
   assert.equal(isPublicFile('scripts/native-install-transaction-inspect.ts'), true)
   assert.equal(isPublicFile('test/native-install-transaction-inspect.test.ts'), false)

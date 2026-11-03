@@ -105,6 +105,22 @@ for (const platform of ['darwin', 'win32'] as const) {
     await report(f, 'blocked', [{ reason: 'orphan-record' }], 'not-inspected')
     assert.deepEqual(await snapshot(f.root), before)
   })
+  test(`${platform}: canonical operation names add only exact sanitized hints`, { timeout }, async t => {
+    const f = await fixture(t, platform)
+    await report(f, 'no-transaction', [{ reason: 'preparation-missing' }])
+    const id = '12345678-abcd-4abc-8abc-123456789abc'
+    await fs.mkdir(join(f.directory, `prepared-retiring-${id}`), { mode: 0o700 })
+    await fs.writeFile(join(f.directory, `prepared-uninstalling-${id}`), secret, { mode: 0o600 })
+    await fs.writeFile(join(f.directory, 'prepared-unknown'), secret, { mode: 0o600 })
+    const before = await snapshot(f.root)
+    const result = await run(args(platform, f.root), f.root)
+    assert.equal(result.code, 0, result.stderr)
+    assert.equal(result.stderr, '')
+    assert.deepEqual(JSON.parse(result.stdout), { status: 'blocked', declaration: 'not-inspected', issues: [{ reason: 'orphan-record' }], scope, limitations,
+      retainedOperationNames: { retirement: true, uninstall: true, observedNamesOnly: true } })
+    for (const value of [id, f.root, secret, 'prepared-', 'manifest']) assert.ok(!result.stdout.includes(value))
+    assert.deepEqual(await snapshot(f.root), before)
+  })
   test(`${platform}: manual preparation and observed acks produce bounded reports without changing installation files`, { timeout: timeout * 5 }, async t => {
     const f = await fixture(t, platform)
     const plan = renderNativeIntegration(f.integration, false)

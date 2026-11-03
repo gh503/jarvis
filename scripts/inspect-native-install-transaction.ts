@@ -8,13 +8,15 @@ const usage = 'Usage: inspect-native-install-transaction.ts inspect --platform d
 const help = `${usage}
        inspect-native-install-transaction.ts --help
 
-Outputs one fixed JSON report. All context is explicit; no application config is loaded.
+Outputs one JSON report with optional names-only diagnostics. All context is explicit; no application config is loaded.
 Read-only for installation files; operational lock directories and SQLite files may be created.
 Exit 0: report produced (any status) or help; 2: invalid arguments; 1: unable to produce a report.
 no-transaction means preparation is missing, not that installation is healthy or absent.
 Receipt observations do not prove completion, ownership, execution, or permission to recover.
 Cooperating writers only; observations are not atomic and acknowledgements are not authenticated.
 Source reads use the legacy integration policy, not Windows ACL privacy verification.
+Optional retainedOperationNames contains names-only hints; targets are not inspected for these hints.
+Earlier validation/decode failures may omit hints, including failures before namespace enumeration.
 `
 
 /** Reject malformed input before importing any operational module. */
