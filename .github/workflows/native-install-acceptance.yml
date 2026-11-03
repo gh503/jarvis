@@ -27,7 +27,7 @@ jobs:
       - name: Verify installer rendering and retained intent refusal
         run: node --experimental-transform-types --test test/native-install.test.ts
       - name: Verify complete prepared transaction codec
-        run: node --experimental-transform-types --test test/native-install-transaction.test.ts test/native-install-transaction-store.test.ts
+        run: node --experimental-transform-types --test test/native-install-transaction.test.ts test/native-install-transaction-store.test.ts test/native-install-transaction-ack.test.ts
       - name: Verify installation lock capabilities and failure draining
         run: node --experimental-transform-types --test test/native-install-lock.test.ts
       - name: Verify exclusive intent storage and scoped publication
