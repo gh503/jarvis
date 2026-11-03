@@ -19,7 +19,7 @@ const runtimeScripts = new Set([
   'recovery-native.ts', 'native-recovery-set.ts',
   'snapshot-native-integration.ts', 'native-integration-snapshot.ts',
   'native-install-intent.ts', 'native-install-intent-store.ts', 'native-install-reconcile.ts',
-  'native-install-transaction.ts', 'native-install-transaction-store.ts', 'native-install-transaction-ack.ts',
+  'native-install-transaction.ts', 'native-install-transaction-store.ts', 'native-install-transaction-ack.ts', 'native-install-transaction-ack-store.ts',
   'diagnose-native-install.ts', 'native-install-diagnose.ts',
   'asr_worker.py', 'ocr_worker.py', 'screen_capture.py',
   'backup.ts', 'restore.ts', 'backup-archive.ts', 'gen-tls.sh', 'install-service.sh',
