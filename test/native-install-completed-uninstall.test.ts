@@ -38,6 +38,25 @@ async function fixture(t: TestContext, platform: 'darwin' | 'win32') {
   return completedFixture(root, platform)
 }
 for (const platform of ['darwin', 'win32'] as const) {
+  test(`${platform}: concurrent uninstallers archive exactly one generation`, async t => {
+    const f = await fixture(t, platform)
+    const lock = join(f.directory, 'launcher.lock.sqlite')
+    const inode = (await fs.lstat(lock, { bigint: true })).ino
+    const names = (await fs.readdir(f.directory)).filter(name => name.startsWith('prepared-'))
+    const records = await Promise.all(names.map(async name => ({ name, bytes: await fs.readFile(join(f.directory, name)) })))
+    const results = await Promise.allSettled([uninstallCompletedNativeInstallTransaction(f), uninstallCompletedNativeInstallTransaction(f)])
+    const successes = results.filter(result => result.status === 'fulfilled')
+    assert.equal(successes.length, 1)
+    assert.equal(results.filter(result => result.status === 'rejected').length, 1)
+    const archive = successes[0]!.value.archiveDirectory
+    assert.deepEqual(successes[0]!.value.removedPaths, [...f.artifacts.map(a => a.path), f.receiptPath])
+    for (const record of records) assert.deepEqual(await fs.readFile(join(archive, record.name)), record.bytes)
+    assert.equal((await fs.lstat(lock, { bigint: true })).ino, inode)
+    const remaining = await fs.readdir(f.directory)
+    assert.equal(remaining.filter(name => name.startsWith('retired-')).length, 1)
+    assert.equal(remaining.some(name => name.toLowerCase().startsWith('prepared-')), false)
+    for (const path of [...f.artifactPaths, f.receiptPath]) await assert.rejects(fs.lstat(path), { code: 'ENOENT' })
+  })
   test(`${platform}: exact generation archives records and preserves unrelated files and lock inode`, async t => {
     const f = await fixture(t, platform)
     const keep = [join(f.integration.root, 'payload'), join(f.root, 'config'), join(f.root, 'data', 'payload')]

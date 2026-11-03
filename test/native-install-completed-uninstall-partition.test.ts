@@ -41,7 +41,7 @@ function cases(partition?: string): Registration[] {
 
 test('uninstall partitions register a deterministic disjoint union of all top-level cases', () => {
   const full = cases()
-  assert.equal(full.length, 57)
+  assert.equal(full.length, 59)
   assert.equal(new Set(full.map(item => item.name)).size, full.length)
   const partitions = Array.from({ length: 4 }, (_, partition) => cases(String(partition)))
   for (let partition = 0; partition < 4; partition++) {
