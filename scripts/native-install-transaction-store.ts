@@ -44,8 +44,13 @@ function location(integration: InstallOptions) {
   const directory = join(dirname(describeNativeIntegration(integration).receiptPath), 'native-install-control')
   return { directory, path: join(directory, 'prepared-transaction.json') }
 }
-async function readStored(integration: InstallOptions, expectedIdentity?: BigIntStats) {
-  const { directory, path } = location(integration)
+/** Internal bounded snapshot reader shared with preparation retirement. An alternate
+ * directory must be an immediate fixed-control prepared-retiring-UUID child, requires
+ * the original identity, and passes the same read-only private boundary checks. */
+export async function readNativeInstallTransactionSnapshot(integration: InstallOptions, expectedIdentity?: BigIntStats, directory = location(integration).directory) {
+  const control = location(integration).directory
+  if (directory !== control && (!expectedIdentity || dirname(directory) !== control || !/^prepared-retiring-[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(directory.slice(control.length + 1)))) throw unsafe()
+  const path = join(directory, 'prepared-transaction.json')
   const ancestors = await boundary(directory)
   const before = await statOrMissing(path)
   if (!before) {
@@ -98,7 +103,7 @@ async function readStored(integration: InstallOptions, expectedIdentity?: BigInt
  * SQLite access. Presence grants no ownership, execution, cleanup, replay or recovery authority,
  * and is never evidence of installation completion. */
 export async function readNativeInstallTransaction({ integration }: { integration: InstallOptions }): Promise<NativeInstallTransaction | undefined> {
-  return (await readStored({ ...integration }))?.transaction
+  return (await readNativeInstallTransactionSnapshot({ ...integration }))?.transaction
 }
 
 /** Append-once plan publication under the shared installation lock. An existing
@@ -144,7 +149,7 @@ async function writeExclusive(options: InstallOptions, bytes: Buffer, directory:
     const written = await file.stat({ bigint: true })
     checkFile(written)
     if (!sameIdentity(created, written) || written.size !== BigInt(bytes.length)) throw unsafe()
-    const stored = await readStored(options, created)
+    const stored = await readNativeInstallTransactionSnapshot(options, created)
     if (!stored || !stored.bytes.equals(bytes) || !sameFile(written, stored.stat)) throw unsafe()
     await verifyBoundary(directory, ancestors)
     return stored.transaction

@@ -15,7 +15,7 @@ jobs:
       fail-fast: false
       matrix:
         os: [windows-latest, macos-latest]
-        group: [installer, transaction-storage, completion-store-0, completion-store-1, completion-store-2, completion-store-3, transaction-inspection, transaction-inspection-0, transaction-inspection-1, transaction-inspection-2, transaction-inspection-3, transaction-crash, lock-intent]
+        group: [installer, transaction-storage, completion-store-0, completion-store-1, completion-store-2, completion-store-3, transaction-inspection, transaction-inspection-0, transaction-inspection-1, transaction-inspection-2, transaction-inspection-3, transaction-crash, preparation-retirement, lock-intent]
     steps:
       - uses: actions/checkout@v4
         with:
@@ -47,6 +47,9 @@ jobs:
       - name: Verify persisted transaction process interruption
         if: matrix.group == 'transaction-crash'
         run: node --experimental-transform-types --test --test-concurrency=1 test/native-install-transaction-crash.test.ts
+      - name: Verify bounded preparation retirement
+        if: matrix.group == 'preparation-retirement'
+        run: node --experimental-transform-types --test --test-concurrency=1 test/native-install-preparation-retire.test.ts
       - name: Verify installation lock capabilities and failure draining
         if: matrix.group == 'lock-intent'
         run: node --experimental-transform-types --test test/native-install-lock.test.ts
