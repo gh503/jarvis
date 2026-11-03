@@ -22,6 +22,7 @@ test('bundled transaction lifecycle with empty PATH (Linux verifies target refus
   const tempRoot = process.platform === 'win32' ? realpathSync.native(tmpdir()) : await realpath(tmpdir())
   const temporary = await mkdtemp(join(tempRoot, 'Jarvis transaction 中文 '))
   await chmod(temporary, 0o700)
+  let completed = false
   try {
     const extracted = join(temporary, 'extracted app 空间')
     await mkdir(extracted, { mode: 0o700 })
@@ -169,10 +170,15 @@ test('bundled transaction lifecycle with empty PATH (Linux verifies target refus
     }
     assert.deepEqual(await readFile(manifestPath), manifestBytes)
     assert.equal(await sha256(archive), archiveDigest)
+    completed = true
   } finally {
-    assert.equal(dirname(temporary), tempRoot)
-    assert.equal(process.platform === 'win32' ? realpathSync.native(temporary) : await realpath(temporary), temporary)
-    assert.ok(temporary.startsWith(join(tempRoot, 'Jarvis transaction 中文 ')))
-    await rm(temporary, { recursive: true, force: true })
+    // A killed observer does not prove its descendants exited. On any failure,
+    // retain the isolated tree rather than racing a late writer or erasing evidence.
+    if (completed) {
+      assert.equal(dirname(temporary), tempRoot)
+      assert.equal(process.platform === 'win32' ? realpathSync.native(temporary) : await realpath(temporary), temporary)
+      assert.ok(temporary.startsWith(join(tempRoot, 'Jarvis transaction 中文 ')))
+      await rm(temporary, { recursive: true, force: true })
+    } else console.log(JSON.stringify({ status: 'failed', isolatedEvidenceRetained: true }))
   }
 })
