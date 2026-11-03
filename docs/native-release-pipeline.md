@@ -7,7 +7,7 @@ Native production readiness is **not complete**. The implementation and local re
 | Gate | Evidence | Remaining requirement |
 | --- | --- | --- |
 | Full three-platform baseline | `197990a`, run [41580458387](https://github.com/gh503/jarvis/actions/runs/41580458387) passed | Baseline predates completed uninstall and transactional producer |
-| Transactional producer | All eight partitions on Windows and macOS at `b4e1978`; real Windows COM passed | Verify subsequent empty-PATH and permission changes |
+| Transactional producer | All eight partitions on Windows and macOS at `b4e1978`; real Windows COM with empty PATH passed at `e53363f` in [job 125763502744](https://github.com/gh503/jarvis/actions/runs/41589750953/job/125763502744) | Verify remaining latest-source partitions and permission-policy parity |
 | Completed uninstall | macOS API partitions and CLI passed at `b4e1978` | Windows receipt/commit crash children timed out; CLI cases and job timed out |
 | Timeout-test corrections | `d21ccec` crash isolation; `293b7d5` CLI isolation; all original cases retained and locally passed | Latest [native run 41596483296](https://github.com/gh503/jarvis/actions/runs/41596483296) must pass; increased test budgets alone are not acceptance |
 | Integrated local regression | `293b7d5`: typecheck; 1,691 passes, 37 skips, zero failures | Skipped/native cases require corresponding hosts |
@@ -16,6 +16,8 @@ Native production readiness is **not complete**. The implementation and local re
 | Interrupted-operation handling | Conservative retained evidence; read-only names-only hints | No automatic resume or cleanup; no power-loss or hostile same-account race guarantee |
 
 The corrected automatic matrix has 162 transaction jobs (54 groups × 3 hosts), followed by native-core; manual acceptance has 112 jobs (56 groups × 2 hosts). Partition maps have been checked for exact coverage. Avoid launching duplicate matrices while the source-matched run is pending.
+
+Windows producer partition 7 at `e53363f` passed seven cases, zero skips/failures (144.800 seconds). The actual COM case, which clears PATH in this source, passed in 59.662 seconds. This verifies absolute-system-PowerShell shortcut creation and inspectable transaction completion, not interactive desktop activation, whole-process-tree termination, permission batch parity or extracted CLI lifecycle.
 
 ## Historical evidence (source-specific)
 
