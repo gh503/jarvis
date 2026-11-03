@@ -134,6 +134,22 @@ async function readStored(bound: Context, expectedIdentity?: BigIntStats) {
 type ReadOptions = { integration: InstallOptions; transaction: NativeInstallTransaction; acks: readonly NativeInstallTransactionAck[] }
 type WriteOptions = ReadOptions & { completion: NativeInstallTransactionCompletion }
 
+/** Internal bounded evidence snapshot. Detached reads retain captured codec bindings
+ * and require the original identity inside an immediate fixed-control uninstall barrier. */
+export async function readNativeInstallTransactionCompletionSnapshot(options: ReadOptions, expectedIdentity?: BigIntStats, directory?: string) {
+  const bound = context(options.integration, options.transaction, options.acks)
+  if (directory !== undefined && directory !== bound.directory) {
+    if (!expectedIdentity || dirname(directory) !== bound.directory || !/^prepared-uninstalling-[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(directory.slice(bound.directory.length + 1))) throw unsafe()
+    bound.directory = directory
+    bound.path = join(directory, 'prepared-completion.json')
+    return readStored(bound, expectedIdentity)
+  }
+  await requireBindings(bound)
+  const stored = await readStored(bound, expectedIdentity)
+  await requireBindings(bound)
+  return stored
+}
+
 /** Read-only inspection bound to the exact prepared transaction. Missing completion is
  * undefined; missing/mismatched preparation or any acknowledgement refuses. No directory or SQLite writes.
  * Stored claims do not authenticate artifact observation or grant ownership.

@@ -118,6 +118,22 @@ async function readStored(bound: Context, expectedIdentity?: BigIntStats) {
 type ReadOptions = { integration: InstallOptions; transaction: NativeInstallTransaction; artifactIndex: number }
 type WriteOptions = { integration: InstallOptions; transaction: NativeInstallTransaction; ack: NativeInstallTransactionAck }
 
+/** Internal bounded evidence snapshot. Detached reads require the original identity
+ * and an immediate fixed-control uninstall barrier; public binding checks stay intact. */
+export async function readNativeInstallTransactionAckSnapshot(options: ReadOptions, expectedIdentity?: BigIntStats, directory?: string) {
+  const bound = context(options.integration, options.transaction, options.artifactIndex)
+  if (directory !== undefined && directory !== bound.directory) {
+    if (!expectedIdentity || dirname(directory) !== bound.directory || !/^prepared-uninstalling-[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(directory.slice(bound.directory.length + 1))) throw unsafe()
+    bound.directory = directory
+    bound.path = join(directory, `prepared-artifact-${bound.artifactIndex}.json`)
+    return readStored(bound, expectedIdentity)
+  }
+  await requirePrepared(bound)
+  const stored = await readStored(bound, expectedIdentity)
+  await requirePrepared(bound)
+  return stored
+}
+
 /** Read-only inspection bound to the exact prepared transaction. Missing ack is
  * undefined; missing/mismatched preparation refuses. No directory or SQLite writes.
  * Stored claims do not authenticate artifact observation or grant ownership. */

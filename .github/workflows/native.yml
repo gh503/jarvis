@@ -17,7 +17,7 @@ jobs:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, windows-latest, macos-latest]
-        group: [storage, inspection, inspection-0, inspection-1, inspection-2, inspection-3, crash, retirement, retirement-cli, write-gate-0, write-gate-1, write-gate-2, write-gate-3, completion-0, completion-1, completion-2, completion-3]
+        group: [storage, inspection, inspection-0, inspection-1, inspection-2, inspection-3, crash, retirement, retirement-cli, uninstall-0, uninstall-1, uninstall-2, uninstall-3, write-gate-0, write-gate-1, write-gate-2, write-gate-3, completion-0, completion-1, completion-2, completion-3]
     runs-on: ${{ matrix.os }}
     timeout-minutes: 20
     steps:
@@ -29,7 +29,7 @@ jobs:
       - run: npm ci --ignore-scripts
       - name: Verify transaction codecs and storage
         if: matrix.group == 'storage'
-        run: node --experimental-transform-types --test --test-concurrency=2 test/native-install-transaction.test.ts test/native-install-transaction-store.test.ts test/native-install-transaction-ack.test.ts test/native-install-transaction-ack-store.test.ts test/native-install-transaction-completion.test.ts test/native-install-transaction-completion-partition.test.ts test/native-install-transaction-inspection-partition.test.ts test/native-install-prepared-write-gate-partition.test.ts
+        run: node --experimental-transform-types --test --test-concurrency=2 test/native-install-transaction.test.ts test/native-install-transaction-store.test.ts test/native-install-transaction-ack.test.ts test/native-install-transaction-ack-store.test.ts test/native-install-transaction-completion.test.ts test/native-install-transaction-completion-partition.test.ts test/native-install-transaction-inspection-partition.test.ts test/native-install-prepared-write-gate-partition.test.ts test/native-install-completed-uninstall-partition.test.ts
       - name: Verify transaction inspection CLI
         if: matrix.group == 'inspection'
         run: node --experimental-transform-types --test --test-concurrency=2 test/native-install-transaction-inspect-cli.test.ts
@@ -47,6 +47,11 @@ jobs:
       - name: Verify preparation retirement CLI
         if: matrix.group == 'retirement-cli'
         run: node --experimental-transform-types --test --test-concurrency=1 test/native-install-preparation-retire-cli.test.ts
+      - name: Verify completed generation uninstall partition
+        if: startsWith(matrix.group, 'uninstall-')
+        env:
+          JARVIS_TEST_UNINSTALL_PARTITION: ${{ fromJSON('{"uninstall-0":"0","uninstall-1":"1","uninstall-2":"2","uninstall-3":"3"}')[matrix.group] }}
+        run: node --experimental-transform-types --test --test-concurrency=1 test/native-install-completed-uninstall.test.ts
       - name: Verify prepared writer barrier partition
         if: startsWith(matrix.group, 'write-gate-')
         env:

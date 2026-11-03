@@ -46,11 +46,11 @@ function location(integration: InstallOptions) {
   return { directory, path: join(directory, 'prepared-transaction.json') }
 }
 /** Internal bounded snapshot reader shared with preparation retirement. An alternate
- * directory must be an immediate fixed-control prepared-retiring-UUID child, requires
+ * directory must be an immediate fixed-control prepared-retiring/uninstalling-UUID child, requires
  * the original identity, and passes the same read-only private boundary checks. */
 export async function readNativeInstallTransactionSnapshot(integration: InstallOptions, expectedIdentity?: BigIntStats, directory = location(integration).directory) {
   const control = location(integration).directory
-  if (directory !== control && (!expectedIdentity || dirname(directory) !== control || !/^prepared-retiring-[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(directory.slice(control.length + 1)))) throw unsafe()
+  if (directory !== control && (!expectedIdentity || dirname(directory) !== control || !/^prepared-(?:retiring|uninstalling)-[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(directory.slice(control.length + 1)))) throw unsafe()
   const path = join(directory, 'prepared-transaction.json')
   const ancestors = await boundary(directory)
   const before = await statOrMissing(path)
