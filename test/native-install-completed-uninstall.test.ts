@@ -16,14 +16,14 @@ import { readNativeInstallTransactionCompletionSnapshot } from '../scripts/nativ
 import { isPublicFile } from '../scripts/packaging.ts'
 
 const partitionValue = process.env.JARVIS_TEST_UNINSTALL_PARTITION
-if (partitionValue !== undefined && !['0', '1', '2', '3'].includes(partitionValue)) throw new Error('JARVIS_TEST_UNINSTALL_PARTITION must be 0, 1, 2 or 3')
+if (partitionValue !== undefined && !['0', '1', '2', '3', '4', '5', '6', '7'].includes(partitionValue)) throw new Error('JARVIS_TEST_UNINSTALL_PARTITION must be 0, 1, 2, 3, 4, 5, 6 or 7')
 const partition = partitionValue === undefined ? undefined : Number(partitionValue)
 let registrations = 0
 function test(name: string, fn: TestFn): void
 function test(name: string, options: TestOptions, fn: TestFn): void
 function test(name: string, optionsOrFn: TestOptions | TestFn, fn?: TestFn): void {
   const index = registrations++
-  if (partition !== undefined && index % 4 !== partition) return
+  if (partition !== undefined && index % 8 !== partition) return
   void nodeTest(name, { ...(typeof optionsOrFn === 'function' ? {} : optionsOrFn), concurrency: false }, typeof optionsOrFn === 'function' ? optionsOrFn : fn!)
 }
 async function snapshot(path: string): Promise<unknown> {

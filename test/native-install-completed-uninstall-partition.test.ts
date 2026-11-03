@@ -43,9 +43,10 @@ test('uninstall partitions register a deterministic disjoint union of all top-le
   const full = cases()
   assert.equal(full.length, 59)
   assert.equal(new Set(full.map(item => item.name)).size, full.length)
-  const partitions = Array.from({ length: 4 }, (_, partition) => cases(String(partition)))
-  for (let partition = 0; partition < 4; partition++) {
-    assert.deepEqual(partitions[partition], full.filter((_, index) => index % 4 === partition))
+  const partitions = Array.from({ length: 8 }, (_, partition) => cases(String(partition)))
+  assert.deepEqual(partitions.map(items => items.length), [8, 8, 8, 7, 7, 7, 7, 7])
+  for (let partition = 0; partition < 8; partition++) {
+    assert.deepEqual(partitions[partition], full.filter((_, index) => index % 8 === partition))
     assert.deepEqual(cases(String(partition)), partitions[partition])
   }
   const union = partitions.flat()
@@ -56,11 +57,11 @@ test('uninstall partitions register a deterministic disjoint union of all top-le
 })
 
 test('invalid uninstall partition fails before registering any case', () => {
-  for (const partition of ['', '-1', '4', '01', '1.0', ' 1', '1 ', '1\n', 'all', '0/1/2/3']) {
+  for (const partition of ['', '-1', '8', '9', '01', '1.0', ' 1', '1 ', '1\n', 'all', '0/1/2/3/4/5/6/7']) {
     const result = registrations(partition)
     assert.equal(result.error, undefined)
     assert.equal(result.status, 1)
-    assert.match(result.stderr, /JARVIS_TEST_UNINSTALL_PARTITION must be 0, 1, 2 or 3/)
+    assert.match(result.stderr, /JARVIS_TEST_UNINSTALL_PARTITION must be 0, 1, 2, 3, 4, 5, 6 or 7/)
     assert.deepEqual(JSON.parse(result.stdout), [])
   }
 })

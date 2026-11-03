@@ -17,7 +17,7 @@ jobs:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, windows-latest, macos-latest]
-        group: [storage, inspection, inspection-0, inspection-1, inspection-2, inspection-3, crash, retirement, retirement-cli, uninstall-0, uninstall-1, uninstall-2, uninstall-3, completed-uninstall-cli, write-gate-0, write-gate-1, write-gate-2, write-gate-3, completion-0, completion-1, completion-2, completion-3]
+        group: [storage, inspection, inspection-0, inspection-1, inspection-2, inspection-3, crash, retirement, retirement-cli, uninstall-0, uninstall-1, uninstall-2, uninstall-3, uninstall-4, uninstall-5, uninstall-6, uninstall-7, completed-uninstall-cli, write-gate-0, write-gate-1, write-gate-2, write-gate-3, completion-0, completion-1, completion-2, completion-3]
     runs-on: ${{ matrix.os }}
     timeout-minutes: 20
     steps:
@@ -50,7 +50,7 @@ jobs:
       - name: Verify completed generation uninstall partition
         if: startsWith(matrix.group, 'uninstall-')
         env:
-          JARVIS_TEST_UNINSTALL_PARTITION: ${{ fromJSON('{"uninstall-0":"0","uninstall-1":"1","uninstall-2":"2","uninstall-3":"3"}')[matrix.group] }}
+          JARVIS_TEST_UNINSTALL_PARTITION: ${{ fromJSON('{"uninstall-0":"0","uninstall-1":"1","uninstall-2":"2","uninstall-3":"3","uninstall-4":"4","uninstall-5":"5","uninstall-6":"6","uninstall-7":"7"}')[matrix.group] }}
         run: node --experimental-transform-types --test --test-concurrency=1 test/native-install-completed-uninstall.test.ts
       - name: Verify completed generation uninstall CLI
         if: matrix.group == 'completed-uninstall-cli'
