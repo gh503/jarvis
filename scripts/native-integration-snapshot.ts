@@ -70,7 +70,18 @@ $env:PSModulePath="$PSHOME\Modules"
 $user=[Security.Principal.WindowsIdentity]::GetCurrent().User
 $principal=[Security.Principal.WindowsPrincipal]::new([Security.Principal.WindowsIdentity]::GetCurrent())
 $elevated=$principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
-foreach ($p in (ConvertFrom-Json $env:JARVIS_INTEGRATION_PATHS)) {
+# Each UTF-8/base64 record ends with ':', outside the base64 alphabet. Empty
+# transport means zero records; ':' represents one empty record without merging it.
+# Decode with .NET only: no PowerShell JSON cmdlet/module loading on this boundary.
+$utf8=[Text.UTF8Encoding]::new($false,$true)
+$encodedPaths=$env:JARVIS_INTEGRATION_PATHS_B64
+$paths=@(if ($encodedPaths.Length -gt 0) {
+ if (!$encodedPaths.EndsWith(':')) { throw 'Invalid path transport' }
+ foreach ($encoded in $encodedPaths.Substring(0,$encodedPaths.Length-1).Split([char]':')) {
+  $utf8.GetString([Convert]::FromBase64String($encoded))
+ }
+})
+foreach ($p in $paths) {
  $c=$p
  while ($c) {
   $a=[IO.File]::GetAttributes($c)
@@ -98,7 +109,7 @@ async function windowsPrivate(paths: string[]) {
   const systemRoot = process.env.SystemRoot
   assert(systemRoot && isAbsolute(systemRoot), 'Windows system root unavailable')
   try {
-    await promisify(execFile)(join(systemRoot, 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe'), ['-NoLogo', '-NoProfile', '-NonInteractive', '-EncodedCommand', Buffer.from(WINDOWS_PRIVATE, 'utf16le').toString('base64')], { env: { ...process.env, JARVIS_INTEGRATION_PATHS: JSON.stringify(paths) }, timeout: 10_000, maxBuffer: 16 * 1024, windowsHide: true, shell: false })
+    await promisify(execFile)(join(systemRoot, 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe'), ['-NoLogo', '-NoProfile', '-NonInteractive', '-EncodedCommand', Buffer.from(WINDOWS_PRIVATE, 'utf16le').toString('base64')], { env: { ...process.env, JARVIS_INTEGRATION_PATHS_B64: paths.map(path => Buffer.from(path, 'utf8').toString('base64') + ':').join('') }, timeout: 10_000, maxBuffer: 16 * 1024, windowsHide: true, shell: false })
   } catch (error) {
     // execFile errors include the entire encoded command. Retain only bounded
     // process evidence, never its message, stack, output, command, or cause.

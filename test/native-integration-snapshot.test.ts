@@ -235,12 +235,12 @@ test('Windows permission process failures are sanitized at the public snapshot b
         assert.ok(script.includes('[IO.Directory]::GetAccessControl($p)'))
         assert.ok(script.includes('[IO.File]::GetAccessControl($p)'))
         assert.ok(script.includes('if ($c -eq $p) { $leafAttributes=$a }'))
-        assert.ok(!script.includes('Get-Acl') && !script.includes('Import-Module'))
+        assert.ok(!script.includes('Get-Acl') && !script.includes('Import-Module') && !script.includes('ConvertFrom-Json'))
         assert.equal(options.timeout, 10_000)
         assert.equal(options.maxBuffer, 16 * 1024)
         assert.equal(options.windowsHide, true)
         assert.equal(options.shell, false)
-        assert.deepEqual(JSON.parse(options.env!.JARVIS_INTEGRATION_PATHS!), [destination, join(destination, 'payload'), join(destination, 'manifest.json'), join(destination, 'receipt.bin')])
+        assert.deepEqual(options.env!.JARVIS_INTEGRATION_PATHS_B64!.slice(0, -1).split(':').map(encoded => new TextDecoder('utf-8', { fatal: true }).decode(Buffer.from(encoded, 'base64'))), [destination, join(destination, 'payload'), join(destination, 'manifest.json'), join(destination, 'receipt.bin')])
         raw.message += encodedCommand
         if (unreadable === 'accessor') Object.defineProperty(raw, 'code', { get() { accessorReads++; throw new Error('RAW_SECRET accessor failure') } })
         const rejection = unreadable === 'proxy' ? new Proxy(raw, { getOwnPropertyDescriptor() { throw new Error('RAW_SECRET descriptor failure') } }) : raw
