@@ -153,8 +153,11 @@ test('bundled transaction lifecycle with empty PATH (Linux verifies target refus
       }
     `
     const actions = process.platform === 'linux' ? ['refuse'] : ['install', 'uninstall', 'install-cli', 'uninstall']
-    for (const action of actions) {
+    for (const [index, action] of actions.entries()) {
+      const started = performance.now()
       const result = spawnSync(binary, ['--experimental-transform-types', '--input-type=module', '-e', script, action], { env, cwd: temporary, encoding: 'utf8', timeout: 240_000, killSignal: 'SIGKILL', windowsHide: true, maxBuffer: 16 * 1024 })
+      // Emit only allowlisted phase metadata, including on failure; never child paths/output.
+      console.log(JSON.stringify({ phase: action, sequence: index + 1, elapsedMs: Math.round(performance.now() - started), childSucceeded: !result.error && result.signal === null && result.status === 0 }))
       assert.ok(!result.error, `bundled ${action}: subprocess failed or exceeded deadline`)
       assert.equal(result.signal, null)
       assert.equal(result.status, 0, `bundled ${action}: unsuccessful child`)
