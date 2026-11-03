@@ -8,13 +8,14 @@ permissions:
 
 jobs:
   installer:
-    name: Installer and intent (${{ matrix.os }})
+    name: Native install ${{ matrix.group }} (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
     timeout-minutes: 20
     strategy:
       fail-fast: false
       matrix:
         os: [windows-latest, macos-latest]
+        group: [installer, transaction-storage, transaction-inspection, lock-intent]
     steps:
       - uses: actions/checkout@v4
         with:
@@ -25,10 +26,17 @@ jobs:
           cache: npm
       - run: npm ci --ignore-scripts
       - name: Verify installer rendering and retained intent refusal
+        if: matrix.group == 'installer'
         run: node --experimental-transform-types --test test/native-install.test.ts
-      - name: Verify complete prepared transaction codec
-        run: node --experimental-transform-types --test test/native-install-transaction.test.ts test/native-install-transaction-store.test.ts test/native-install-transaction-ack.test.ts test/native-install-transaction-ack-store.test.ts test/native-install-transaction-inspect.test.ts test/native-install-transaction-inspect-cli.test.ts
+      - name: Verify prepared transaction codecs and stores
+        if: matrix.group == 'transaction-storage'
+        run: node --experimental-transform-types --test --test-concurrency=2 test/native-install-transaction.test.ts test/native-install-transaction-store.test.ts test/native-install-transaction-ack.test.ts test/native-install-transaction-ack-store.test.ts
+      - name: Verify transaction inspection and CLI
+        if: matrix.group == 'transaction-inspection'
+        run: node --experimental-transform-types --test --test-concurrency=2 test/native-install-transaction-inspect.test.ts test/native-install-transaction-inspect-cli.test.ts
       - name: Verify installation lock capabilities and failure draining
+        if: matrix.group == 'lock-intent'
         run: node --experimental-transform-types --test test/native-install-lock.test.ts
       - name: Verify exclusive intent storage and scoped publication
+        if: matrix.group == 'lock-intent'
         run: node --experimental-transform-types --test test/native-install-intent-store.test.ts
