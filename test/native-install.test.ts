@@ -547,6 +547,36 @@ for (const platform of ['darwin', 'win32'] as const) for (const fault of ['inven
   } finally { t.mock.restoreAll(); syncBuiltinESMExports() }
 }))
 
+for (const platform of ['darwin', 'win32'] as const) for (const stage of ['artifact', 'receipt'] as const) test(`${platform} refuses excluded startup appearing during ${stage} publication`, async t => fixture(platform, async options => {
+  const { artifactPaths, receiptPath } = describeNativeIntegration(options)
+  const startup = artifactPaths.at(-1)!
+  const trigger = stage === 'receipt' ? receiptPath : artifactPaths[0]!
+  const foreign = Buffer.from('foreign startup fixture')
+  options.runPowerShell = (_script, env) => writeFileSync(env.JARVIS_LINK_PATH!, 'fixture-link', { mode: 0o600 })
+  const originalOpen = fsPromises.open
+  let injected = false
+  t.mock.method(fsPromises, 'open', async (...args: Parameters<typeof open>) => {
+    const handle = await originalOpen(...args)
+    if (args[1] === 'wx' && args[0] === trigger) {
+      const write = handle.writeFile.bind(handle)
+      t.mock.method(handle, 'writeFile', async (...writeArgs: Parameters<typeof handle.writeFile>) => {
+        await write(...writeArgs)
+        await mkdir(dirname(startup), { recursive: true, mode: 0o755 })
+        await writeFile(startup, foreign, { flag: 'wx', mode: 0o600 })
+        injected = true
+      })
+    }
+    return handle
+  })
+  syncBuiltinESMExports()
+  try {
+    await assert.rejects(nativeIntegration(options, ['--install']), /Integration already exists/)
+    assert.equal(injected, true)
+    assert.deepEqual(await readFile(startup), foreign)
+    for (const path of [...artifactPaths.slice(0, -1), receiptPath]) assert.equal(existsSync(path), false)
+  } finally { t.mock.restoreAll(); syncBuiltinESMExports() }
+}))
+
 for (const platform of ['darwin', 'win32'] as const) for (const stage of ['later artifact', 'receipt'] as const) for (const mutation of ['content', 'identity'] as const) test(`${platform} install rechecks earlier artifact ${mutation} after ${stage} writes`, async t => fixture(platform, async options => {
   const { artifactPaths, receiptPath } = describeNativeIntegration(options)
   const first = artifactPaths[0]!

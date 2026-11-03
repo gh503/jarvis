@@ -477,8 +477,10 @@ export async function nativeIntegration(options: InstallOptions, args: string[])
       for (const artifact of prepared) await output(artifact.path, artifact.bytes, artifact.mode)
       if (JSON.stringify(created.map(({ path, sha256 }) => ({ path, sha256 }))) !== JSON.stringify(records)) throw new Error('Published integration differs from prepared receipt')
       for (const record of created) await verifyCreated(record)
+      if (!autostart) { await safeAncestors(files.at(-1)!, userRoots); await absent(files.at(-1)!) }
       await output(state, receipt)
       for (const record of created) await verifyCreated(record)
+      if (!autostart) { await safeAncestors(files.at(-1)!, userRoots); await absent(files.at(-1)!) }
       return created.map(record => record.path)
     } catch (error) {
       for (const record of created.toReversed()) {
