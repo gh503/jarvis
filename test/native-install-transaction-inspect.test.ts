@@ -9,7 +9,9 @@ import { describeNativeIntegration, renderNativeIntegration, type InstallOptions
 import { createNativeInstallTransaction, encodeNativeInstallTransaction } from '../scripts/native-install-transaction.ts'
 import { writeNativeInstallTransaction } from '../scripts/native-install-transaction-store.ts'
 import { createNativeInstallTransactionAck, encodeNativeInstallTransactionAck } from '../scripts/native-install-transaction-ack.ts'
-import { writeNativeInstallTransactionAck } from '../scripts/native-install-transaction-ack-store.ts'
+import { readNativeInstallTransactionAck, writeNativeInstallTransactionAck } from '../scripts/native-install-transaction-ack-store.ts'
+import { createNativeInstallTransactionCompletion, encodeNativeInstallTransactionCompletion } from '../scripts/native-install-transaction-completion.ts'
+import { writeNativeInstallTransactionCompletion } from '../scripts/native-install-transaction-completion-store.ts'
 import { inspectNativeInstallTransaction } from '../scripts/native-install-transaction-inspect.ts'
 import { withNativeInstallLock } from '../scripts/native-install-lock.ts'
 import { isPublicFile } from '../scripts/packaging.ts'
@@ -63,6 +65,7 @@ for (const platform of ['darwin', 'win32'] as const) {
     for (const [artifactIndex, artifact] of f.artifacts.entries()) await writeNativeInstallTransactionAck({ ...f, ack: createNativeInstallTransactionAck({ ...f, artifactIndex, observation: { bytes: artifact.bytes, identity: await fs.lstat(artifact.path, { bigint: true }) } }) })
     const ready = await inspectNativeInstallTransaction(f)
     assert.equal(ready.status, 'receipt-absent')
+    assert.equal(ready.declaration, 'absent')
     await assert.rejects(fs.lstat(f.receiptPath), { code: 'ENOENT' })
     await fs.writeFile(f.receiptPath, f.receipt, { mode: 0o600 })
     const published = await snapshot(f.root)
@@ -155,6 +158,103 @@ for (const change of ['artifact', 'receipt', 'ack', 'transaction'] as const) tes
     assert.equal(result.status, 'blocked')
     assert.ok(result.issues.some(issue => ['observation-changed', 'store-changed', 'unsafe-or-unavailable', 'receipt-mismatch'].includes(issue.reason)))
   } finally { fs.open = original; syncBuiltinESMExports() }
+})
+async function declareCompletion(f: Awaited<ReturnType<typeof fixture>>) {
+  await fs.writeFile(f.receiptPath, f.receipt, { mode: 0o600 })
+  const acks = []
+  for (const artifactIndex of f.artifacts.keys()) {
+    const ack = await readNativeInstallTransactionAck({ ...f, artifactIndex })
+    assert.ok(ack); acks.push(ack)
+  }
+  const completion = createNativeInstallTransactionCompletion({ ...f, acks, observation: { bytes: f.receipt, identity: await fs.lstat(f.receiptPath, { bigint: true }) } })
+  await writeNativeInstallTransactionCompletion({ ...f, acks, completion })
+  return { acks, completion }
+}
+for (const platform of ['darwin', 'win32'] as const) {
+  for (const scenario of ['matching', 'replaced-receipt', 'missing-receipt', 'malformed', 'wrong-acks'] as const) test(`${platform}: completion ${scenario} is a read-only declaration`, async t => {
+    const f = await fixture(t, platform)
+    await writeNativeInstallTransaction(f); await f.materialize()
+    const { completion } = await declareCompletion(f)
+    if (scenario === 'replaced-receipt') {
+      const retained = join(f.root, 'retained-receipt')
+      assert.equal(dirname(retained), f.root); assert.ok(f.receiptPath.startsWith(f.root))
+      await fs.rename(f.receiptPath, retained)
+      await fs.writeFile(f.receiptPath, f.receipt, { mode: 0o600 })
+    } else if (scenario === 'missing-receipt') {
+      assert.ok(f.receiptPath.startsWith(f.root)); await fs.rename(f.receiptPath, join(f.root, 'retained-receipt'))
+    } else if (scenario === 'malformed') await fs.writeFile(join(f.directory, 'prepared-completion.json'), 'PRIVATE-SECRET')
+    else if (scenario === 'wrong-acks') await fs.writeFile(join(f.directory, 'prepared-completion.json'), JSON.stringify({ ...completion, ackSha256: completion.ackSha256.map(() => '0'.repeat(64)) }) + '\n')
+    const before = await snapshot(f.root)
+    const result = await inspectNativeInstallTransaction(f)
+    assert.equal(result.status, scenario === 'matching' ? 'receipt-present' : ['malformed', 'wrong-acks'].includes(scenario) ? 'blocked' : 'conflict')
+    assert.equal(result.declaration, scenario === 'matching' ? 'matching' : 'unavailable')
+    assert.equal(result.scope.completed, false); assert.equal(result.scope.ownership, false)
+    assert.deepEqual(await snapshot(f.root), before)
+    for (const secret of [f.root, f.transaction.transactionId, f.transaction.receipt.sha256, 'PRIVATE-SECRET', 'identity']) assert.ok(!JSON.stringify(result).includes(secret))
+  })
+  for (const prepared of [false, true]) for (const name of ['prepared-artifact-99.json', 'prepared-artifact-999.JSON', 'prepared-artifact-secret', 'PREPARED-COMPLETION.JSON', 'prepared-completion.json', 'prepared-artifact-0.json']) test(`${platform}: ${prepared ? 'prepared' : 'orphan'} reserved ${name}`, async t => {
+    const f = await fixture(t, platform)
+    if (prepared) { await writeNativeInstallTransaction(f); await f.materialize() }
+    else await inspectNativeInstallTransaction(f)
+    const targetName = prepared && ['prepared-artifact-0.json', 'prepared-completion.json'].includes(name) ? `prepared-artifact-${f.transaction.artifacts.length - 1}.json` : name
+    await fs.writeFile(join(f.directory, targetName), 'PRIVATE-SECRET', { mode: 0o600 })
+    const before = await snapshot(f.root), result = await inspectNativeInstallTransaction(f)
+    assert.equal(result.status, 'blocked')
+    assert.deepEqual(result.issues, [{ reason: prepared && targetName.toLowerCase().startsWith('prepared-completion') ? 'unsafe-or-unavailable' : 'orphan-record' }])
+    assert.deepEqual(await snapshot(f.root), before)
+    assert.ok(!JSON.stringify(result).includes('PRIVATE-SECRET'))
+  })
+}
+for (const change of ['completion', 'new-completion', 'orphan'] as const) test(`late ${change} change fails closed`, async t => {
+  const f = await fixture(t, 'darwin')
+  await writeNativeInstallTransaction(f); await f.materialize()
+  const declared = change === 'completion' ? await declareCompletion(f) : undefined
+  const original = fs.open
+  let changed = false
+  fs.open = (async (...args: Parameters<typeof fs.open>) => {
+    const handle = await original(...args)
+    if (args[0] === f.artifacts[0]!.path && !changed) {
+      const close = handle.close.bind(handle)
+      handle.close = async () => {
+        await close()
+        if (changed) return
+        changed = true
+        if (declared) {
+          const completion = { ...declared.completion, receipt: { ...declared.completion.receipt, identity: { ...declared.completion.receipt.identity, ino: String(BigInt(declared.completion.receipt.identity.ino) + 1n) } } }
+          await fs.writeFile(join(f.directory, 'prepared-completion.json'), encodeNativeInstallTransactionCompletion(completion, f.transaction, f.integration, declared.acks))
+        } else await fs.writeFile(join(f.directory, change === 'orphan' ? 'prepared-artifact-999.json' : 'prepared-completion.json'), 'PRIVATE-SECRET', { mode: 0o600 })
+      }
+    }
+    return handle
+  }) as typeof fs.open
+  syncBuiltinESMExports()
+  try {
+    const result = await inspectNativeInstallTransaction(f)
+    assert.ok(changed); assert.equal(result.status, 'blocked')
+    assert.notEqual(result.declaration, 'matching')
+    assert.ok(result.issues.some(issue => ['store-changed', 'unsafe-or-unavailable', 'orphan-record'].includes(issue.reason)))
+  } finally { fs.open = original; syncBuiltinESMExports() }
+})
+test('missing preparation rechecks namespace before no-transaction', async t => {
+  const f = await fixture(t, 'darwin')
+  await inspectNativeInstallTransaction(f)
+  const original = fs.readdir
+  let changed = false
+  fs.readdir = (async (...args: Parameters<typeof fs.readdir>) => {
+    const names = await original(...args)
+    if (args[0] === f.directory && !changed) {
+      changed = true
+      await fs.writeFile(join(f.directory, 'prepared-artifact-orphan.json'), 'PRIVATE-SECRET', { mode: 0o600 })
+    }
+    return names
+  }) as typeof fs.readdir
+  syncBuiltinESMExports()
+  try {
+    const result = await inspectNativeInstallTransaction(f)
+    assert.ok(changed)
+    assert.equal(result.status, 'blocked')
+    assert.deepEqual(result.issues, [{ reason: 'orphan-record' }])
+  } finally { fs.readdir = original; syncBuiltinESMExports() }
 })
 test('packaging includes runtime inspector only', () => {
   assert.equal(isPublicFile('scripts/native-install-transaction-inspect.ts'), true)

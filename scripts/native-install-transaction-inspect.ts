@@ -1,5 +1,6 @@
 import { createHash } from 'node:crypto'
 import type { BigIntStats } from 'node:fs'
+import { readdir } from 'node:fs/promises'
 import { dirname, join } from 'node:path'
 import { describeNativeIntegration, readNativeIntegrationSlot, type InstallOptions } from './install-native.ts'
 import { withNativeInstallLock } from './native-install-lock.ts'
@@ -7,21 +8,25 @@ import { encodeNativeInstallTransaction } from './native-install-transaction.ts'
 import { readNativeInstallTransaction } from './native-install-transaction-store.ts'
 import { encodeNativeInstallTransactionAck, type NativeInstallArtifactIdentity, type NativeInstallTransactionAck } from './native-install-transaction-ack.ts'
 import { readNativeInstallTransactionAck } from './native-install-transaction-ack-store.ts'
+import { readNativeInstallTransactionCompletion } from './native-install-transaction-completion-store.ts'
+import { encodeNativeInstallTransactionCompletion, type NativeInstallTransactionCompletion } from './native-install-transaction-completion.ts'
 
 const FIELDS = ['dev', 'ino', 'mode', 'nlink', 'uid', 'gid', 'rdev', 'size', 'mtimeNs', 'ctimeNs', 'birthtimeNs'] as const
 const SCOPE = Object.freeze({ ownership: false, execution: false, automaticCleanup: false, replay: false, atomicity: false, completed: false } as const)
 const LIMITATIONS = Object.freeze({ sourcePolicy: 'legacy-integration', sourceWindowsAcl: false, controlPolicy: 'private-install-control', cooperatingWritersOnly: true, observationsAtomic: false, acknowledgementAuthenticity: false } as const)
 type Status = 'no-transaction' | 'blocked' | 'conflict' | 'receipt-absent' | 'receipt-present'
-type Reason = 'preparation-missing' | 'unsafe-or-unavailable' | 'ack-missing' | 'artifact-missing' | 'artifact-mismatch' | 'excluded-artifact-present' | 'receipt-mismatch' | 'observation-changed' | 'store-changed' | 'all-artifacts-match'
+type Declaration = 'absent' | 'matching' | 'unavailable' | 'not-inspected'
+type Reason = 'orphan-record' | 'preparation-missing' | 'unsafe-or-unavailable' | 'ack-missing' | 'artifact-missing' | 'artifact-mismatch' | 'excluded-artifact-present' | 'receipt-mismatch' | 'observation-changed' | 'store-changed' | 'all-artifacts-match'
 interface Issue { readonly reason: Reason; readonly artifactIndex?: number }
 export interface NativeInstallTransactionInspection {
   readonly status: Status
+  readonly declaration: Declaration
   readonly issues: readonly Issue[]
   readonly scope: typeof SCOPE
   readonly limitations: typeof LIMITATIONS
 }
-function report(status: Status, issues: readonly Issue[]): NativeInstallTransactionInspection {
-  return Object.freeze({ status, issues: Object.freeze(issues.map(issue => Object.freeze({ ...issue }))), scope: SCOPE, limitations: LIMITATIONS })
+function report(status: Status, issues: readonly Issue[], declaration: Declaration = 'unavailable'): NativeInstallTransactionInspection {
+  return Object.freeze({ status, declaration, issues: Object.freeze(issues.map(issue => Object.freeze({ ...issue }))), scope: SCOPE, limitations: LIMITATIONS })
 }
 const equalIdentity = (a: BigIntStats, b: BigIntStats) => FIELDS.every(key => a[key] === b[key])
 const matchesAck = (a: BigIntStats, b: NativeInstallArtifactIdentity) => FIELDS.every(key => a[key].toString() === b[key])
@@ -43,12 +48,25 @@ export async function inspectNativeInstallTransaction({ integration }: { integra
     const layout = describeNativeIntegration(options)
     const controlDirectory = join(dirname(layout.receiptPath), 'native-install-control')
     return await withNativeInstallLock({ controlDirectory }, async () => {
+      // Reserve the entire prepared-* namespace, including case variants and
+      // unknown ack suffixes. Never inspect arbitrary names supplied by a record.
+      const reserved = async () => (await readdir(controlDirectory)).filter(name => name.toLowerCase().startsWith('prepared-')).sort()
+      const namesBefore = await reserved()
       const transaction = await readNativeInstallTransaction({ integration: options })
       if (!transaction) {
+        if (namesBefore.length) return report('blocked', [{ reason: 'orphan-record' }], 'not-inspected')
         if (await readNativeInstallTransaction({ integration: options })) return report('blocked', [{ reason: 'store-changed' }])
+        if ((await reserved()).length) return report('blocked', [{ reason: 'orphan-record' }], 'not-inspected')
         // No slot observation or absence inference is made without preparation.
-        return report('no-transaction', [{ reason: 'preparation-missing' }])
+        return report('no-transaction', [{ reason: 'preparation-missing' }], 'not-inspected')
       }
+      const allowed = new Set(['prepared-transaction.json', 'prepared-completion.json', ...transaction.artifacts.flatMap((artifact, index) => artifact.state === 'present' ? [`prepared-artifact-${index}.json`] : [])])
+      const namespaceIssue = (names: readonly string[]): Reason | undefined => {
+        if (names.some(name => !allowed.has(name) && name.toLowerCase().startsWith('prepared-completion'))) return 'unsafe-or-unavailable'
+        return names.some(name => !allowed.has(name)) ? 'orphan-record' : undefined
+      }
+      const initialNamespaceIssue = namespaceIssue(namesBefore)
+      if (initialNamespaceIssue) return report('blocked', [{ reason: initialNamespaceIssue }])
       const transactionBytes = encodeNativeInstallTransaction(transaction, options)
       const issues: Issue[] = []
       let blocked = false, conflict = false
@@ -66,6 +84,16 @@ export async function inspectNativeInstallTransaction({ integration }: { integra
           if (!ack) add('ack-missing', artifactIndex)
           acks.push(ack)
         } catch { add('unsafe-or-unavailable', artifactIndex); acks.push(undefined) }
+      }
+      const exactAcks = acks.filter((ack): ack is NativeInstallTransactionAck => ack !== undefined)
+      const completeAcks = exactAcks.length === transaction.artifacts.filter(artifact => artifact.state === 'present').length
+      let completion: NativeInstallTransactionCompletion | undefined
+      let declaration: Declaration = 'unavailable'
+      if (completeAcks) {
+        try {
+          completion = await readNativeInstallTransactionCompletion({ integration: options, transaction, acks: exactAcks })
+          declaration = completion ? 'unavailable' : 'absent'
+        } catch { add('unsafe-or-unavailable') }
       }
       const paths = [...layout.artifactPaths, layout.receiptPath]
       const observe = async (): Promise<Observation[]> => {
@@ -89,6 +117,7 @@ export async function inspectNativeInstallTransaction({ integration }: { integra
       const receipt = before.at(-1)!
       if (receipt.unsafe) add('unsafe-or-unavailable')
       else if (receipt.slot && !receipt.slot.bytes.equals(Buffer.from(transaction.receipt.base64, 'base64'))) add('receipt-mismatch', undefined, true)
+      if (completion && !receipt.unsafe && (!receipt.slot || !matchesAck(receipt.slot.identity, completion.receipt.identity))) add('receipt-mismatch', undefined, true)
       const after = await observe()
       for (const [index, first] of before.entries()) {
         const second = after[index]!
@@ -107,9 +136,21 @@ export async function inspectNativeInstallTransaction({ integration }: { integra
       }
       const current = await readNativeInstallTransaction({ integration: options })
       if (!current || !encodeNativeInstallTransaction(current, options).equals(transactionBytes)) add('store-changed')
-      if (blocked) return report('blocked', issues)
-      if (conflict) return report('conflict', issues)
-      return report(receipt.slot ? 'receipt-present' : 'receipt-absent', [{ reason: 'all-artifacts-match' }])
+      if (completeAcks) {
+        try {
+          const latest = await readNativeInstallTransactionCompletion({ integration: options, transaction, acks: exactAcks })
+          if (completion ? !latest || !encodeNativeInstallTransactionCompletion(completion, transaction, options, exactAcks).equals(encodeNativeInstallTransactionCompletion(latest, transaction, options, exactAcks)) : latest !== undefined) {
+            add('store-changed'); declaration = 'unavailable'
+          }
+        } catch { add('unsafe-or-unavailable'); declaration = 'unavailable' }
+      }
+      const namesAfter = await reserved()
+      const finalNamespaceIssue = namespaceIssue(namesAfter)
+      if (finalNamespaceIssue) add(finalNamespaceIssue)
+      else if (JSON.stringify(namesBefore) !== JSON.stringify(namesAfter)) add('store-changed')
+      if (blocked) return report('blocked', issues, declaration)
+      if (conflict) return report('conflict', issues, declaration)
+      return report(receipt.slot ? 'receipt-present' : 'receipt-absent', [{ reason: 'all-artifacts-match' }], completion ? 'matching' : declaration)
     })
   } catch { return report('blocked', [{ reason: 'unsafe-or-unavailable' }]) }
 }

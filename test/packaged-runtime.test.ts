@@ -139,7 +139,7 @@ test('native artifact verifies and starts/stops using only its bundled Node', { 
     assert.ifError(inspection.error)
     assert.equal(inspection.status, 0, inspection.stderr)
     assert.deepEqual(JSON.parse(inspection.stdout), {
-      status: 'no-transaction', issues: [{ reason: 'preparation-missing' }],
+      status: 'no-transaction', declaration: 'not-inspected', issues: [{ reason: 'preparation-missing' }],
       scope: { ownership: false, execution: false, automaticCleanup: false, replay: false, atomicity: false, completed: false },
       limitations: { sourcePolicy: 'legacy-integration', sourceWindowsAcl: false, controlPolicy: 'private-install-control', cooperatingWritersOnly: true, observationsAtomic: false, acknowledgementAuthenticity: false },
     })

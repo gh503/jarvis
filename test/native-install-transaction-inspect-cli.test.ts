@@ -11,7 +11,9 @@ import { describeNativeIntegration, renderNativeIntegration } from '../scripts/i
 import { createNativeInstallTransaction } from '../scripts/native-install-transaction.ts'
 import { writeNativeInstallTransaction } from '../scripts/native-install-transaction-store.ts'
 import { createNativeInstallTransactionAck } from '../scripts/native-install-transaction-ack.ts'
-import { writeNativeInstallTransactionAck } from '../scripts/native-install-transaction-ack-store.ts'
+import { readNativeInstallTransactionAck, writeNativeInstallTransactionAck } from '../scripts/native-install-transaction-ack-store.ts'
+import { createNativeInstallTransactionCompletion } from '../scripts/native-install-transaction-completion.ts'
+import { writeNativeInstallTransactionCompletion } from '../scripts/native-install-transaction-completion-store.ts'
 import { isPublicFile } from '../scripts/packaging.ts'
 import { WINDOWS_AUMID } from '../src/windows-notification.ts'
 
@@ -52,11 +54,11 @@ async function snapshot(path: string): Promise<unknown> {
   return { bytes: stat.isFile() ? await fs.readFile(path) : undefined, ino: stat.ino, mode: stat.mode, nlink: stat.nlink, size: stat.size, mtime: stat.mtimeNs, ctime: stat.ctimeNs }
 }
 async function absent(path: string) { await assert.rejects(fs.lstat(path), { code: 'ENOENT' }) }
-async function report(f: Awaited<ReturnType<typeof fixture>>, status: string, issues: unknown[]) {
+async function report(f: Awaited<ReturnType<typeof fixture>>, status: string, issues: unknown[], declaration = status === 'no-transaction' ? 'not-inspected' : status === 'blocked' ? 'unavailable' : 'absent') {
   const result = await run(args(f.integration.platform as 'darwin' | 'win32', f.root), f.root)
   assert.equal(result.code, 0, result.stderr)
   assert.equal(result.stderr, '')
-  assert.deepEqual(JSON.parse(result.stdout), { status, issues, scope, limitations })
+  assert.deepEqual(JSON.parse(result.stdout), { status, declaration, issues, scope, limitations })
   assert.ok(result.stdout.length < 4096)
   for (const privateText of [f.root, secret, 'sha256', 'base64', 'identity', 'transactionId']) assert.ok(!result.stdout.includes(privateText))
   await absent(join(f.root, secret))
@@ -95,6 +97,14 @@ for (const platform of ['darwin', 'win32'] as const) {
     assert.deepEqual((await fs.readdir(f.directory)).filter(name => !name.startsWith('launcher.lock.sqlite')), [])
     for (const other of [...f.artifactPaths.slice(1), f.receiptPath, f.integration.root]) await absent(other)
   })
+  test(`${platform}: orphan control records produce fixed sanitized CLI reports`, { timeout }, async t => {
+    const f = await fixture(t, platform)
+    await report(f, 'no-transaction', [{ reason: 'preparation-missing' }])
+    await fs.writeFile(join(f.directory, 'PREPARED-ARTIFACT-unknown.json'), secret, { mode: 0o600 })
+    const before = await snapshot(f.root)
+    await report(f, 'blocked', [{ reason: 'orphan-record' }], 'not-inspected')
+    assert.deepEqual(await snapshot(f.root), before)
+  })
   test(`${platform}: manual preparation and observed acks produce bounded reports without changing installation files`, { timeout: timeout * 5 }, async t => {
     const f = await fixture(t, platform)
     const plan = renderNativeIntegration(f.integration, false)
@@ -121,9 +131,19 @@ for (const platform of ['darwin', 'win32'] as const) {
     before = await snapshot(f.root)
     await report(f, 'receipt-present', [{ reason: 'all-artifacts-match' }])
     assert.deepEqual(await snapshot(f.root), before)
+    const acks = []
+    for (const artifactIndex of artifacts.keys()) {
+      const ack = await readNativeInstallTransactionAck({ ...f, transaction, artifactIndex })
+      assert.ok(ack); acks.push(ack)
+    }
+    const completion = createNativeInstallTransactionCompletion({ ...f, transaction, acks, observation: { bytes: receipt, identity: await fs.lstat(f.receiptPath, { bigint: true }) } })
+    await writeNativeInstallTransactionCompletion({ ...f, transaction, acks, completion })
+    before = await snapshot(f.root)
+    await report(f, 'receipt-present', [{ reason: 'all-artifacts-match' }], 'matching')
+    assert.deepEqual(await snapshot(f.root), before)
     await fs.writeFile(artifacts[0]!.path, secret + '-tampered')
     before = await snapshot(f.root)
-    await report(f, 'conflict', [{ reason: 'artifact-mismatch', artifactIndex: 0 }])
+    await report(f, 'conflict', [{ reason: 'artifact-mismatch', artifactIndex: 0 }], 'unavailable')
     assert.deepEqual(await snapshot(f.root), before)
     await fs.writeFile(join(f.directory, 'prepared-transaction.json'), '{' + secret, { mode: 0o600 })
     before = await snapshot(f.root)
