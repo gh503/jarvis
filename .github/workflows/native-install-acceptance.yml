@@ -15,7 +15,7 @@ jobs:
       fail-fast: false
       matrix:
         os: [windows-latest, macos-latest]
-        group: [installer, transaction-storage, transaction-inspection, lock-intent]
+        group: [installer, transaction-storage, completion-store-0, completion-store-1, completion-store-2, completion-store-3, transaction-inspection, lock-intent]
     steps:
       - uses: actions/checkout@v4
         with:
@@ -30,7 +30,12 @@ jobs:
         run: node --experimental-transform-types --test test/native-install.test.ts
       - name: Verify prepared transaction codecs and stores
         if: matrix.group == 'transaction-storage'
-        run: node --experimental-transform-types --test --test-concurrency=2 test/native-install-transaction.test.ts test/native-install-transaction-store.test.ts test/native-install-transaction-ack.test.ts test/native-install-transaction-ack-store.test.ts test/native-install-transaction-completion.test.ts test/native-install-transaction-completion-store.test.ts
+        run: node --experimental-transform-types --test --test-concurrency=2 test/native-install-transaction.test.ts test/native-install-transaction-store.test.ts test/native-install-transaction-ack.test.ts test/native-install-transaction-ack-store.test.ts test/native-install-transaction-completion.test.ts test/native-install-transaction-completion-partition.test.ts
+      - name: Verify completion store case partition
+        if: startsWith(matrix.group, 'completion-store-')
+        env:
+          JARVIS_TEST_COMPLETION_PARTITION: ${{ fromJSON('{"completion-store-0":"0","completion-store-1":"1","completion-store-2":"2","completion-store-3":"3"}')[matrix.group] }}
+        run: node --experimental-transform-types --test --test-concurrency=1 test/native-install-transaction-completion-store.test.ts
       - name: Verify transaction inspection and CLI
         if: matrix.group == 'transaction-inspection'
         run: node --experimental-transform-types --test --test-concurrency=2 test/native-install-transaction-inspect.test.ts test/native-install-transaction-inspect-cli.test.ts

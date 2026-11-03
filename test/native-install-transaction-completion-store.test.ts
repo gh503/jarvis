@@ -6,7 +6,7 @@ import fs from 'node:fs/promises'
 import { syncBuiltinESMExports } from 'node:module'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
-import test from 'node:test'
+import nodeTest, { type TestContext, type TestFn, type TestOptions } from 'node:test'
 import { describeNativeIntegration, renderNativeIntegration, type InstallOptions } from '../scripts/install-native.ts'
 import { createNativeInstallTransaction, encodeNativeInstallTransaction } from '../scripts/native-install-transaction.ts'
 import { writeNativeInstallTransaction } from '../scripts/native-install-transaction-store.ts'
@@ -18,7 +18,27 @@ import { readNativeInstallTransactionCompletion, writeNativeInstallTransactionCo
 import { WINDOWS_AUMID } from '../src/windows-notification.ts'
 import { isPublicFile } from '../scripts/packaging.ts'
 
-async function fixture(t: test.TestContext, platform: 'darwin' | 'win32' = 'darwin') {
+const partitionValue = process.env.JARVIS_TEST_COMPLETION_PARTITION
+if (partitionValue !== undefined && !['0', '1', '2', '3'].includes(partitionValue)) {
+  throw new Error('JARVIS_TEST_COMPLETION_PARTITION must be 0, 1, 2 or 3 when set')
+}
+const partition = partitionValue === undefined ? undefined : Number(partitionValue)
+let registeredCaseCount = 0
+
+// Count every top-level registration, including loop-generated and platform-skipped
+// cases, before filtering. Keep registration order deterministic on every platform.
+function test(name: string, fn: TestFn): void
+function test(name: string, options: TestOptions, fn: TestFn): void
+function test(name: string, optionsOrFn: TestOptions | TestFn, fn?: TestFn): void {
+  const caseIndex = registeredCaseCount++
+  if (partition !== undefined && caseIndex % 4 !== partition) return
+  const options = typeof optionsOrFn === 'function' ? {} : optionsOrFn
+  const body = typeof optionsOrFn === 'function' ? optionsOrFn : fn!
+  // These cases monkeypatch global fs methods; never run their bodies concurrently.
+  void nodeTest(name, { ...options, concurrency: false }, body)
+}
+
+async function fixture(t: TestContext, platform: 'darwin' | 'win32' = 'darwin') {
   const root = await fs.mkdtemp(join(await fs.realpath(tmpdir()), 'transaction-store-'))
   t.after(async () => { assert.ok(root.startsWith(join(await fs.realpath(tmpdir()), 'transaction-store-'))); await fs.rm(root, { recursive: true, force: true }) })
   const integration: InstallOptions = { platform, root: join(root, 'new-package'), home: join(root, 'home'), appData: join(root, 'roaming'), localAppData: join(root, 'local'), arch: process.arch }
