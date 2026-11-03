@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import { execFileSync, spawn, spawnSync } from 'node:child_process'
 import { once } from 'node:events'
-import { chmod, link, lstat, mkdir, mkdtemp, readFile, realpath, rm, symlink, writeFile } from 'node:fs/promises'
+import { chmod, link, lstat, mkdir, mkdtemp, readFile, realpath, rm, symlink, unlink, writeFile } from 'node:fs/promises'
 import fsPromises from 'node:fs/promises'
 import { syncBuiltinESMExports } from 'node:module'
 import { tmpdir } from 'node:os'
@@ -113,9 +113,11 @@ Set-Acl -LiteralPath $p -AclObject $acl
   assert.equal(await readFile(join(controlDirectory, 'intent-store', 'intent.json'), 'utf8'), 'sentinel')
 })
 
-async function privateCheckerScripts() {
-  const source = await readFile(new URL('../scripts/native-install-lock.ts', import.meta.url), 'utf8')
-  const direct = source.match(/const windowsCheck = String\.raw`([\s\S]*?)`/)![1]!
+async function privateCheckerScripts(source?: string) {
+  source ??= await readFile(new URL('../scripts/native-install-lock.ts', import.meta.url), 'utf8')
+  // JS template literals normalize source CRLF to LF at runtime; match that
+  // behavior before reconstructing the provider oracle from a Windows checkout.
+  const direct = source.match(/const windowsCheck = String\.raw`([\s\S]*?)`/)![1]!.replace(/\r\n/g, '\n')
   // Freeze the provider implementation as the native parity oracle. Only reader
   // plumbing differs; the exact production owner/rule policy runs in both.
   const legacy = direct.replace('$user =', 'Import-Module "$PSHOME\\Modules\\Microsoft.PowerShell.Security\\Microsoft.PowerShell.Security.psd1" -ErrorAction Stop\n$user =')
@@ -124,8 +126,23 @@ async function privateCheckerScripts() {
   if ($cursor -ne $p -and !$item.PSIsContainer) { exit 1 }
   $parent =`)
     .replace(/# Windows PowerShell uses[^\n]*\n\$acl = if[\s\S]*?\n\}(?=\n\$owner)/, '$acl = Get-Acl -LiteralPath $p')
+  // Fail before launching fixtures if reconstruction leaves any direct reader.
+  assert.match(legacy, /Get-Item -LiteralPath \$cursor -Force/)
+  assert.match(legacy, /Get-Acl -LiteralPath \$p/)
+  assert.doesNotMatch(legacy, /GetAttributes|GetAccessControl|leafAttributes/)
   return { source, direct, legacy }
 }
+
+test('Windows checker oracle reconstruction is identical for LF and CRLF source', async () => {
+  const { source } = await privateCheckerScripts()
+  const lf = source.replace(/\r\n/g, '\n')
+  const crlf = lf.replace(/\n/g, '\r\n')
+  assert.ok(crlf.includes('\r\n'))
+  const expected = await privateCheckerScripts(lf)
+  const actual = await privateCheckerScripts(crlf)
+  assert.equal(actual.direct, expected.direct)
+  assert.equal(actual.legacy, expected.legacy)
+})
 
 test('Windows lock checker retains strict policy and bounded invocation with direct readers', async () => {
   const { source, direct, legacy } = await privateCheckerScripts()
@@ -205,12 +222,28 @@ Set-Acl -LiteralPath $p -AclObject $acl
       if (directory) {
         const child = join(path, 'inherited-file')
         await writeFile(child, 'inherited')
-        compare(child, 0)
-        const junction = join(root, 'junction')
-        await symlink(path, junction, 'junction')
-        for (const target of [junction, join(junction, 'inherited-file')]) {
-          run(legacy, target, 1)
-          run(direct, target, 1)
+        try {
+          compare(child, 0)
+          t.diagnostic('ACL parity: inherited file')
+          const junction = join(root, 'junction')
+          await symlink(path, junction, 'junction')
+          try {
+            for (const [kind, target] of [['leaf', junction], ['ancestor', join(junction, 'inherited-file')]] as const) {
+              run(legacy, target, 1)
+              run(direct, target, 1)
+              t.diagnostic(`ACL parity: ${kind} junction refusal`)
+            }
+          } finally {
+            // Unlink only the verified junction, never recursively its target.
+            assert.equal(dirname(junction), root)
+            assert.equal((await lstat(junction)).isSymbolicLink(), true)
+            await unlink(junction)
+          }
+        } finally {
+          // Give the child an explicit protected ACL while it still inherits
+          // FullControl. Resetting its parent first removes its inherited ACEs
+          // and can make the fixture's eventual recursive cleanup fail EPERM.
+          set(child, 'private')
         }
       }
     } finally { set(path, 'private') }
