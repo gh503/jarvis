@@ -11,7 +11,9 @@ async function temporary(run: (dir: string) => Promise<void>) {
   const dir = await mkdtemp(join(tmpdir(), 'jarvis packaging 中文 '))
   try { await run(dir) } finally {
     assert.ok(dir.startsWith(join(tmpdir(), 'jarvis packaging 中文 ')))
-    await rm(dir, { recursive: true, force: true })
+    // Windows can briefly retain the executable handle after the launcher exits.
+    // Bound retries; persistent locks still fail the test rather than hiding cleanup errors.
+    await rm(dir, { recursive: true, force: true, maxRetries: process.platform === 'win32' ? 5 : 0, retryDelay: 200 })
   }
 }
 
