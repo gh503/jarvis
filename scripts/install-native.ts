@@ -3,7 +3,7 @@
 import { createHash } from 'node:crypto'
 import { execFileSync } from 'node:child_process'
 import { constants, type BigIntStats } from 'node:fs'
-import { lstat, mkdir, mkdtemp, open, readFile, realpath, rmdir, unlink } from 'node:fs/promises'
+import { lstat, mkdir, mkdtemp, open, readFile, readdir, realpath, rmdir, unlink } from 'node:fs/promises'
 import { homedir } from 'node:os'
 import { dirname, isAbsolute, join, resolve } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
@@ -360,6 +360,25 @@ export async function inspectNativeIntegration(options: InstallOptions): Promise
   }
 }
 
+/** Presence only, under the verified shared writer boundary. Never open residue:
+ * malformed records, special files and records from other roots still require review. */
+async function refuseRetainedTransaction(directory: string, artifactCount: number): Promise<void> {
+  const refused = () => new Error('Retained or unsafe native install transaction residue requires review; refusing integration mutation')
+  try {
+    for (const name of ['prepared-transaction.json', ...Array.from({ length: artifactCount }, (_, index) => `prepared-artifact-${index}.json`)]) {
+      try { await lstat(join(directory, name)) } catch (error) {
+        if ((error as NodeJS.ErrnoException).code === 'ENOENT') continue
+        throw error
+      }
+      throw refused()
+    }
+    // Include unknown generations/indices and malformed acknowledgement names.
+    // Directory entries suffice: do not follow links or inspect their contents.
+    // Reserve case variants too, including on case-insensitive Windows volumes.
+    if ((await readdir(directory)).some(name => name.toLowerCase() === 'prepared-transaction.json' || /^prepared-artifact-/i.test(name))) throw refused()
+  } catch { throw refused() }
+}
+
 export async function nativeIntegration(options: InstallOptions, args: string[]): Promise<string[]> {
   const { action, autostart, configFile } = parseArgs(args)
   const { receiptPath: state, artifactPaths: files } = describeNativeIntegration(options)
@@ -369,6 +388,7 @@ export async function nativeIntegration(options: InstallOptions, args: string[])
     // Retained plans (including malformed/unsafe files) require review before mutation.
     const { readNativeInstallIntent } = await import('./native-install-intent-store.ts')
     if (await readNativeInstallIntent({ integration: options })) throw new Error('Existing native install intent requires review; refusing integration mutation')
+    await refuseRetainedTransaction(join(dirname(state), 'native-install-control'), files.length)
     // Validate on the host before any integration mutation; never snapshot secrets.
     const externalConfig = configFile === undefined ? undefined : loadExternalConfig(configFile)
     const binding = configFile === undefined ? {} : { configFile: await realpath(configFile), dataDir: externalConfig!.JARVIS_DATA_DIR }
