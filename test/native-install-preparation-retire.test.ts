@@ -154,11 +154,14 @@ for (const failure of ['writeFile', 'sync', 'close'] as const) test(`manifest ${
   assert.ok((await fs.lstat(f.barrier)).isDirectory())
   await assert.rejects(nativeIntegration(f.integration, ['--install']), /transaction residue/)
 })
-for (const stage of ['before-source', 'after-source', 'after-commit']) test(`process interruption ${stage} preserves archive or gate`, { skip: process.platform === 'win32' }, async t => {
+for (const stage of ['before-source', 'after-source', 'after-commit']) test(`process interruption ${stage} preserves archive or gate`, { timeout: 300_000 }, async t => {
   const f = await fixture(t, 'darwin')
-  const child = spawnSync(process.execPath, ['--experimental-transform-types', fileURLToPath(new URL('./fixtures/native-install-preparation-retire-crash.ts', import.meta.url)), stage, JSON.stringify({ integration: f.integration, transactionId: f.transactionId })], { encoding: 'utf8', timeout: 20_000 })
+  const child = spawnSync(process.execPath, ['--experimental-transform-types', '--disable-warning=ExperimentalWarning', fileURLToPath(new URL('./fixtures/native-install-preparation-retire-crash.ts', import.meta.url)), stage, JSON.stringify({ integration: f.integration, transactionId: f.transactionId })], { encoding: 'utf8', timeout: 240_000, killSignal: 'SIGKILL', maxBuffer: 4096, windowsHide: true })
   assert.equal(child.error, undefined)
-  assert.equal(child.signal, 'SIGKILL', child.stderr)
+  assert.equal(child.stdout, 'INTERRUPTING\n')
+  assert.equal(child.stderr, '')
+  if (process.platform === 'win32') assert.ok(child.signal === 'SIGKILL' || (child.status !== null && child.status !== 0), 'Expected Windows process termination')
+  else assert.equal(child.signal, 'SIGKILL')
   if (stage === 'after-commit') {
     await assert.rejects(fs.lstat(f.barrier), { code: 'ENOENT' })
     const archive = (await fs.readdir(f.directory)).find(name => name.startsWith('retired-'))!
