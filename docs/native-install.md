@@ -50,7 +50,7 @@ Windows PowerShell:
 & '.\runtime\node.exe' --experimental-transform-types '.\scripts\install-native.ts' --uninstall
 ```
 
-Choose one install command. Existing integrations are never silently overwritten: uninstall before reinstalling, enabling/disabling startup, or pointing shortcuts to a different package or config file. Missing or ambiguous actions and unknown flags fail. `--autostart` and `--config ABS` are valid only with `--install`; they can be used together. `--uninstall` rejects both options.
+Choose one install command. Existing integrations are never silently overwritten: uninstall before reinstalling, enabling/disabling startup, or pointing shortcuts to a different package or config file. Missing or ambiguous actions and unknown flags fail. For legacy `--install`, `--autostart` and `--config ABS` can be used together. The current-source experimental `--install-transaction` also accepts `--config ABS`, but rejects `--autostart` and any other action flag. Legacy `--uninstall` rejects both options and refuses retained transaction records; completed transactional generations require the separate explicit uninstall command described above.
 
 ## Optional private external configuration
 
