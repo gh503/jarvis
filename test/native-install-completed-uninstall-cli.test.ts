@@ -5,14 +5,35 @@ import fs from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import test from 'node:test'
+import nodeTest, { type TestContext, type TestOptions } from 'node:test'
 import { parseNativeInstallCompletedUninstallArgs as parse } from '../scripts/uninstall-native-install-transaction.ts'
 import { completedFixture } from './fixtures/native-install-completed-uninstall.ts'
 import { isPublicFile } from '../scripts/packaging.ts'
 
 const cli = fileURLToPath(new URL('../scripts/uninstall-native-install-transaction.ts', import.meta.url))
 const secret = 'PRIVATE-UNINSTALL-CLI-SECRET'
-const timeout = process.platform === 'win32' ? 240_000 : 60_000
+// One original case per native job: even the three-fixture refusal case cannot
+// stack its outer deadline with another expensive case inside the 20-minute job.
+const partitionValue = process.env.JARVIS_TEST_UNINSTALL_CLI_PARTITION
+if (partitionValue !== undefined && !Array.from({ length: 13 }, (_, index) => String(index)).includes(partitionValue)) throw new Error('JARVIS_TEST_UNINSTALL_CLI_PARTITION must be an integer from 0 through 12')
+const partition = partitionValue === undefined ? undefined : Number(partitionValue)
+let registrations = 0
+const completed = new WeakSet<TestContext>()
+type TestFn = (t: TestContext) => void | Promise<void>
+function test(name: string, fn: TestFn): void
+function test(name: string, options: TestOptions, fn: TestFn): void
+function test(name: string, optionsOrFn: TestOptions | TestFn, fn?: TestFn): void {
+  const index = registrations++
+  if (partition !== undefined && partition !== index) return
+  const body = typeof optionsOrFn === 'function' ? optionsOrFn : fn!
+  void nodeTest(name, { ...(typeof optionsOrFn === 'function' ? {} : optionsOrFn), concurrency: false }, async t => {
+    await body(t)
+    completed.add(t)
+  })
+}
+const timeout = process.platform === 'win32' ? 900_000 : 60_000
+const childTimeout = process.platform === 'win32' ? 230_000 : 50_000
+const successChildTimeout = process.platform === 'win32' ? 600_000 : childTimeout
 const scope = { automaticRecovery: false, powerLossDurability: false, defaultProducerEnabled: false, optInProducerAvailable: true }
 const invalidReport = { schemaVersion: 1, status: 'invalid-arguments' }
 const uncertainReport = { schemaVersion: 1, status: 'outcome-uncertain', requiresReview: true }
@@ -20,10 +41,13 @@ function args(platform: 'darwin' | 'win32', root: string, id: string): string[] 
   return ['uninstall-completed', '--expected-transaction-id', id, '--platform', platform, '--arch', process.arch, '--home', join(root, 'home'), '--root', join(root, 'package'),
     ...(platform === 'win32' ? ['--app-data', join(root, 'roaming'), '--local-app-data', join(root, 'local')] : [])]
 }
-async function run(input: string[], root: string, script = cli) {
+async function run(t: TestContext, input: string[], root: string, script = cli, deadline = childTimeout) {
+  // Abort prevents a timed-out async body from starting its next child. execFile
+  // terminates an active child on abort; failed/aborted bodies retain all fixtures.
+  t.signal.throwIfAborted()
   return new Promise<{ code: number; stdout: string; stderr: string }>((resolve, reject) => {
     execFile(process.execPath, ['--experimental-transform-types', script, ...input], {
-      timeout: timeout - 10_000, maxBuffer: 64 * 1024, encoding: 'utf8', windowsHide: true,
+      timeout: deadline, signal: t.signal, killSignal: 'SIGKILL', maxBuffer: 64 * 1024, encoding: 'utf8', windowsHide: true,
       env: { ...process.env, NODE_NO_WARNINGS: '1', JARVIS_CONFIG_FILE: join(root, secret + '.env'), JARVIS_DATA_DIR: join(root, secret), JARVIS_PORT: secret },
     }, (error, stdout, stderr) => {
       if (error && (error.killed || typeof error.code !== 'number')) { reject(error); return }
@@ -31,12 +55,19 @@ async function run(input: string[], root: string, script = cli) {
     })
   })
 }
-async function temporary(t: test.TestContext) {
+async function temporary(t: TestContext) {
+  t.signal.throwIfAborted()
   const base = await fs.realpath(tmpdir()), root = await fs.mkdtemp(join(base, 'uninstall-cli-'))
-  t.after(async () => { assert.equal(dirname(root), base); assert.ok(root.startsWith(join(base, 'uninstall-cli-'))); await fs.rm(root, { recursive: true, force: true }) })
+  t.after(async () => {
+    // node:test can run after hooks before a timed-out async body has settled.
+    // Only a successful body has awaited every child callback and fixture write.
+    if (!completed.has(t) || t.signal.aborted) { t.diagnostic('Retained isolated uninstall CLI fixture after failure or abort'); return }
+    assert.equal(dirname(root), base); assert.ok(root.startsWith(join(base, 'uninstall-cli-')))
+    await fs.rm(root, { recursive: true, force: true })
+  })
   return root
 }
-async function fixture(t: test.TestContext, platform: 'darwin' | 'win32') {
+async function fixture(t: TestContext, platform: 'darwin' | 'win32') {
   const f = await completedFixture(await temporary(t), platform)
   return { ...f, input: args(platform, f.root, f.transactionId) }
 }
@@ -83,7 +114,7 @@ for (const platform of ['darwin', 'win32'] as const) {
     await absent(f.integration.root)
     const names = (await fs.readdir(f.directory)).filter(name => name.startsWith('prepared-'))
     const records = await Promise.all(names.map(async name => ({ name, bytes: await fs.readFile(join(f.directory, name)), ino: (await fs.lstat(join(f.directory, name), { bigint: true })).ino })))
-    const result = await run(f.input, f.root)
+    const result = await run(t, f.input, f.root, cli, successChildTimeout)
     assert.equal(result.code, 0, result.stderr); assert.equal(result.stderr, '')
     const report = JSON.parse(result.stdout)
     assert.match(report.archiveId, new RegExp(`^retired-${f.transactionId}-[A-Za-z0-9]+$`))
@@ -119,7 +150,7 @@ for (const platform of ['darwin', 'win32'] as const) {
         }
         const wrongId = randomUUID(), before = await snapshot(f.root)
         const input = f.input.map(value => scenario === 'wrong-id' && value === f.transactionId ? wrongId : scenario === 'wrong-root' && value === f.integration.root ? join(f.root, secret) : value)
-        failure(await run(input, f.root), 1, uncertainReport, [f.root, f.transactionId, wrongId, secret])
+        failure(await run(t, input, f.root), 1, uncertainReport, [f.root, f.transactionId, wrongId, secret])
         assert.deepEqual(await snapshot(f.root), before)
         await absent(f.barrier)
       }
@@ -128,7 +159,7 @@ for (const platform of ['darwin', 'win32'] as const) {
   test(`${platform}: malformed subprocess input makes no writes or raw reports`, { timeout }, async t => {
     const root = await temporary(t), id = randomUUID(), input = args(platform, root, id), before = await snapshot(root)
     for (const malformed of [[], ['--help', secret], ['uninstall-completed', '--help'], [...input, '--root', root], [...input, '--recover', secret], input.slice(0, -1), input.map(value => value === id ? id.toUpperCase() : value), input.map(value => value === join(root, 'home') ? value + '\n' : value), input.map(value => value === join(root, 'home') ? 'relative' : value)]) {
-      failure(await run(malformed, root), 2, invalidReport, [root, id, secret])
+      failure(await run(t, malformed, root), 2, invalidReport, [root, id, secret])
       assert.deepEqual(await snapshot(root), before)
     }
   })
@@ -137,7 +168,7 @@ for (const platform of ['darwin', 'win32'] as const) {
 test('standalone JSON help and invalid inputs require no operational modules; import failures are uncertain', { timeout }, async t => {
   const root = await temporary(t), standalone = join(root, 'standalone.mts'), id = randomUUID()
   await fs.writeFile(standalone, await fs.readFile(cli))
-  const before = await snapshot(root), help = await run(['--help'], root, standalone)
+  const before = await snapshot(root), help = await run(t, ['--help'], root, standalone)
   assert.equal(help.code, 0); assert.equal(help.stderr, '')
   const report = JSON.parse(help.stdout)
   assert.equal(report.status, 'help'); assert.equal(report.schemaVersion, 1)
@@ -146,8 +177,8 @@ test('standalone JSON help and invalid inputs require no operational modules; im
   assert.match(report.description, /never automatically retry, resume, or clean up/)
   assert.match(report.limitations, /not authentication/)
   assert.deepEqual(report.scope, scope)
-  failure(await run(['--help', secret], root, standalone), 2, invalidReport, [root, id, secret])
-  failure(await run(args('darwin', root, id), root, standalone), 1, uncertainReport, [root, id, secret])
+  failure(await run(t, ['--help', secret], root, standalone), 2, invalidReport, [root, id, secret])
+  failure(await run(t, args('darwin', root, id), root, standalone), 1, uncertainReport, [root, id, secret])
   assert.deepEqual(await snapshot(root), before)
 })
 

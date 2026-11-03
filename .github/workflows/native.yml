@@ -17,7 +17,7 @@ jobs:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, windows-latest, macos-latest]
-        group: [producer-0, producer-1, producer-2, producer-3, producer-4, producer-5, producer-6, producer-7, storage, inspection, inspection-0, inspection-1, inspection-2, inspection-3, crash, retirement, retirement-cli, uninstall-0, uninstall-1, uninstall-2, uninstall-3, uninstall-4, uninstall-5, uninstall-6, uninstall-7, uninstall-8, uninstall-9, uninstall-10, uninstall-11, uninstall-12, uninstall-13, uninstall-14, uninstall-15, completed-uninstall-cli, write-gate-0, write-gate-1, write-gate-2, write-gate-3, completion-0, completion-1, completion-2, completion-3]
+        group: [producer-0, producer-1, producer-2, producer-3, producer-4, producer-5, producer-6, producer-7, storage, inspection, inspection-0, inspection-1, inspection-2, inspection-3, crash, retirement, retirement-cli, uninstall-0, uninstall-1, uninstall-2, uninstall-3, uninstall-4, uninstall-5, uninstall-6, uninstall-7, uninstall-8, uninstall-9, uninstall-10, uninstall-11, uninstall-12, uninstall-13, uninstall-14, uninstall-15, completed-uninstall-cli-0, completed-uninstall-cli-1, completed-uninstall-cli-2, completed-uninstall-cli-3, completed-uninstall-cli-4, completed-uninstall-cli-5, completed-uninstall-cli-6, completed-uninstall-cli-7, completed-uninstall-cli-8, completed-uninstall-cli-9, completed-uninstall-cli-10, completed-uninstall-cli-11, completed-uninstall-cli-12, write-gate-0, write-gate-1, write-gate-2, write-gate-3, completion-0, completion-1, completion-2, completion-3]
     runs-on: ${{ matrix.os }}
     timeout-minutes: 20
     steps:
@@ -34,7 +34,7 @@ jobs:
         run: node --experimental-transform-types --test --test-concurrency=1 test/native-install-transaction-producer.test.ts
       - name: Verify transaction codecs and storage
         if: matrix.group == 'storage'
-        run: node --experimental-transform-types --test --test-concurrency=2 test/native-install-transaction.test.ts test/native-install-transaction-store.test.ts test/native-install-transaction-ack.test.ts test/native-install-transaction-ack-store.test.ts test/native-install-transaction-completion.test.ts test/native-install-transaction-completion-partition.test.ts test/native-install-transaction-inspection-partition.test.ts test/native-install-prepared-write-gate-partition.test.ts test/native-install-completed-uninstall-partition.test.ts test/native-install-transaction-producer-partition.test.ts
+        run: node --experimental-transform-types --test --test-concurrency=2 test/native-install-transaction.test.ts test/native-install-transaction-store.test.ts test/native-install-transaction-ack.test.ts test/native-install-transaction-ack-store.test.ts test/native-install-transaction-completion.test.ts test/native-install-transaction-completion-partition.test.ts test/native-install-transaction-inspection-partition.test.ts test/native-install-prepared-write-gate-partition.test.ts test/native-install-completed-uninstall-partition.test.ts test/native-install-completed-uninstall-cli-partition.test.ts test/native-install-transaction-producer-partition.test.ts
       - name: Verify transaction inspection CLI
         if: matrix.group == 'inspection'
         run: node --experimental-transform-types --test --test-concurrency=2 test/native-install-transaction-inspect-cli.test.ts
@@ -58,7 +58,9 @@ jobs:
           JARVIS_TEST_UNINSTALL_PARTITION: ${{ fromJSON('{"uninstall-0":"0","uninstall-1":"1","uninstall-2":"2","uninstall-3":"3","uninstall-4":"4","uninstall-5":"5","uninstall-6":"6","uninstall-7":"7","uninstall-8":"8","uninstall-9":"9","uninstall-10":"10","uninstall-11":"11","uninstall-12":"12","uninstall-13":"13","uninstall-14":"14","uninstall-15":"15"}')[matrix.group] }}
         run: node --experimental-transform-types --test --test-concurrency=1 test/native-install-completed-uninstall.test.ts
       - name: Verify completed generation uninstall CLI
-        if: matrix.group == 'completed-uninstall-cli'
+        if: startsWith(matrix.group, 'completed-uninstall-cli-')
+        env:
+          JARVIS_TEST_UNINSTALL_CLI_PARTITION: ${{ fromJSON('{"completed-uninstall-cli-0":"0","completed-uninstall-cli-1":"1","completed-uninstall-cli-2":"2","completed-uninstall-cli-3":"3","completed-uninstall-cli-4":"4","completed-uninstall-cli-5":"5","completed-uninstall-cli-6":"6","completed-uninstall-cli-7":"7","completed-uninstall-cli-8":"8","completed-uninstall-cli-9":"9","completed-uninstall-cli-10":"10","completed-uninstall-cli-11":"11","completed-uninstall-cli-12":"12"}')[matrix.group] }}
         run: node --experimental-transform-types --test --test-concurrency=1 test/native-install-completed-uninstall-cli.test.ts
       - name: Verify prepared writer barrier partition
         if: startsWith(matrix.group, 'write-gate-')
