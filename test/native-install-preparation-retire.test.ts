@@ -67,13 +67,14 @@ for (const platform of ['darwin', 'win32'] as const) {
     const path = scenario === 'artifact' ? f.artifactPaths[0]! : scenario === 'startup' ? f.artifactPaths.at(-1)! : scenario === 'receipt' ? f.receiptPath : join(f.directory, ({ ack: 'prepared-artifact-0.json', completion: 'prepared-completion.json', intent: 'install-intent.json', unknown: 'prepared-unknown', case: 'PREPARED-TRANSACTION.JSON', barrier: `prepared-retiring-${f.transactionId}`, 'wrong-id': 'unused' } as Record<string, string>)[scenario]!)
     if (scenario !== 'wrong-id') {
       await fs.mkdir(dirname(path), { recursive: true, mode: 0o700 })
-      if (scenario === 'barrier') await fs.mkdir(path, { mode: 0o700 })
+      if (scenario === 'case') await fs.rename(f.source, path)
+      else if (scenario === 'barrier') await fs.mkdir(path, { mode: 0o700 })
       else await fs.writeFile(path, 'evidence', { mode: 0o600 })
     }
     const before = await snapshot(f.directory)
     await assert.rejects(retireNativeInstallPreparation({ ...f, transactionId: scenario === 'wrong-id' ? randomUUID() : f.transactionId }))
     assert.deepEqual(await snapshot(f.directory), before)
-    assert.deepEqual(await fs.readFile(f.source), f.bytes)
+    assert.deepEqual(await fs.readFile(scenario === 'case' ? path : f.source), f.bytes)
   })
 }
 
