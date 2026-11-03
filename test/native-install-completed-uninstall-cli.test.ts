@@ -13,7 +13,7 @@ import { isPublicFile } from '../scripts/packaging.ts'
 const cli = fileURLToPath(new URL('../scripts/uninstall-native-install-transaction.ts', import.meta.url))
 const secret = 'PRIVATE-UNINSTALL-CLI-SECRET'
 const timeout = process.platform === 'win32' ? 240_000 : 60_000
-const scope = { automaticRecovery: false, powerLossDurability: false, producerEnabled: false }
+const scope = { automaticRecovery: false, powerLossDurability: false, defaultProducerEnabled: false, optInProducerAvailable: true }
 const invalidReport = { schemaVersion: 1, status: 'invalid-arguments' }
 const uncertainReport = { schemaVersion: 1, status: 'outcome-uncertain', requiresReview: true }
 function args(platform: 'darwin' | 'win32', root: string, id: string): string[] {

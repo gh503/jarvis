@@ -1,6 +1,8 @@
 #!/usr/bin/env node
 /** Per-user integrations only: the verified portable package stays in place. */
-import { createHash } from 'node:crypto'
+import { createHash, randomUUID } from 'node:crypto'
+import type { NativeInstallTransaction } from './native-install-transaction.ts'
+import type { NativeInstallTransactionAck } from './native-install-transaction-ack.ts'
 import { execFileSync } from 'node:child_process'
 import { constants, type BigIntStats } from 'node:fs'
 import { lstat, mkdir, mkdtemp, open, readFile, readdir, realpath, rmdir, unlink } from 'node:fs/promises'
@@ -22,21 +24,21 @@ export interface InstallOptions {
   runPowerShell?: (script: string, env: NodeJS.ProcessEnv) => void
 }
 const digest = (data: Buffer | string) => createHash('sha256').update(data).digest('hex')
-export function parseArgs(args: string[]): { action: 'install' | 'uninstall'; autostart: boolean; configFile?: string } {
-  const usage = () => new Error('Usage: install-native.ts --install [--autostart] [--config ABS] | --uninstall')
+export function parseArgs(args: string[]): { action: 'install' | 'install-transaction' | 'uninstall'; autostart: boolean; configFile?: string } {
+  const usage = () => new Error('Usage: install-native.ts --install [--autostart] [--config ABS] | --install-transaction [--config ABS] | --uninstall')
   const flags = new Set<string>()
   let configFile: string | undefined
   for (let index = 0; index < args.length; index++) {
     const arg = args[index]!
-    if (!['--install', '--uninstall', '--autostart', '--config'].includes(arg) || flags.has(arg)) throw usage()
+    if (!['--install', '--install-transaction', '--uninstall', '--autostart', '--config'].includes(arg) || flags.has(arg)) throw usage()
     flags.add(arg)
     if (arg === '--config') {
       configFile = args[++index]
       if (!configFile || !isAbsolute(configFile) || /[\0\r\n]/.test(configFile)) throw usage()
     }
   }
-  if (flags.has('--install') === flags.has('--uninstall') || (flags.has('--uninstall') && (flags.has('--autostart') || flags.has('--config')))) throw usage()
-  return { action: flags.has('--install') ? 'install' : 'uninstall', autostart: flags.has('--autostart'), ...(configFile === undefined ? {} : { configFile }) }
+  if (['--install', '--install-transaction', '--uninstall'].filter(flag => flags.has(flag)).length !== 1 || (flags.has('--uninstall') && (flags.has('--autostart') || flags.has('--config'))) || (flags.has('--install-transaction') && flags.has('--autostart'))) throw usage()
+  return { action: flags.has('--install') ? 'install' : flags.has('--install-transaction') ? 'install-transaction' : 'uninstall', autostart: flags.has('--autostart'), ...(configFile === undefined ? {} : { configFile }) }
 }
 export const shellQuote = (value: string) => `'${value.replaceAll("'", "'\\''")}'`
 export function windowsQuote(value: string): string {
@@ -380,9 +382,31 @@ async function refuseRetainedTransaction(directory: string, artifactCount: numbe
 }
 
 export async function nativeIntegration(options: InstallOptions, args: string[]): Promise<string[]> {
-  const { action, autostart, configFile } = parseArgs(args)
+  return (await nativeIntegrationDetailed(options, args)).paths
+}
+
+async function nativeIntegrationDetailed(options: InstallOptions, args: string[]): Promise<{ paths: string[]; transactionId?: string }> {
+  options = { ...options }
+  const { action, autostart, configFile } = parseArgs([...args])
+  const transactional = action === 'install-transaction'
   const { receiptPath: state, artifactPaths: files } = describeNativeIntegration(options)
-  return withNativeInstallLock({ controlDirectory: join(dirname(state), 'native-install-control') }, async () => {
+  const control = join(dirname(state), 'native-install-control')
+  return withNativeInstallLock({ controlDirectory: control }, async lock => {
+    // Fresh phases permit exactly the records this invocation has already published.
+    const expectedPrepared = new Set<string>()
+    async function phaseGuard() {
+      const names = await readdir(control)
+      if (names.some(name => name.toLowerCase() === 'install-intent.json')) throw new Error('Existing native install intent requires review')
+      const reserved = names.filter(name => name.toLowerCase().startsWith('prepared-'))
+      if (reserved.length !== expectedPrepared.size || reserved.some(name => !expectedPrepared.has(name))) throw new Error('Unexpected native install transaction phase residue requires review')
+    }
+    if (transactional) {
+      await phaseGuard()
+      for (const path of [state, ...files, ...(options.platform === 'darwin' ? [locations(options).app] : [])]) {
+        await safeAncestors(path)
+        await absent(path)
+      }
+    }
     // Hold the shared writer lock before configuration/package observation, through cleanup.
     // The store reader is deliberately unlocked; never reacquire this writer lock.
     // Retained plans (including malformed/unsafe files) require review before mutation.
@@ -396,7 +420,7 @@ export async function nativeIntegration(options: InstallOptions, args: string[])
     for (const path of [state, ...files]) await safeAncestors(path)
     if (action === 'uninstall') {
       const detailed = await inspectDetailed(options, state, files)
-      if (!detailed) return []
+      if (!detailed) return { paths: [] }
       const { userRoots, receiptSnapshot, receipt, preflight } = detailed
       // These checks narrow races; portable pathname unlink is not atomic with validation.
       for (const entry of receipt.files) {
@@ -412,9 +436,10 @@ export async function nativeIntegration(options: InstallOptions, args: string[])
       if (options.platform === 'darwin') for (const directory of [join(app, 'Contents', 'MacOS'), join(app, 'Contents'), app]) {
         try { await rmdir(directory) } catch (error) { if (!['ENOENT', 'ENOTEMPTY', 'EEXIST'].includes((error as NodeJS.ErrnoException).code ?? '')) throw error }
       }
-      return receipt.files.map(entry => entry.path)
+      return { paths: receipt.files.map(entry => entry.path) }
     }
     const root = await realpath(options.root)
+    if (transactional) options = { ...options, root }
     await validatePackage(root, options.platform, options.arch)
     await absent(state)
     if (options.platform === 'darwin') await absent(app)
@@ -423,6 +448,7 @@ export async function nativeIntegration(options: InstallOptions, args: string[])
     interface CreatedRecord { path: string; identity?: BigIntStats; sha256?: string; limit: number }
     const created: CreatedRecord[] = []
     const userRoots = [options.home, options.appData, options.localAppData].filter((path): path is string => path !== undefined).map(path => resolve(path))
+    let preparationAttempted = false
     const cleanupErrors: unknown[] = []
     const retained = (path: string) => new Error(`Retained unverified installation artifact: ${JSON.stringify(path).slice(0, 1024)}`)
     async function verifyCreated(record: CreatedRecord) {
@@ -452,13 +478,22 @@ export async function nativeIntegration(options: InstallOptions, args: string[])
         await handle.writeFile(content)
         await handle.sync()
         const completed = await handle.stat({ bigint: true })
-        const snapshot = await boundedIntegrationRead(path, record.limit, userRoots, path === state)
-        if (!snapshot || initial.dev !== completed.dev || initial.ino !== completed.ino || !sameIdentity(completed, snapshot.identity) || digest(snapshot.bytes) !== digest(content)) throw new Error('Integration changed during publication')
+        if (initial.dev !== completed.dev || initial.ino !== completed.ino) throw new Error('Integration changed during publication')
+        if (!transactional) {
+          const snapshot = await boundedIntegrationRead(path, record.limit, userRoots, path === state)
+          if (!snapshot || !sameIdentity(completed, snapshot.identity) || digest(snapshot.bytes) !== digest(content)) throw new Error('Integration changed during publication')
+        }
         record.identity = completed
         record.sha256 = digest(content)
       } catch (error) { failed = true; failure = error }
       try { await handle.close() } catch (error) { if (failed) cleanupErrors.push(error); else { failed = true; failure = error } }
       if (failed) throw failure
+      if (transactional) {
+        const snapshot = await boundedIntegrationRead(path, record.limit, userRoots, path === state)
+        if (!snapshot || !record.identity || !sameIdentity(record.identity, snapshot.identity) || !snapshot.bytes.equals(Buffer.from(content))) throw new Error('Integration changed after publication close')
+        return snapshot
+      }
+      return undefined
     }
     try {
       const prepared: { path: string; bytes: Buffer; mode: number }[] = plan.platform === 'darwin' ? plan.artifacts : []
@@ -494,15 +529,66 @@ export async function nativeIntegration(options: InstallOptions, args: string[])
       const receipt = Buffer.from(JSON.stringify({ schemaVersion: 1, platform: options.platform, root, autostart, ...binding, ...(options.platform === 'win32' ? { notificationAumid: WINDOWS_AUMID } : {}), files: records }, null, 2) + '\n')
       // Validate the complete proposed receipt before any final artifact is published.
       parseNativeIntegrationReceipt(receipt, { ...options, root })
-      for (const artifact of prepared) await output(artifact.path, artifact.bytes, artifact.mode)
+      let transaction: NativeInstallTransaction | undefined
+      const acks: NativeInstallTransactionAck[] = []
+      const codec = transactional ? await import('./native-install-transaction.ts') : undefined
+      const ackCodec = transactional ? await import('./native-install-transaction-ack.ts') : undefined
+      const completionCodec = transactional ? await import('./native-install-transaction-completion.ts') : undefined
+      const stores = transactional ? {
+        preparation: (await import('./native-install-transaction-store.ts')).writeNativeInstallTransactionUnderLock,
+        acknowledgement: (await import('./native-install-transaction-ack-store.ts')).writeNativeInstallTransactionAckUnderLock,
+        completion: (await import('./native-install-transaction-completion-store.ts')).writeNativeInstallTransactionCompletionUnderLock,
+      } : undefined
+      if (transactional) {
+        // Capture complete actual bytes before creating any persistent transaction record.
+        for (const artifact of prepared) artifact.bytes = Buffer.from(artifact.bytes)
+        transaction = codec!.createNativeInstallTransaction({ integration: options, transactionId: randomUUID(), artifacts: prepared, receipt: Buffer.from(receipt) })
+        codec!.encodeNativeInstallTransaction(transaction, options)
+        await phaseGuard()
+        for (const path of [state, ...files, ...(options.platform === 'darwin' ? [app] : [])]) {
+          await safeAncestors(path, userRoots)
+          await absent(path)
+        }
+        await phaseGuard()
+        preparationAttempted = true
+        await stores!.preparation({ integration: options, transaction, lock })
+        expectedPrepared.add('prepared-transaction.json')
+      }
+      for (const [artifactIndex, artifact] of prepared.entries()) {
+        if (transactional) await phaseGuard()
+        const observation = await output(artifact.path, artifact.bytes, artifact.mode)
+        if (transaction) {
+          await phaseGuard()
+          const ack = ackCodec!.createNativeInstallTransactionAck({ integration: options, transaction, artifactIndex, observation: observation! })
+          await stores!.acknowledgement({ integration: options, transaction, ack, lock })
+          acks.push(ack)
+          expectedPrepared.add(`prepared-artifact-${artifactIndex}.json`)
+        }
+      }
       if (JSON.stringify(created.map(({ path, sha256 }) => ({ path, sha256 }))) !== JSON.stringify(records)) throw new Error('Published integration differs from prepared receipt')
       for (const record of created) await verifyCreated(record)
       if (!autostart) { await safeAncestors(files.at(-1)!, userRoots); await absent(files.at(-1)!) }
-      await output(state, receipt)
+      if (transactional) await phaseGuard()
+      const receiptObservation = await output(state, receipt)
       for (const record of created) await verifyCreated(record)
       if (!autostart) { await safeAncestors(files.at(-1)!, userRoots); await absent(files.at(-1)!) }
-      return created.map(record => record.path)
+      if (transaction) {
+        await phaseGuard()
+        const completion = completionCodec!.createNativeInstallTransactionCompletion({ integration: options, transaction, acks, observation: receiptObservation! })
+        await stores!.completion({ integration: options, transaction, acks, completion, lock })
+        expectedPrepared.add('prepared-completion.json')
+        for (const record of created) await verifyCreated(record)
+        await safeAncestors(files.at(-1)!, userRoots)
+        await absent(files.at(-1)!)
+        await phaseGuard()
+      }
+      return { paths: created.map(record => record.path), ...(transaction ? { transactionId: transaction.transactionId } : {}) }
     } catch (error) {
+      // A store invocation may have persisted evidence even if it rejects.
+      if (preparationAttempted) {
+        if (cleanupErrors.length) throw new AggregateError([error, ...cleanupErrors], 'Transactional installation failed; evidence retained', { cause: error })
+        throw error
+      }
       for (const record of created.toReversed()) {
         try { await removeOwned(record) } catch (cleanup) { cleanupErrors.push(new Error(`Installation cleanup retained ${JSON.stringify(record.path).slice(0, 1024)}`, { cause: cleanup })) }
       }
@@ -519,8 +605,9 @@ if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1]
   const main = async () => {
     if (process.platform !== 'darwin' && process.platform !== 'win32') throw new Error('Native wrappers support macOS and Windows; Linux desktop/systemd scripts are unchanged')
     const parsed = parseArgs(process.argv.slice(2))
-    await nativeIntegration({ platform: process.platform, root: dirname(dirname(fileURLToPath(import.meta.url))), home: await realpath(homedir()), appData: process.env.APPDATA, localAppData: process.env.LOCALAPPDATA, arch: process.arch }, process.argv.slice(2))
-    console.log(parsed.action === 'install' ? `Installed per-user shortcuts. Keep this package folder in place. Login startup: ${parsed.autostart ? 'enabled for next login' : 'disabled'}. No application was started.` : 'Removed owned integrations. Package, user data and running servers were preserved.')
+    const result = await nativeIntegrationDetailed({ platform: process.platform, root: dirname(dirname(fileURLToPath(import.meta.url))), home: await realpath(homedir()), appData: process.env.APPDATA, localAppData: process.env.LOCALAPPDATA, arch: process.arch }, process.argv.slice(2))
+    if (result.transactionId) console.log(`Install transaction: ${result.transactionId}. Retain this identifier for explicit completed-generation uninstall.`)
+    console.log(parsed.action !== 'uninstall' ? `Installed per-user shortcuts. Keep this package folder in place. Login startup: ${parsed.autostart ? 'enabled for next login' : 'disabled'}. No application was started.` : 'Removed owned integrations. Package, user data and running servers were preserved.')
     if (process.platform === 'darwin') console.log('This wrapper is unsigned and not notarized. macOS may block it or the downloaded runtime; no Gatekeeper or quarantine settings were changed.')
   }
   main().catch(error => { console.error(error instanceof Error ? error.message : error); process.exitCode = 1 })

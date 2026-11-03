@@ -111,7 +111,7 @@ test('native artifact verifies and starts/stops using only its bundled Node', { 
     const uninstallReport = JSON.parse(uninstallHelp.stdout)
     assert.equal(uninstallReport.status, 'help')
     assert.match(uninstallReport.usage, /uninstall-completed --expected-transaction-id UUID/)
-    assert.deepEqual(uninstallReport.scope, { automaticRecovery: false, powerLossDurability: false, producerEnabled: false })
+    assert.deepEqual(uninstallReport.scope, { automaticRecovery: false, powerLossDurability: false, defaultProducerEnabled: false, optInProducerAvailable: true })
     const uninstallInvalid = spawnSync(binary, ['--experimental-transform-types', uninstallCli, 'uninstall-completed'], retirementOptions)
     assert.ifError(uninstallInvalid.error)
     assert.equal(uninstallInvalid.status, 2)

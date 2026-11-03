@@ -15,7 +15,7 @@ jobs:
       fail-fast: false
       matrix:
         os: [windows-latest, macos-latest]
-        group: [installer, transaction-storage, completion-store-0, completion-store-1, completion-store-2, completion-store-3, transaction-inspection, transaction-inspection-0, transaction-inspection-1, transaction-inspection-2, transaction-inspection-3, transaction-crash, preparation-retirement, preparation-retirement-cli, uninstall-0, uninstall-1, uninstall-2, uninstall-3, uninstall-4, uninstall-5, uninstall-6, uninstall-7, completed-uninstall-cli, write-gate-0, write-gate-1, write-gate-2, write-gate-3, lock-intent]
+        group: [producer-0, producer-1, producer-2, producer-3, producer-4, producer-5, producer-6, producer-7, installer, transaction-storage, completion-store-0, completion-store-1, completion-store-2, completion-store-3, transaction-inspection, transaction-inspection-0, transaction-inspection-1, transaction-inspection-2, transaction-inspection-3, transaction-crash, preparation-retirement, preparation-retirement-cli, uninstall-0, uninstall-1, uninstall-2, uninstall-3, uninstall-4, uninstall-5, uninstall-6, uninstall-7, completed-uninstall-cli, write-gate-0, write-gate-1, write-gate-2, write-gate-3, lock-intent]
     steps:
       - uses: actions/checkout@v4
         with:
@@ -25,12 +25,17 @@ jobs:
           node-version: '24'
           cache: npm
       - run: npm ci --ignore-scripts
+      - name: Verify transactional installer partition
+        if: startsWith(matrix.group, 'producer-')
+        env:
+          JARVIS_INSTALL_PRODUCER_PARTITION: ${{ fromJSON('{"producer-0":"0","producer-1":"1","producer-2":"2","producer-3":"3","producer-4":"4","producer-5":"5","producer-6":"6","producer-7":"7"}')[matrix.group] }}
+        run: node --experimental-transform-types --test --test-concurrency=1 test/native-install-transaction-producer.test.ts
       - name: Verify installer rendering and retained intent refusal
         if: matrix.group == 'installer'
         run: node --experimental-transform-types --test test/native-install.test.ts
       - name: Verify prepared transaction codecs and stores
         if: matrix.group == 'transaction-storage'
-        run: node --experimental-transform-types --test --test-concurrency=2 test/native-install-transaction.test.ts test/native-install-transaction-store.test.ts test/native-install-transaction-ack.test.ts test/native-install-transaction-ack-store.test.ts test/native-install-transaction-completion.test.ts test/native-install-transaction-completion-partition.test.ts test/native-install-transaction-inspection-partition.test.ts test/native-install-prepared-write-gate-partition.test.ts test/native-install-completed-uninstall-partition.test.ts
+        run: node --experimental-transform-types --test --test-concurrency=2 test/native-install-transaction.test.ts test/native-install-transaction-store.test.ts test/native-install-transaction-ack.test.ts test/native-install-transaction-ack-store.test.ts test/native-install-transaction-completion.test.ts test/native-install-transaction-completion-partition.test.ts test/native-install-transaction-inspection-partition.test.ts test/native-install-prepared-write-gate-partition.test.ts test/native-install-completed-uninstall-partition.test.ts test/native-install-transaction-producer-partition.test.ts
       - name: Verify completed generation uninstall partition
         if: startsWith(matrix.group, 'uninstall-')
         env:

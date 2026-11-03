@@ -5,7 +5,7 @@ import { pathToFileURL } from 'node:url'
 import type { InstallOptions } from './install-native.ts'
 
 const usage = 'Usage: uninstall-native-install-transaction.ts uninstall-completed --expected-transaction-id UUID --platform darwin|win32 --arch x64|arm64 --home ABS --root ORIGINAL_ABS (win32 requires --app-data ABS --local-app-data ABS; darwin forbids them)'
-const scope = { automaticRecovery: false, powerLossDurability: false, producerEnabled: false }
+const scope = { automaticRecovery: false, powerLossDurability: false, defaultProducerEnabled: false, optInProducerAvailable: true }
 
 /** Validate every argument before importing operational modules or acquiring locks. */
 export function parseNativeInstallCompletedUninstallArgs(argv: readonly string[]): { integration: InstallOptions; transactionId: string } | { help: true } {

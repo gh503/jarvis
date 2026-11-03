@@ -17,7 +17,7 @@ jobs:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, windows-latest, macos-latest]
-        group: [storage, inspection, inspection-0, inspection-1, inspection-2, inspection-3, crash, retirement, retirement-cli, uninstall-0, uninstall-1, uninstall-2, uninstall-3, uninstall-4, uninstall-5, uninstall-6, uninstall-7, completed-uninstall-cli, write-gate-0, write-gate-1, write-gate-2, write-gate-3, completion-0, completion-1, completion-2, completion-3]
+        group: [producer-0, producer-1, producer-2, producer-3, producer-4, producer-5, producer-6, producer-7, storage, inspection, inspection-0, inspection-1, inspection-2, inspection-3, crash, retirement, retirement-cli, uninstall-0, uninstall-1, uninstall-2, uninstall-3, uninstall-4, uninstall-5, uninstall-6, uninstall-7, completed-uninstall-cli, write-gate-0, write-gate-1, write-gate-2, write-gate-3, completion-0, completion-1, completion-2, completion-3]
     runs-on: ${{ matrix.os }}
     timeout-minutes: 20
     steps:
@@ -27,9 +27,14 @@ jobs:
           node-version: '24'
           cache: npm
       - run: npm ci --ignore-scripts
+      - name: Verify transactional installer partition
+        if: startsWith(matrix.group, 'producer-')
+        env:
+          JARVIS_INSTALL_PRODUCER_PARTITION: ${{ fromJSON('{"producer-0":"0","producer-1":"1","producer-2":"2","producer-3":"3","producer-4":"4","producer-5":"5","producer-6":"6","producer-7":"7"}')[matrix.group] }}
+        run: node --experimental-transform-types --test --test-concurrency=1 test/native-install-transaction-producer.test.ts
       - name: Verify transaction codecs and storage
         if: matrix.group == 'storage'
-        run: node --experimental-transform-types --test --test-concurrency=2 test/native-install-transaction.test.ts test/native-install-transaction-store.test.ts test/native-install-transaction-ack.test.ts test/native-install-transaction-ack-store.test.ts test/native-install-transaction-completion.test.ts test/native-install-transaction-completion-partition.test.ts test/native-install-transaction-inspection-partition.test.ts test/native-install-prepared-write-gate-partition.test.ts test/native-install-completed-uninstall-partition.test.ts
+        run: node --experimental-transform-types --test --test-concurrency=2 test/native-install-transaction.test.ts test/native-install-transaction-store.test.ts test/native-install-transaction-ack.test.ts test/native-install-transaction-ack-store.test.ts test/native-install-transaction-completion.test.ts test/native-install-transaction-completion-partition.test.ts test/native-install-transaction-inspection-partition.test.ts test/native-install-prepared-write-gate-partition.test.ts test/native-install-completed-uninstall-partition.test.ts test/native-install-transaction-producer-partition.test.ts
       - name: Verify transaction inspection CLI
         if: matrix.group == 'inspection'
         run: node --experimental-transform-types --test --test-concurrency=2 test/native-install-transaction-inspect-cli.test.ts
