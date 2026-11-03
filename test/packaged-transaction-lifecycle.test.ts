@@ -12,7 +12,8 @@ const archiveInput = process.env.JARVIS_PACKAGE_ARCHIVE
 
 // Separate from the startup artifact test: Windows ACL/COM operations are costly.
 // Each child is bounded to 240s; a timeout fails without retrying a partial uninstall.
-test('bundled transaction lifecycle with empty PATH (Linux verifies target refusal only)', { skip: !archiveInput, timeout: 1_200_000 }, async () => {
+test('bundled transaction lifecycle with empty PATH (Linux verifies target refusal only)', { skip: !archiveInput, timeout: 1_200_000 }, async t => {
+  if (process.platform === 'linux') t.diagnostic('Native installer CLI success coverage skipped on Linux; requires Windows and macOS packaged runs.')
   const pkg = JSON.parse(await readFile(new URL('../package.json', import.meta.url), 'utf8'))
   const filename = `jarvis-${process.env.JARVIS_RELEASE_VERSION ?? pkg.version}-${process.platform}-${process.arch}${process.platform === 'win32' ? '.zip' : '.tar.gz'}`
   const archive = archiveInput === 'auto' ? resolve('dist', filename) : resolve(archiveInput!)
@@ -37,10 +38,11 @@ test('bundled transaction lifecycle with empty PATH (Linux verifies target refus
     const binary = join(bundle, 'runtime', process.platform === 'win32' ? 'node.exe' : 'node')
     const home = join(temporary, 'home'), appData = join(temporary, 'roaming'), localAppData = join(temporary, 'local')
     const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => !/^JARVIS_|^NODE_|^PATH$|^HOME$|^USERPROFILE$|^APPDATA$|^LOCALAPPDATA$|^TMP$|^TEMP$|^TMPDIR$/i.test(key)))
-    Object.assign(env, { PATH: '', HOME: join(temporary, 'ambient home'), USERPROFILE: join(temporary, 'ambient home'), APPDATA: appData, LOCALAPPDATA: localAppData, TMP: temporary, TEMP: temporary, TMPDIR: temporary, NODE_NO_WARNINGS: '1' })
+    Object.assign(env, { PATH: '', HOME: join(temporary, 'ambient home'), USERPROFILE: join(temporary, 'ambient home'), APPDATA: join(temporary, 'ambient roaming'), LOCALAPPDATA: join(temporary, 'ambient local'), TMP: temporary, TEMP: temporary, TMPDIR: temporary, NODE_NO_WARNINGS: '1' })
     const moduleUrl = (name: string) => JSON.stringify(pathToFileURL(join(bundle, name)).href)
     const script = `
       import assert from 'node:assert/strict';
+      import {spawnSync} from 'node:child_process';
       import {lstat, readFile, readdir, writeFile} from 'node:fs/promises';
       import {dirname, join, relative, isAbsolute} from 'node:path';
       import {createHash} from 'node:crypto';
@@ -52,7 +54,7 @@ test('bundled transaction lifecycle with empty PATH (Linux verifies target refus
       const temporary = ${JSON.stringify(temporary)};
       const integration = ${JSON.stringify({ platform: process.platform === 'linux' ? 'darwin' : process.platform, arch: process.arch, root: bundle, home, appData, localAppData })};
       const action = process.argv[1];
-      const steps = {installs:0, inspections:0, uninstalls:0, refusals:0};
+      const steps = {installs:0, cliInstalls:0, inspections:0, uninstalls:0, refusals:0};
       const hash = bytes => createHash('sha256').update(bytes).digest('hex');
       const absent = path => assert.rejects(lstat(path), {code:'ENOENT'});
       const contained = path => { const r = relative(temporary, path); assert.ok(r && !r.startsWith('..') && !isAbsolute(r)); };
@@ -80,13 +82,41 @@ test('bundled transaction lifecycle with empty PATH (Linux verifies target refus
           assert.equal(await readNativeInstallTransaction({integration}), undefined);
           assert.deepEqual((await readdir(control)).filter(name => /^prepared-|^install-intent\\.json$/i.test(name)), []);
           steps.refusals++;
-        } else if (action === 'install') {
+        } else if (action === 'install' || action === 'install-cli') {
+          let cliOutput;
           // No runPowerShell override: native Windows exercises the shipped COM implementation.
-          const installed = await nativeIntegration(integration, ['--install-transaction']);
-          assert.deepEqual(installed, [...layout.artifactPaths.slice(0,-1), layout.receiptPath]);
+          if (action === 'install') {
+            const installed = await nativeIntegration(integration, ['--install-transaction']);
+            assert.deepEqual(installed, [...layout.artifactPaths.slice(0,-1), layout.receiptPath]);
+          } else {
+            // Only this child treats the prepared fixture roots as account directories.
+            // The observer must keep sibling ambient roots: securing HOME or APPDATA
+            // itself with ensurePrivateDataDirectory is intentionally prohibited.
+            const cli = spawnSync(process.execPath, ['--experimental-transform-types', join(integration.root, 'scripts', 'install-native.ts'), '--install-transaction'], {
+              env: {...process.env, HOME:integration.home, USERPROFILE:integration.home, APPDATA:integration.appData, LOCALAPPDATA:integration.localAppData},
+              cwd:temporary, encoding:'utf8', timeout:180_000, killSignal:'SIGKILL', windowsHide:true, maxBuffer:16 * 1024
+            });
+            assert.ok(!cli.error, 'installer CLI failed or exceeded deadline');
+            assert.equal(cli.signal, null);
+            assert.equal(cli.status, 0);
+            assert.equal(cli.stderr, '');
+            cliOutput = cli.stdout;
+            steps.cliInstalls++;
+          }
           steps.installs++;
           const transaction = await readNativeInstallTransaction({integration});
           assert.ok(transaction);
+          if (cliOutput !== undefined) {
+            const expected = [
+              'Install transaction: ' + transaction.transactionId + '. Retain this identifier for explicit completed-generation uninstall.',
+              'Installed per-user shortcuts. Keep this package folder in place. Login startup: disabled. No application was started.',
+              ...(process.platform === 'darwin' ? ['This wrapper is unsigned and not notarized. macOS may block it or the downloaded runtime; no Gatekeeper or quarantine settings were changed.'] : [])
+            ].join('\\n') + '\\n';
+            assert.equal(cliOutput, expected);
+          }
+          // Startup creates the default data tree before acquiring lifecycle locks.
+          // This checks startup residue, without claiming to monitor arbitrary launches.
+          await absent(join(dirname(layout.receiptPath), 'data'));
           assert.equal(transaction.binding.root, integration.root);
           assert.equal(transaction.binding.autostart, false);
           assert.match(transaction.transactionId, /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/);
@@ -122,7 +152,7 @@ test('bundled transaction lifecycle with empty PATH (Linux verifies target refus
         process.exitCode = 1;
       }
     `
-    const actions = process.platform === 'linux' ? ['refuse'] : ['install', 'uninstall', 'install', 'uninstall']
+    const actions = process.platform === 'linux' ? ['refuse'] : ['install', 'uninstall', 'install-cli', 'uninstall']
     for (const action of actions) {
       const result = spawnSync(binary, ['--experimental-transform-types', '--input-type=module', '-e', script, action], { env, cwd: temporary, encoding: 'utf8', timeout: 240_000, killSignal: 'SIGKILL', windowsHide: true, maxBuffer: 16 * 1024 })
       assert.ok(!result.error, `bundled ${action}: subprocess failed or exceeded deadline`)
@@ -130,7 +160,7 @@ test('bundled transaction lifecycle with empty PATH (Linux verifies target refus
       assert.equal(result.status, 0, `bundled ${action}: unsuccessful child`)
       assert.ok(result.stderr === '', `bundled ${action}: unexpected stderr`)
       const report = JSON.parse(result.stdout)
-      assert.deepEqual(report, { status: action === 'refuse' ? 'target-refused' : 'ok', steps: { installs: Number(action === 'install'), inspections: Number(action === 'install'), uninstalls: Number(action === 'uninstall'), refusals: Number(action === 'refuse') } })
+      assert.deepEqual(report, { status: action === 'refuse' ? 'target-refused' : 'ok', steps: { installs: Number(action === 'install' || action === 'install-cli'), cliInstalls: Number(action === 'install-cli'), inspections: Number(action === 'install' || action === 'install-cli'), uninstalls: Number(action === 'uninstall'), refusals: Number(action === 'refuse') } })
       assert.ok(!result.stdout.includes(temporary))
       console.log(JSON.stringify(report))
     }
