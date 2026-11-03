@@ -8,7 +8,7 @@ Native production readiness is **not complete**. The implementation and local re
 | --- | --- | --- |
 | Full three-platform baseline | `197990a`, run [41580458387](https://github.com/gh503/jarvis/actions/runs/41580458387) passed | Baseline predates completed uninstall and transactional producer |
 | Transactional producer | All eight partitions on Windows and macOS at `b4e1978`; real Windows COM with empty PATH passed at `e53363f` in [job 125763502744](https://github.com/gh503/jarvis/actions/runs/41589750953/job/125763502744) | Verify remaining latest-source partitions and permission-policy parity |
-| Completed uninstall | macOS API partitions and CLI passed at `b4e1978` | Windows receipt/commit crash children timed out; CLI cases and job timed out |
+| Completed uninstall | macOS API partitions and CLI passed at `b4e1978`; corrected Windows receipt/commit checkpoints passed for both layouts at `293b7d5`, and Windows-layout CLI success passed | Remaining partitions, Darwin-layout CLI success on Windows, and full native-core remain pending; historical timeout runs remain failed |
 | Timeout-test corrections | `d21ccec` crash isolation; `293b7d5` CLI isolation; all original cases retained and locally passed. Windows Darwin-layout receipt-after-SIGKILL rerun passed in [job 125784950785](https://github.com/gh503/jarvis/actions/runs/41596483296/job/125784950785): fixture 43.873s, actual child 164.864s, evidence checks 24.103s; one pass, zero skips/failures | Remaining crash/CLI partitions and full [native run 41596483296](https://github.com/gh503/jarvis/actions/runs/41596483296) must pass; this successful checkpoint does not retroactively clear prior timeouts |
 | Integrated local regression | `293b7d5`: typecheck; 1,691 passes, 37 skips, zero failures | Skipped/native cases require corresponding hosts |
 | Extracted package | Linux runtime and incompatible-target refusal passed | Windows/macOS API and actual CLI install/uninstall/reinstall must pass with intact native archives |
@@ -18,6 +18,8 @@ Native production readiness is **not complete**. The implementation and local re
 The corrected automatic matrix has 162 transaction jobs (54 groups × 3 hosts), followed by native-core; manual acceptance has 112 jobs (56 groups × 2 hosts). Partition maps have been checked for exact coverage. Avoid launching duplicate matrices while the source-matched run is pending.
 
 Windows producer partition 7 at `e53363f` passed seven cases, zero skips/failures (144.800 seconds). The actual COM case, which clears PATH in this source, passed in 59.662 seconds. This verifies absolute-system-PowerShell shortcut creation and inspectable transaction completion, not interactive desktop activation, whole-process-tree termination, permission batch parity or extracted CLI lifecycle.
+
+Corrected Windows commit-after-SIGKILL acceptance at `293b7d5`, [job 125784950773](https://github.com/gh503/jarvis/actions/runs/41596483296/job/125784950773), passed with zero skips/failures: fixture 56.385 seconds, actual child 305.938 seconds, postcondition checks 2.273 seconds (364.611 seconds total). The child exceeded the old 220-second budget but reached the real final-rename checkpoint within the revised bound; exact marker, process termination, archive and refusal checks all passed. This is measured child duration, unlike earlier whole-case estimates, and remains one layout/checkpoint rather than full release acceptance.
 
 ## Historical evidence (source-specific)
 
