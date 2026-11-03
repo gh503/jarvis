@@ -1,5 +1,26 @@
 # Native release artifact pipeline
 
+## Current acceptance summary
+
+Native production readiness is **not complete**. The implementation and local regression are ahead of the fully accepted native source. Use the source-specific evidence below; a green subset does not clear a later revision or the entire release.
+
+| Gate | Evidence | Remaining requirement |
+| --- | --- | --- |
+| Full three-platform baseline | `197990a`, run [41580458387](https://github.com/gh503/jarvis/actions/runs/41580458387) passed | Baseline predates completed uninstall and transactional producer |
+| Transactional producer | All eight partitions on Windows and macOS at `b4e1978`; real Windows COM passed | Verify subsequent empty-PATH and permission changes |
+| Completed uninstall | macOS API partitions and CLI passed at `b4e1978` | Windows receipt/commit crash children timed out; CLI cases and job timed out |
+| Timeout-test corrections | `d21ccec` crash isolation; `293b7d5` CLI isolation; all original cases retained and locally passed | Latest [native run 41596483296](https://github.com/gh503/jarvis/actions/runs/41596483296) must pass; increased test budgets alone are not acceptance |
+| Integrated local regression | `293b7d5`: typecheck; 1,691 passes, 37 skips, zero failures | Skipped/native cases require corresponding hosts |
+| Extracted package | Linux runtime and incompatible-target refusal passed | Windows/macOS API and actual CLI install/uninstall/reinstall must pass with intact native archives |
+| Distribution and desktop | Unsigned preview; no recommendation change | Signing/notarization credentials and interactive desktop acceptance remain unavailable/unverified |
+| Interrupted-operation handling | Conservative retained evidence; read-only names-only hints | No automatic resume or cleanup; no power-loss or hostile same-account race guarantee |
+
+The corrected automatic matrix has 162 transaction jobs (54 groups × 3 hosts), followed by native-core; manual acceptance has 112 jobs (56 groups × 2 hosts). Partition maps have been checked for exact coverage. Avoid launching duplicate matrices while the source-matched run is pending.
+
+## Historical evidence (source-specific)
+
+Entries below retain the status observed at the time of each check, including later-superseded queue states. The summary above distinguishes accepted baselines from current pending fixes; cancelled superseded runs are not test successes.
+
 The newest confirmed full three-platform baseline is now `197990a`: [41580458387](https://github.com/gh503/jarvis/actions/runs/41580458387) completed successfully, advancing beyond preparation retirement to the shared prepared-write gate. It still predates completed-generation uninstall and the opt-in producer. To reduce duplicate queue load, six entirely unstarted superseded runs were explicitly cancelled: 41595257440, 41594452956, 41592568396, 41591891253, 41591621665 and 41591206760. These cancellations are scheduling decisions, not passing or failing test evidence. Runs with already-started jobs were preserved, as was latest-source acceptance [41596483296](https://github.com/gh503/jarvis/actions/runs/41596483296), which remains pending. Working-tree checks found no uncommitted implementation changes.
 
 Integrated Linux regression at `293b7d5` passed typecheck and 1,691 tests with 37 platform/environment/opt-in skips, zero failures (1,728 total; 192.725 seconds). This includes names-only blocked diagnostics, all original uninstall cases and revised crash/CLI scheduling. Source-matched Windows/macOS CI remains queued; these local results do not resolve the historical native failures by themselves.
