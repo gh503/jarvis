@@ -2,6 +2,8 @@
 
 ## Current acceptance summary
 
+At source `293b7d5`, all 162 transaction jobs in [run 41596483296](https://github.com/gh503/jarvis/actions/runs/41596483296) have now passed across Linux, Windows and macOS, including every producer, completed-uninstall API/CLI, inspection and completion partition. This supersedes the pending **transaction-partition** requirements in the rows below. The dependent Linux native-core job has passed, including extracted runtime and Linux transaction-target refusal. macOS and Windows native-core remain running: their helper/permission acceptance, lifecycle, legacy installation and extracted-package execution must all finish before this source becomes a full accepted baseline. Historical timeout runs remain failed; subsequent local test-cleanup changes are not part of this run.
+
 Native production readiness is **not complete**. The implementation and local regression are ahead of the fully accepted native source. Use the source-specific evidence below; a green subset does not clear a later revision or the entire release.
 
 | Gate | Evidence | Remaining requirement |
