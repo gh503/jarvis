@@ -36,6 +36,24 @@ async function snapshot(path: string): Promise<unknown> {
   return { bytes: stat.isFile() ? await fs.readFile(path) : undefined, ino: stat.ino, mode: stat.mode, mtime: stat.mtimeNs, ctime: stat.ctimeNs }
 }
 for (const platform of ['darwin', 'win32'] as const) {
+  test(`${platform}: concurrent retirees commit exactly one preserved generation`, async t => {
+    const f = await fixture(t, platform)
+    const original = await fs.lstat(f.source, { bigint: true })
+    const lockPath = join(f.directory, 'launcher.lock.sqlite')
+    const lock = await fs.lstat(lockPath, { bigint: true })
+    const results = await Promise.allSettled([retireNativeInstallPreparation(f), retireNativeInstallPreparation(f)])
+    const successes = results.filter(result => result.status === 'fulfilled')
+    assert.equal(successes.length, 1)
+    assert.equal(results.filter(result => result.status === 'rejected').length, 1)
+    const archive = successes[0]!.value.archiveDirectory
+    assert.deepEqual(await fs.readFile(join(archive, 'prepared-transaction.json')), f.bytes)
+    assert.equal((await fs.lstat(join(archive, 'prepared-transaction.json'), { bigint: true })).ino, original.ino)
+    assert.equal((await fs.lstat(lockPath, { bigint: true })).ino, lock.ino)
+    const names = await fs.readdir(f.directory)
+    assert.equal(names.filter(name => name.startsWith('retired-')).length, 1)
+    assert.equal(names.some(name => name.toLowerCase().startsWith('prepared-')), false)
+    for (const path of [...f.artifactPaths, f.receiptPath]) await assert.rejects(fs.lstat(path), { code: 'ENOENT' })
+  })
   test(`${platform}: relocated package root refuses without creating retirement evidence`, async t => {
     const f = await fixture(t, platform)
     const before = await snapshot(f.directory)
