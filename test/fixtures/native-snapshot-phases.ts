@@ -99,5 +99,5 @@ export function installPermissionPhaseProbe(): { latest: () => PermissionPhases 
   } as typeof childProcess.execFile
   childProcess.execFile = wrapped
   syncBuiltinESMExports()
-  return { latest: () => latest, restore() { childProcess.execFile = original; syncBuiltinESMExports() } }
+  return { latest: () => latest, restore() { generation++; latest = undefined; childProcess.execFile = original; syncBuiltinESMExports() } }
 }

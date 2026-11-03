@@ -80,6 +80,12 @@ test('late callbacks cannot overwrite evidence from a newer subprocess', () => {
     callbacks[0]!(null, `JARVIS_PHASE_V1|entered|${Date.now()}\n`, '')
     assert.equal(probe.latest(), newer)
     assert.equal(completed, 2)
+    execFile(file, args, options, () => { completed++ })
+    probe.restore()
+    assert.equal(probe.latest(), undefined)
+    callbacks[2]!(null, `JARVIS_PHASE_V1|complete|${Date.now()}\n`, '')
+    assert.equal(probe.latest(), undefined, 'retired probe cannot be repopulated by a pending callback')
+    assert.equal(completed, 3)
   } finally {
     probe.restore()
     childProcess.execFile = original
