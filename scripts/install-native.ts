@@ -144,8 +144,10 @@ exit 1
 }
 `
 function runPowerShell(script: string, env: NodeJS.ProcessEnv): void {
+  const systemRoot = process.env.SystemRoot
+  if (!systemRoot || !isAbsolute(systemRoot)) throw new Error('Windows shortcut creation requires an absolute SystemRoot')
   try {
-    execFileSync('powershell.exe', ['-NoLogo', '-NoProfile', '-NonInteractive', '-EncodedCommand', Buffer.from(script, 'utf16le').toString('base64')], { env: { ...process.env, ...env, PSModulePath: join(process.env.SystemRoot ?? 'C:\\Windows', 'System32', 'WindowsPowerShell', 'v1.0', 'Modules') }, encoding: 'utf8', timeout: 30000, windowsHide: true, shell: false, stdio: ['ignore', 'pipe', 'pipe'] })
+    execFileSync(join(systemRoot, 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe'), ['-NoLogo', '-NoProfile', '-NonInteractive', '-EncodedCommand', Buffer.from(script, 'utf16le').toString('base64')], { env: { ...process.env, ...env, PSModulePath: join(systemRoot, 'System32', 'WindowsPowerShell', 'v1.0', 'Modules') }, encoding: 'utf8', timeout: 30000, windowsHide: true, shell: false, stdio: ['ignore', 'pipe', 'pipe'] })
   } catch (error) {
     const failure = error as { status?: number; code?: string; stderr?: string }
     throw new Error(`Windows shortcut creation failed (${failure.code ?? failure.status ?? 'unknown'}): ${failure.stderr?.trim() || 'PowerShell returned no diagnostic'}`)

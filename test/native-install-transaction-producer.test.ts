@@ -184,6 +184,9 @@ for (const platform of ['darwin', 'win32'] as const) for (const phase of ['prepa
 test('native Windows actual COM producer emits inspectable completed generation', { skip: process.platform !== 'win32', timeout: 600_000 }, async t => {
   const f = await fixture(t, 'win32')
   delete f.integration.runPowerShell
+  const previousPath = process.env.PATH
+  process.env.PATH = ''
+  t.after(() => { if (previousPath === undefined) delete process.env.PATH; else process.env.PATH = previousPath })
   await nativeIntegration(f.integration, ['--install-transaction'])
   assert.equal((await inspectNativeInstallTransaction({ integration: f.integration })).declaration, 'matching')
 })
