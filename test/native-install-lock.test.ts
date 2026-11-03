@@ -9,7 +9,7 @@ import { dirname, join } from 'node:path'
 import test from 'node:test'
 import { DatabaseSync } from 'node:sqlite'
 import { describeNativeIntegration, nativeIntegration, type InstallOptions } from '../scripts/install-native.ts'
-import { assertNativeInstallLockHeld, runWithNativeInstallLockHeld, withNativeInstallLock, type NativeInstallLock } from '../scripts/native-install-lock.ts'
+import { assertNativeInstallLockHeld, runWithNativeInstallLockHeld, verifyNativeInstallPrivatePath, verifyNativeInstallPrivatePaths, withNativeInstallLock, type NativeInstallLock } from '../scripts/native-install-lock.ts'
 import { acquireVerifiedLifecycleLock } from '../src/runtime-lifecycle.ts'
 
 function windowsAclScript(controlDirectory: string, script: string): string {
@@ -164,8 +164,10 @@ test('Windows lock checker retains strict policy and bounded invocation with dir
   assert.match(source, /env: \{ \.\.\.process.env, JARVIS_INSTALL_CHECK_TARGET: path \}, windowsHide: true, timeout: 10_000, maxBuffer: 64 \* 1024, stdio: \['ignore', 'pipe', 'pipe'\]/)
 })
 
-test('native Windows lock provider and direct readers have ACL and refusal parity', { skip: process.platform !== 'win32', timeout: 120_000 }, async t => {
+test('native Windows lock provider, direct and batch readers have ACL and refusal parity', { skip: process.platform !== 'win32', timeout: 240_000 }, async t => {
   const { root } = await fixture(t)
+  const accepted = join(root, "accepted-['$;]-é-😀")
+  await withNativeInstallLock({ controlDirectory: accepted }, async () => {})
   const { direct, legacy } = await privateCheckerScripts()
   const run = (script: string, path: string, expected: number) => {
     const result = spawnSync(join(process.env.SystemRoot!, 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe'), [
@@ -175,7 +177,7 @@ test('native Windows lock provider and direct readers have ACL and refusal parit
     assert.equal(result.signal, null)
     assert.equal(result.status, expected, result.stderr)
   }
-  const compare = (path: string, expected: number) => {
+  const compare = async (path: string, expected: number) => {
     const snapshot = () => windowsAclScript(path, String.raw`
 $p = $env:TEST_CONTROL
 $acl = Get-Acl -LiteralPath $p
@@ -188,6 +190,16 @@ if ($sddl -cne $direct.GetSecurityDescriptorSddlForm($sections)) { throw 'ACL re
     const before = snapshot()
     run(legacy, path, expected)
     run(direct, path, expected)
+    const directory = (await lstat(path)).isDirectory()
+    const specs = [{ path: accepted, directory: true }, { path, directory }, { path: accepted, directory: true }]
+    if (expected === 0) {
+      assert.equal(await verifyNativeInstallPrivatePath(path, directory), true)
+      assert.equal(await verifyNativeInstallPrivatePaths(specs), true)
+    } else {
+      await assert.rejects(verifyNativeInstallPrivatePath(path, directory), /Unsafe native/)
+      await assert.rejects(verifyNativeInstallPrivatePaths(specs), /Unsafe native/)
+      await assert.rejects(verifyNativeInstallPrivatePaths(specs.slice(1)), /Unsafe native/)
+    }
     assert.equal(snapshot(), before, 'checks must not repair ACLs')
   }
   const set = (path: string, action: string) => windowsAclScript(path, String.raw`
@@ -209,6 +221,9 @@ if ($action -eq 'inheritonly' -or $action -eq 'inheritable') {
 }
 Set-Acl -LiteralPath $p -AclObject $acl
 `)
+  assert.equal(await verifyNativeInstallPrivatePaths([{ path: accepted, directory: true }]), true)
+  assert.equal(await verifyNativeInstallPrivatePaths(Array.from({ length: 16 }, () => ({ path: accepted, directory: true }))), true)
+  assert.equal(await verifyNativeInstallPrivatePaths([{ path: accepted, directory: true }, { path: join(root, 'missing'), directory: false }]), false)
   for (const directory of [false, true]) {
     const path = join(root, directory ? 'acl-dir' : 'acl-file')
     if (directory) await mkdir(path)
@@ -216,14 +231,14 @@ Set-Acl -LiteralPath $p -AclObject $acl
     try {
       for (const action of ['private', 'shared', 'deny', 'readonly', ...(directory ? ['inheritonly', 'inheritable'] : [])]) {
         set(path, action)
-        compare(path, action === 'private' || action === 'inheritable' ? 0 : 1)
+        await compare(path, action === 'private' || action === 'inheritable' ? 0 : 1)
         t.diagnostic(`ACL parity: ${directory ? 'directory' : 'file'} ${action}`)
       }
       if (directory) {
         const child = join(path, 'inherited-file')
         await writeFile(child, 'inherited')
         try {
-          compare(child, 0)
+          await compare(child, 0)
           t.diagnostic('ACL parity: inherited file')
           const junction = join(root, 'junction')
           await symlink(path, junction, 'junction')
@@ -231,6 +246,8 @@ Set-Acl -LiteralPath $p -AclObject $acl
             for (const [kind, target] of [['leaf', junction], ['ancestor', join(junction, 'inherited-file')]] as const) {
               run(legacy, target, 1)
               run(direct, target, 1)
+              await assert.rejects(verifyNativeInstallPrivatePath(target, kind === 'leaf'), /Unsafe native/)
+              await assert.rejects(verifyNativeInstallPrivatePaths([{ path: accepted, directory: true }, { path: target, directory: kind === 'leaf' }]), /Unsafe native/)
               t.diagnostic(`ACL parity: ${kind} junction refusal`)
             }
           } finally {
@@ -248,6 +265,51 @@ Set-Acl -LiteralPath $p -AclObject $acl
       }
     } finally { set(path, 'private') }
   }
+})
+
+test('private path batch matches sequential checks for POSIX types and permissions', { skip: process.platform === 'win32' }, async t => {
+  const { root } = await fixture(t)
+  const file = join(root, 'file'), directory = join(root, 'private'), shared = join(root, 'shared')
+  await writeFile(file, 'sentinel', { mode: 0o600 })
+  await mkdir(directory, { mode: 0o700 })
+  await mkdir(shared, { mode: 0o755 }); await chmod(shared, 0o755)
+  const symbolic = join(root, 'symbolic'), hard = join(root, 'hard'), alias = join(root, 'alias')
+  await symlink(file, symbolic)
+  await writeFile(hard, 'hardlinked', { mode: 0o600 }); await link(hard, alias)
+  const good = { path: directory, directory: true }
+  const outcome = async (operation: () => Promise<boolean>) => {
+    try { return await operation() } catch (error) { return (error as Error).message }
+  }
+  for (const spec of [good, { path: file, directory: false }, { path: file, directory: true }, { path: directory, directory: false }, { path: shared, directory: true }, { path: symbolic, directory: false }, { path: hard, directory: false }, { path: join(root, 'missing'), directory: true }]) {
+    for (const specs of [[good, spec], [spec, good]]) {
+      const before = await lstat(root, { bigint: true })
+      const expected = await outcome(async () => { for (const item of specs) if (!await verifyNativeInstallPrivatePath(item.path, item.directory)) return false; return true })
+      assert.equal(await outcome(() => verifyNativeInstallPrivatePaths(specs)), expected)
+      assert.deepEqual(await lstat(root, { bigint: true }), before)
+    }
+  }
+})
+
+test('private path batch bounds and validates forged specifications before reads', async t => {
+  const { root } = await fixture(t)
+  const good = { path: root, directory: true }
+  const invalid = [null, {}, [], [null], [undefined], new Array(1), [{ ...good, directory: 1 }], [{ ...good, path: 'relative' }], [{ ...good, path: root + '/.' }], [{ ...good, path: root + '\u0000' }], [{ ...good, path: root + '\ud800' }], Array(17).fill(good), [{ ...good, path: join(root, 'x'.repeat(24 * 1024)) }]]
+  const original = fsPromises.lstat
+  let calls = 0
+  fsPromises.lstat = ((...args: Parameters<typeof fsPromises.lstat>) => { calls++; return original(...args) }) as typeof fsPromises.lstat
+  syncBuiltinESMExports()
+  try {
+    for (const specs of invalid) await assert.rejects(verifyNativeInstallPrivatePaths(specs as Parameters<typeof verifyNativeInstallPrivatePaths>[0]), /Unsafe native/)
+    assert.equal(calls, 0)
+  } finally { fsPromises.lstat = original; syncBuiltinESMExports() }
+})
+
+test('private path batch snapshots all inputs before yielding and accepts its bound', { skip: process.platform === 'win32' }, async t => {
+  const { root } = await fixture(t)
+  const specs = Array.from({ length: 16 }, () => ({ path: root, directory: true }))
+  const pending = verifyNativeInstallPrivatePaths(specs)
+  specs[1]!.path = join(root, 'missing'); specs[2]!.directory = false; specs.length = 0
+  assert.equal(await pending, true)
 })
 
 test('invalid options fail before any control directory creation', async t => {

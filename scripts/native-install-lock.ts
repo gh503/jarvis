@@ -48,6 +48,25 @@ function verifyPrivateWindowsPath(path: string): void {
     ], { env: { ...process.env, JARVIS_INSTALL_CHECK_TARGET: path }, windowsHide: true, timeout: 10_000, maxBuffer: 64 * 1024, stdio: ['ignore', 'pipe', 'pipe'] })
   } catch { throw unsafe() }
 }
+// Reuse the entire single-target policy, including its fail-closed exits. Paths
+// travel only as base64 data; colon cannot occur in a base64-encoded path.
+const windowsBatchCheck = windowsCheck.replace('$p = $env:JARVIS_INSTALL_CHECK_TARGET', String.raw`
+$utf8 = [Text.UTF8Encoding]::new($false, $true)
+$targets = $env:JARVIS_INSTALL_CHECK_TARGETS.Split(':')
+if ($targets.Count -lt 1 -or $targets.Count -gt 16) { exit 1 }
+foreach ($target in $targets) {
+$p = $utf8.GetString([Convert]::FromBase64String($target))`) + '\n}'
+function verifyPrivateWindowsPaths(paths: string[]): void {
+  const root = process.env.SystemRoot
+  if (!root || !isAbsolute(root)) throw unsafe()
+  const encoded = paths.map(path => Buffer.from(path, 'utf8').toString('base64')).join(':')
+  if (encoded.length > 24 * 1024) throw unsafe()
+  try {
+    execFileSync(join(root, 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe'), [
+      '-NoLogo', '-NoProfile', '-NonInteractive', '-EncodedCommand', Buffer.from(windowsBatchCheck, 'utf16le').toString('base64'),
+    ], { env: { ...process.env, JARVIS_INSTALL_CHECK_TARGETS: encoded }, windowsHide: true, timeout: 10_000, maxBuffer: 64 * 1024, stdio: ['ignore', 'pipe', 'pipe'] })
+  } catch { throw unsafe() }
+}
 import { ensurePrivateDataDirectory } from '../src/private-directory.ts'
 import { acquireVerifiedLifecycleLock } from '../src/runtime-lifecycle.ts'
 
@@ -83,15 +102,44 @@ function validateControlPath(path: string): void {
 
 /** Read-only checks: never repair an existing shared control directory or lock. */
 export async function verifyNativeInstallPrivatePath(path: string, directory: boolean): Promise<boolean> {
+  return verifyPrivatePath(path, directory, true)
+}
+
+async function verifyPrivatePath(path: string, directory: boolean, checkWindows: boolean): Promise<boolean> {
   let stat
   try { stat = await lstat(path) } catch (error) {
     if ((error as NodeJS.ErrnoException).code === 'ENOENT') return false
     throw error
   }
   if (stat.isSymbolicLink() || (directory ? !stat.isDirectory() : !stat.isFile() || stat.nlink !== 1)) throw unsafe()
-  if (process.platform === 'win32') verifyPrivateWindowsPath(path)
+  if (process.platform === 'win32') { if (checkWindows) verifyPrivateWindowsPath(path) }
   else if (stat.uid !== process.getuid!() || (stat.mode & 0o7777) !== (directory ? 0o700 : 0o600)) throw unsafe()
   return true
+}
+
+/** Read-only bounded batch. Missing targets return false; unsafe targets throw.
+ * Snapshot and validate every specification before the first asynchronous read. */
+export async function verifyNativeInstallPrivatePaths(specifications: readonly { path: string; directory: boolean }[]): Promise<boolean> {
+  if (!Array.isArray(specifications) || specifications.length < 1 || specifications.length > 16) throw unsafe()
+  const count = specifications.length
+  const targets: { path: string; directory: boolean }[] = []
+  for (let index = 0; index < count; index++) {
+    const spec = specifications[index]
+    if (!spec || typeof spec !== 'object') throw unsafe()
+    const { path, directory } = spec
+    validateControlPath(path)
+    if (typeof directory !== 'boolean') throw unsafe()
+    targets.push({ path, directory })
+  }
+  if (targets.reduce((size, { path }) => size + Buffer.byteLength(path, 'utf8') + 2, 0) > 18 * 1024) throw unsafe()
+  const existing: string[] = []
+  let present = true
+  for (const { path, directory } of targets) {
+    if (!await verifyPrivatePath(path, directory, false)) { present = false; break }
+    existing.push(path)
+  }
+  if (process.platform === 'win32' && existing.length) verifyPrivateWindowsPaths(existing)
+  return present
 }
 
 export async function verifyNativeInstallAncestors(directory: string): Promise<void> {

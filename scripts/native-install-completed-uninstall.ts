@@ -3,7 +3,7 @@ import { constants, type BigIntStats } from 'node:fs'
 import { lstat, mkdir, mkdtemp, open, readdir, rename, rmdir, unlink } from 'node:fs/promises'
 import { basename, dirname, join } from 'node:path'
 import { describeNativeIntegration, parseNativeIntegrationReceipt, readNativeIntegrationSlot, type InstallOptions } from './install-native.ts'
-import { verifyNativeInstallAncestors, verifyNativeInstallPrivatePath, withNativeInstallLock } from './native-install-lock.ts'
+import { verifyNativeInstallAncestors, verifyNativeInstallPrivatePath, verifyNativeInstallPrivatePaths, withNativeInstallLock } from './native-install-lock.ts'
 import { readNativeInstallTransactionSnapshot } from './native-install-transaction-store.ts'
 import { readNativeInstallTransactionAckSnapshot } from './native-install-transaction-ack-store.ts'
 import { readNativeInstallTransactionCompletionSnapshot } from './native-install-transaction-completion-store.ts'
@@ -32,14 +32,14 @@ async function pin(directory: string, privateDirectory = true) {
     entries.push({ path, stat })
     if (path === dirname(path)) break
   }
-  return async (removed = new Set<string>()) => {
+  return async (removed = new Set<string>(), skipPrivate = false) => {
     const existing = entries.find(entry => !removed.has(entry.path))!
     await verifyNativeInstallAncestors(existing.path)
     for (const entry of entries) {
       if (removed.has(entry.path)) await absent(entry.path)
       else if (!sameDirectory(entry.stat, await lstat(entry.path, { bigint: true }))) throw refused()
     }
-    if (privateDirectory && !await verifyNativeInstallPrivatePath(directory, true)) throw refused()
+    if (privateDirectory && !skipPrivate && !await verifyNativeInstallPrivatePath(directory, true)) throw refused()
   }
 }
 type Evidence = { bytes: Buffer; stat: BigIntStats }
@@ -138,7 +138,10 @@ export async function uninstallCompletedNativeInstallTransaction({ integration, 
       } finally { await file.close() }
     }
     const evidence = async () => {
-      await verifyControl(); await verifyBarrier(); await verifyArchive()
+      // Keep ancestry/identity checks in order; batch only the private checks
+      // within this read-only pin phase, before any manifest or store reads.
+      await verifyControl(undefined, true); await verifyBarrier(undefined, true); await verifyArchive(undefined, true)
+      if (!await verifyNativeInstallPrivatePaths([control, barrier, archive].map(path => ({ path, directory: true })))) throw refused()
       for (const verify of directoryPins) await verify(removedDirectories)
       await absent(generation); await exactNames(archive, [])
       await exactNames(control, [barrierName, ...records.filter(record => !record.moved).map(record => record.name)], true)

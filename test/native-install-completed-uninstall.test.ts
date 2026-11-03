@@ -106,6 +106,33 @@ for (const platform of ['darwin', 'win32'] as const) {
     await assert.rejects(fs.lstat(f.barrier), { code: 'ENOENT' })
     assert.equal((await fs.readdir(f.directory)).some(name => name.startsWith('retired-')), false)
   })
+  test(`${platform}: batch private check failure retains barrier before deleting live slots`, async t => {
+    const f = await fixture(t, platform)
+    const lstat = fs.lstat, open = fs.open
+    let manifestCreated = false, injected = false, controlReads = 0
+    fs.open = (async (...args: Parameters<typeof fs.open>) => {
+      const handle = await open(...args)
+      if (String(args[0]) === join(f.barrier, 'manifest.json') && typeof args[1] === 'number' && (args[1] & constants.O_CREAT) !== 0) manifestCreated = true
+      return handle
+    }) as typeof fs.open
+    fs.lstat = (async (...args: Parameters<typeof fs.lstat>) => {
+      // Each of the three ancestry walks visits control first; the fourth
+      // numeric control read is the fresh batch (identity pins use bigint).
+      if (manifestCreated && String(args[0]) === f.directory && args[1] === undefined && ++controlReads === 4) {
+        injected = true
+        throw new Error('injected batch private check')
+      }
+      return lstat(...args)
+    }) as typeof fs.lstat
+    syncBuiltinESMExports()
+    try { await assert.rejects(uninstallCompletedNativeInstallTransaction(f), /injected batch private check/) }
+    finally { fs.lstat = lstat; fs.open = open; syncBuiltinESMExports() }
+    assert.equal(injected, true)
+    for (const artifact of f.artifacts) assert.deepEqual(await fs.readFile(artifact.path), artifact.bytes)
+    assert.deepEqual(await fs.readFile(f.receiptPath), f.receipt)
+    assert.ok((await fs.lstat(join(f.barrier, 'manifest.json'))).isFile())
+    await assert.rejects(uninstallCompletedNativeInstallTransaction(f))
+  })
   test(`${platform}: unlink failure retains barrier and blocks cooperating writers`, async t => {
     const f = await fixture(t, platform)
     const unlink = fs.unlink
