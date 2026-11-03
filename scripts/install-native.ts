@@ -405,6 +405,10 @@ export async function nativeIntegration(options: InstallOptions, args: string[])
     const userRoots = [options.home, options.appData, options.localAppData].filter((path): path is string => path !== undefined).map(path => resolve(path))
     const cleanupErrors: unknown[] = []
     const retained = (path: string) => new Error(`Retained unverified installation artifact: ${JSON.stringify(path).slice(0, 1024)}`)
+    async function verifyCreated(record: CreatedRecord) {
+      const current = await boundedIntegrationRead(record.path, record.limit, userRoots, record.path === state)
+      if (!record.identity || !record.sha256 || !current || !sameIdentity(record.identity, current.identity) || digest(current.bytes) !== record.sha256) throw new Error('Integration changed after publication')
+    }
     async function removeOwned(record: CreatedRecord) {
       if (!record.identity || !record.sha256) throw retained(record.path)
       const current = await boundedIntegrationRead(record.path, record.limit, userRoots, record.path === state)
@@ -472,7 +476,9 @@ export async function nativeIntegration(options: InstallOptions, args: string[])
       parseNativeIntegrationReceipt(receipt, { ...options, root })
       for (const artifact of prepared) await output(artifact.path, artifact.bytes, artifact.mode)
       if (JSON.stringify(created.map(({ path, sha256 }) => ({ path, sha256 }))) !== JSON.stringify(records)) throw new Error('Published integration differs from prepared receipt')
+      for (const record of created) await verifyCreated(record)
       await output(state, receipt)
+      for (const record of created) await verifyCreated(record)
       return created.map(record => record.path)
     } catch (error) {
       for (const record of created.toReversed()) {

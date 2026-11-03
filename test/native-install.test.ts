@@ -547,6 +547,45 @@ for (const platform of ['darwin', 'win32'] as const) for (const fault of ['inven
   } finally { t.mock.restoreAll(); syncBuiltinESMExports() }
 }))
 
+for (const platform of ['darwin', 'win32'] as const) for (const stage of ['later artifact', 'receipt'] as const) test(`${platform} install rechecks earlier artifacts after ${stage} writes`, async t => fixture(platform, async options => {
+  const { artifactPaths, receiptPath } = describeNativeIntegration(options)
+  const first = artifactPaths[0]!
+  const trigger = stage === 'receipt' ? receiptPath : artifactPaths.at(-1)!
+  const changed = Buffer.from('foreign modification after first publication')
+  options.runPowerShell = (_script, env) => writeFileSync(env.JARVIS_LINK_PATH!, 'fixture-link', { mode: 0o600 })
+  const originalOpen = fsPromises.open
+  let injected = false, receiptWritten = false
+  t.mock.method(fsPromises, 'open', async (...args: Parameters<typeof open>) => {
+    const handle = await originalOpen(...args)
+    if (args[1] === 'wx' && args[0] === receiptPath) receiptWritten = true
+    if (args[1] === 'wx' && args[0] === trigger) {
+      const write = handle.writeFile.bind(handle)
+      t.mock.method(handle, 'writeFile', async (...writeArgs: Parameters<typeof handle.writeFile>) => {
+        await write(...writeArgs)
+        assert.ok(existsSync(first), 'first artifact was already published')
+        await writeFile(first, changed)
+        injected = true
+      })
+    }
+    return handle
+  })
+  syncBuiltinESMExports()
+  try {
+    await assert.rejects(nativeIntegration(options, ['--install', '--autostart']), (error: unknown) => {
+      assert.ok(error instanceof AggregateError)
+      assert.ok(error.cause instanceof Error)
+      assert.match(error.cause.message, /Integration changed/)
+      assert.match(error.message, /cleanup incomplete/)
+      assert.ok(error.message.includes(JSON.stringify(first)))
+      return true
+    })
+    assert.equal(injected, true)
+    assert.equal(receiptWritten, stage === 'receipt', 'pre-receipt verification must prevent receipt publication')
+    assert.deepEqual(await readFile(first), changed, 'rollback must retain the changed artifact')
+    for (const path of [...artifactPaths.slice(1), receiptPath]) assert.equal(existsSync(path), false, 'owned outputs and any published receipt are cleaned')
+  } finally { t.mock.restoreAll(); syncBuiltinESMExports() }
+}))
+
 for (const scenario of ['second output', 'receipt', 'replacement', 'modification', 'unlink failure', 'partial write', 'partial receipt'] as const) test(`install rollback protects ownership after ${scenario}`, async t => fixture('darwin', async options => {
   const first = join(options.home, 'Applications', 'Jarvis.app', 'Contents', 'Info.plist')
   const second = join(options.home, 'Applications', 'Jarvis.app', 'Contents', 'MacOS', 'Jarvis')
