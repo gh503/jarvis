@@ -1,3 +1,4 @@
+import { assertNativeInstallPreparedWriteAllowed } from './native-install-prepared-write-gate.ts'
 import { constants, type BigIntStats } from 'node:fs'
 import { lstat, open } from 'node:fs/promises'
 import { dirname, join } from 'node:path'
@@ -157,7 +158,7 @@ export async function writeNativeInstallTransactionCompletion({ integration, tra
   if (await statOrMissing(bound.path)) throw Object.assign(new Error('Native install completion already exists'), { code: 'EEXIST' })
   await verifyBoundary(bound.directory, preflight)
   return withNativeInstallLock({ controlDirectory: bound.directory }, lock =>
-    runWithNativeInstallLockHeld(lock, bound.directory, () => writeExclusive(bound, bytes)))
+    runWithNativeInstallLockHeld(lock, bound.directory, () => writeExclusive(bound, bytes, lock)))
 }
 
 /** Call-time snapshots; registered work drains before the supplied scope closes. */
@@ -165,13 +166,14 @@ export function writeNativeInstallTransactionCompletionUnderLock({ integration, 
   const bound = context(integration, transaction, acks)
   assertNativeInstallLockHeld(lock, bound.directory)
   const bytes = encodeNativeInstallTransactionCompletion(completion, bound.transaction, bound.integration, bound.acks)
-  return runWithNativeInstallLockHeld(lock, bound.directory, () => writeExclusive(bound, bytes))
+  return runWithNativeInstallLockHeld(lock, bound.directory, () => writeExclusive(bound, bytes, lock))
 }
 
-async function writeExclusive(bound: Context, bytes: Buffer): Promise<NativeInstallTransactionCompletion> {
+async function writeExclusive(bound: Context, bytes: Buffer, lock: NativeInstallLock): Promise<NativeInstallTransactionCompletion> {
   const { directory, path } = bound
   await requireBindings(bound)
   const ancestors = await boundary(directory)
+  await assertNativeInstallPreparedWriteAllowed(bound.integration, lock)
   const file = await open(path, constants.O_RDWR | constants.O_CREAT | constants.O_EXCL | (constants.O_NOFOLLOW ?? 0), 0o600)
   let failure: unknown
   let failed = false
@@ -191,6 +193,7 @@ async function writeExclusive(bound: Context, bytes: Buffer): Promise<NativeInst
     if (!stored || !stored.bytes.equals(bytes) || !sameFile(written, stored.stat)) throw unsafe()
     await verifyBoundary(directory, ancestors)
     await requireBindings(bound)
+    await assertNativeInstallPreparedWriteAllowed(bound.integration, lock)
     return stored.completion
   } catch (error) { failed = true; failure = error; throw error }
   finally {

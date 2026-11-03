@@ -1,3 +1,4 @@
+import { assertNativeInstallPreparedWriteAllowed } from './native-install-prepared-write-gate.ts'
 import { constants, type BigIntStats } from 'node:fs'
 import { lstat, open } from 'node:fs/promises'
 import { dirname, join } from 'node:path'
@@ -119,7 +120,7 @@ export async function writeNativeInstallTransaction({ integration, transaction }
   if (await statOrMissing(path)) throw Object.assign(new Error('Native install transaction already exists'), { code: 'EEXIST' })
   await verifyBoundary(directory, preflight)
   return withNativeInstallLock({ controlDirectory: directory }, lock =>
-    runWithNativeInstallLockHeld(lock, directory, () => writeExclusive(options, bytes, directory, path)))
+    runWithNativeInstallLockHeld(lock, directory, () => writeExclusive(options, bytes, directory, path, lock)))
 }
 
 /** Compose publication into an existing lock scope at the fixed receipt-derived
@@ -129,11 +130,12 @@ export function writeNativeInstallTransactionUnderLock({ integration, transactio
   const { directory, path } = location(options)
   assertNativeInstallLockHeld(lock, directory)
   const bytes = encodeNativeInstallTransaction(transaction, options)
-  return runWithNativeInstallLockHeld(lock, directory, () => writeExclusive(options, bytes, directory, path))
+  return runWithNativeInstallLockHeld(lock, directory, () => writeExclusive(options, bytes, directory, path, lock))
 }
 
-async function writeExclusive(options: InstallOptions, bytes: Buffer, directory: string, path: string): Promise<NativeInstallTransaction> {
+async function writeExclusive(options: InstallOptions, bytes: Buffer, directory: string, path: string, lock: NativeInstallLock): Promise<NativeInstallTransaction> {
   const ancestors = await boundary(directory)
+  await assertNativeInstallPreparedWriteAllowed(options, lock)
   const file = await open(path, constants.O_RDWR | constants.O_CREAT | constants.O_EXCL | (constants.O_NOFOLLOW ?? 0), 0o600)
   let failure: unknown
   let failed = false
@@ -152,6 +154,7 @@ async function writeExclusive(options: InstallOptions, bytes: Buffer, directory:
     const stored = await readNativeInstallTransactionSnapshot(options, created)
     if (!stored || !stored.bytes.equals(bytes) || !sameFile(written, stored.stat)) throw unsafe()
     await verifyBoundary(directory, ancestors)
+    await assertNativeInstallPreparedWriteAllowed(options, lock)
     return stored.transaction
   } catch (error) { failed = true; failure = error; throw error }
   finally {

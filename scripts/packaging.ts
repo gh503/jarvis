@@ -13,7 +13,7 @@ export function nativeTarget(platform: string, arch: string, version: string): N
 
 const runtimeScripts = new Set([
   'app.ts', 'install-native.ts', 'update-native.ts', 'runtime-lifecycle.ts',
-  'native-install-lock.ts', 'native-update-journal.ts', 'native-install-preparation-retire.ts', 'retire-native-install-preparation.ts',
+  'native-install-lock.ts', 'native-install-prepared-write-gate.ts', 'native-update-journal.ts', 'native-install-preparation-retire.ts', 'retire-native-install-preparation.ts',
   'snapshot-native.ts', 'native-state-snapshot.ts',
   'snapshot-native-config.ts', 'native-config-snapshot.ts', 'stopped-data-scope.ts',
   'recovery-native.ts', 'native-recovery-set.ts',
