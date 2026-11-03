@@ -17,7 +17,7 @@ jobs:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, windows-latest, macos-latest]
-        group: [storage, inspection, inspection-0, inspection-1, inspection-2, inspection-3, crash, retirement, completion-0, completion-1, completion-2, completion-3]
+        group: [storage, inspection, inspection-0, inspection-1, inspection-2, inspection-3, crash, retirement, retirement-cli, completion-0, completion-1, completion-2, completion-3]
     runs-on: ${{ matrix.os }}
     timeout-minutes: 20
     steps:
@@ -44,6 +44,9 @@ jobs:
       - name: Verify bounded preparation retirement
         if: matrix.group == 'retirement'
         run: node --experimental-transform-types --test --test-concurrency=1 test/native-install-preparation-retire.test.ts
+      - name: Verify preparation retirement CLI
+        if: matrix.group == 'retirement-cli'
+        run: node --experimental-transform-types --test --test-concurrency=1 test/native-install-preparation-retire-cli.test.ts
       - name: Verify completion store partition
         if: startsWith(matrix.group, 'completion-')
         env:

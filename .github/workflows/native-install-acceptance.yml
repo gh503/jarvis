@@ -15,7 +15,7 @@ jobs:
       fail-fast: false
       matrix:
         os: [windows-latest, macos-latest]
-        group: [installer, transaction-storage, completion-store-0, completion-store-1, completion-store-2, completion-store-3, transaction-inspection, transaction-inspection-0, transaction-inspection-1, transaction-inspection-2, transaction-inspection-3, transaction-crash, preparation-retirement, lock-intent]
+        group: [installer, transaction-storage, completion-store-0, completion-store-1, completion-store-2, completion-store-3, transaction-inspection, transaction-inspection-0, transaction-inspection-1, transaction-inspection-2, transaction-inspection-3, transaction-crash, preparation-retirement, preparation-retirement-cli, lock-intent]
     steps:
       - uses: actions/checkout@v4
         with:
@@ -50,6 +50,9 @@ jobs:
       - name: Verify bounded preparation retirement
         if: matrix.group == 'preparation-retirement'
         run: node --experimental-transform-types --test --test-concurrency=1 test/native-install-preparation-retire.test.ts
+      - name: Verify preparation retirement CLI
+        if: matrix.group == 'preparation-retirement-cli'
+        run: node --experimental-transform-types --test --test-concurrency=1 test/native-install-preparation-retire-cli.test.ts
       - name: Verify installation lock capabilities and failure draining
         if: matrix.group == 'lock-intent'
         run: node --experimental-transform-types --test test/native-install-lock.test.ts

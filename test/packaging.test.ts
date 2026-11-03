@@ -63,7 +63,7 @@ test('packaged runtime entrypoints and their transitive local imports are tracke
     'scripts/app.ts', 'scripts/install-native.ts', 'scripts/update-native.ts',
     'scripts/snapshot-native.ts', 'scripts/snapshot-native-config.ts',
     'scripts/recovery-native.ts', 'scripts/snapshot-native-integration.ts',
-    'scripts/diagnose-native-install.ts', 'scripts/backup.ts', 'scripts/restore.ts',
+    'scripts/diagnose-native-install.ts', 'scripts/retire-native-install-preparation.ts', 'scripts/backup.ts', 'scripts/restore.ts',
     ...[...tracked].filter(path => path.endsWith('.ts') && isPublicFile(path)),
   ]
   const visited = new Set<string>()
