@@ -547,11 +547,11 @@ for (const platform of ['darwin', 'win32'] as const) for (const fault of ['inven
   } finally { t.mock.restoreAll(); syncBuiltinESMExports() }
 }))
 
-for (const platform of ['darwin', 'win32'] as const) for (const stage of ['later artifact', 'receipt'] as const) test(`${platform} install rechecks earlier artifacts after ${stage} writes`, async t => fixture(platform, async options => {
+for (const platform of ['darwin', 'win32'] as const) for (const stage of ['later artifact', 'receipt'] as const) for (const mutation of ['content', 'identity'] as const) test(`${platform} install rechecks earlier artifact ${mutation} after ${stage} writes`, async t => fixture(platform, async options => {
   const { artifactPaths, receiptPath } = describeNativeIntegration(options)
   const first = artifactPaths[0]!
   const trigger = stage === 'receipt' ? receiptPath : artifactPaths.at(-1)!
-  const changed = Buffer.from('foreign modification after first publication')
+  let changed = Buffer.from('foreign modification after first publication')
   options.runPowerShell = (_script, env) => writeFileSync(env.JARVIS_LINK_PATH!, 'fixture-link', { mode: 0o600 })
   const originalOpen = fsPromises.open
   let injected = false, receiptWritten = false
@@ -563,7 +563,17 @@ for (const platform of ['darwin', 'win32'] as const) for (const stage of ['later
       t.mock.method(handle, 'writeFile', async (...writeArgs: Parameters<typeof handle.writeFile>) => {
         await write(...writeArgs)
         assert.ok(existsSync(first), 'first artifact was already published')
-        await writeFile(first, changed)
+        if (mutation === 'identity') {
+          changed = await readFile(first)
+          const before = await lstat(first, { bigint: true })
+          const retainedOriginal = `${first}.original-fixture`
+          assert.equal(existsSync(retainedOriginal), false)
+          assert.equal(dirname(retainedOriginal), dirname(first))
+          // Keep the original inode alive so replacement cannot reuse it.
+          await rename(first, retainedOriginal)
+          await writeFile(first, changed, { mode: Number(before.mode & 0o777n), flag: 'wx' })
+          assert.notEqual((await lstat(first, { bigint: true })).ino, before.ino)
+        } else await writeFile(first, changed)
         injected = true
       })
     }
