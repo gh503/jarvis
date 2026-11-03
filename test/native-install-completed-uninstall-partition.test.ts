@@ -43,10 +43,15 @@ test('uninstall partitions register a deterministic disjoint union of all top-le
   const full = cases()
   assert.equal(full.length, 61)
   assert.equal(new Set(full.map(item => item.name)).size, full.length)
-  const partitions = Array.from({ length: 8 }, (_, partition) => cases(String(partition)))
-  assert.deepEqual(partitions.map(items => items.length), [8, 8, 8, 8, 8, 7, 7, 7])
-  for (let partition = 0; partition < 8; partition++) {
-    assert.deepEqual(partitions[partition], full.filter((_, index) => index % 8 === partition))
+  const crashNames = ['darwin', 'win32'].flatMap(platform => ['artifact', 'receipt', 'archive-move', 'commit'].map(stage => `${platform}: real SIGKILL after ${stage} retains conservative state`))
+  const crashCases = full.filter(item => crashNames.includes(item.name))
+  assert.deepEqual(crashCases.map(item => item.name), crashNames)
+  const partitions = Array.from({ length: 16 }, (_, partition) => cases(String(partition)))
+  assert.deepEqual(partitions.map(items => items.length), [7, 7, 7, 7, 7, 6, 6, 6, 1, 1, 1, 1, 1, 1, 1, 1])
+  for (let partition = 0; partition < 16; partition++) {
+    assert.deepEqual(partitions[partition], partition < 8
+      ? full.filter((item, index) => index % 8 === partition && !crashNames.includes(item.name))
+      : [crashCases[partition - 8]])
     assert.deepEqual(cases(String(partition)), partitions[partition])
   }
   const union = partitions.flat()
@@ -57,11 +62,11 @@ test('uninstall partitions register a deterministic disjoint union of all top-le
 })
 
 test('invalid uninstall partition fails before registering any case', () => {
-  for (const partition of ['', '-1', '8', '9', '01', '1.0', ' 1', '1 ', '1\n', 'all', '0/1/2/3/4/5/6/7']) {
+  for (const partition of ['', '-1', '16', '17', '01', '1.0', ' 1', '1 ', '1\n', 'all', '0/1/2/3/4/5/6/7']) {
     const result = registrations(partition)
     assert.equal(result.error, undefined)
     assert.equal(result.status, 1)
-    assert.match(result.stderr, /JARVIS_TEST_UNINSTALL_PARTITION must be 0, 1, 2, 3, 4, 5, 6 or 7/)
+    assert.match(result.stderr, /JARVIS_TEST_UNINSTALL_PARTITION must be an integer from 0 through 15/)
     assert.deepEqual(JSON.parse(result.stdout), [])
   }
 })

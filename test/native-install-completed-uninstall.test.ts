@@ -16,9 +16,17 @@ import { readNativeInstallTransactionCompletionSnapshot } from '../scripts/nativ
 import { isPublicFile } from '../scripts/packaging.ts'
 
 const partitionValue = process.env.JARVIS_TEST_UNINSTALL_PARTITION
-if (partitionValue !== undefined && !['0', '1', '2', '3', '4', '5', '6', '7'].includes(partitionValue)) throw new Error('JARVIS_TEST_UNINSTALL_PARTITION must be 0, 1, 2, 3, 4, 5, 6 or 7')
+if (partitionValue !== undefined && !Array.from({ length: 16 }, (_, index) => String(index)).includes(partitionValue)) throw new Error('JARVIS_TEST_UNINSTALL_PARTITION must be an integer from 0 through 15')
 const partition = partitionValue === undefined ? undefined : Number(partitionValue)
 let registrations = 0
+let crashRegistrations = 0
+// Preserve ordinary case assignments; each expensive crash case owns one job.
+function crashTest(name: string, options: TestOptions, fn: TestFn): void {
+  registrations++
+  const index = crashRegistrations++
+  if (partition !== undefined && partition !== 8 + index) return
+  void nodeTest(name, { ...options, concurrency: false }, fn)
+}
 function test(name: string, fn: TestFn): void
 function test(name: string, options: TestOptions, fn: TestFn): void
 function test(name: string, optionsOrFn: TestOptions | TestFn, fn?: TestFn): void {
@@ -167,16 +175,34 @@ test('macOS preserves nonempty wrapper directories and supports missing original
   await uninstallCompletedNativeInstallTransaction(f)
   assert.equal(await fs.readFile(extra, 'utf8'), 'user')
 })
-for (const platform of ['darwin', 'win32'] as const) for (const stage of ['artifact', 'receipt', 'archive-move', 'commit'] as const) test(`${platform}: real SIGKILL after ${stage} retains conservative state`, { timeout: process.platform === 'win32' ? 240_000 : 60_000 }, async t => {
-  const f = await fixture(t, platform)
+// Windows observed a successful late-commit case taking 406s; 220s child
+// deadlines expired at receipt and commit. Isolate each crash in a 20-minute
+// job and bound its child to 10 minutes, with 5 minutes for setup and checks.
+for (const platform of ['darwin', 'win32'] as const) for (const stage of ['artifact', 'receipt', 'archive-move', 'commit'] as const) crashTest(`${platform}: real SIGKILL after ${stage} retains conservative state`, { timeout: process.platform === 'win32' ? 900_000 : 60_000 }, async t => {
+  const temporary = await fs.realpath(tmpdir())
+  const root = await fs.mkdtemp(join(temporary, 'completed-uninstall-'))
+  let retainEvidence = true
+  t.after(async () => {
+    if (retainEvidence) { t.diagnostic('Retained isolated crash fixture because setup or child termination was not confirmed'); return }
+    assert.equal(dirname(root), temporary)
+    assert.ok(root.startsWith(join(temporary, 'completed-uninstall-')))
+    await fs.rm(root, { recursive: true, force: true })
+  })
+  const fixtureStarted = performance.now()
+  const f = await completedFixture(root, platform)
+  t.diagnostic(`fixture_ms=${Math.round(performance.now() - fixtureStarted)}`)
   const lockPath = join(f.directory, 'launcher.lock.sqlite')
   const inode = (await fs.lstat(lockPath, { bigint: true })).ino
-  const child = spawnSync(process.execPath, ['--disable-warning=ExperimentalWarning', '--experimental-transform-types', fileURLToPath(new URL('./fixtures/native-install-completed-uninstall-crash.ts', import.meta.url)), stage, JSON.stringify({ integration: f.integration, transactionId: f.transactionId })], { encoding: 'utf8', timeout: process.platform === 'win32' ? 220_000 : 45_000, maxBuffer: 4096, killSignal: 'SIGKILL', windowsHide: true })
+  const childStarted = performance.now()
+  const child = spawnSync(process.execPath, ['--disable-warning=ExperimentalWarning', '--experimental-transform-types', fileURLToPath(new URL('./fixtures/native-install-completed-uninstall-crash.ts', import.meta.url)), stage, JSON.stringify({ integration: f.integration, transactionId: f.transactionId })], { encoding: 'utf8', timeout: process.platform === 'win32' ? 600_000 : 45_000, maxBuffer: 4096, killSignal: 'SIGKILL', windowsHide: true })
+  t.diagnostic(`child_ms=${Math.round(performance.now() - childStarted)}`)
   assert.equal(child.error, undefined)
   assert.equal(child.stdout, 'INTERRUPTING\n')
   assert.equal(child.stderr, '')
   assert.ok(child.signal === 'SIGKILL' || (process.platform === 'win32' && typeof child.status === 'number' && child.status !== 0))
   if (process.platform !== 'win32') assert.equal(child.signal, 'SIGKILL')
+  retainEvidence = false
+  const checksStarted = performance.now()
   assert.equal((await fs.lstat(lockPath, { bigint: true })).ino, inode)
   if (stage === 'artifact') assert.deepEqual(await fs.readFile(f.receiptPath), f.receipt)
   else await assert.rejects(fs.lstat(f.receiptPath), { code: 'ENOENT' })
@@ -189,6 +215,7 @@ for (const platform of ['darwin', 'win32'] as const) for (const stage of ['artif
     if (stage === 'archive-move') assert.ok((await fs.lstat(join(f.barrier, 'prepared-completion.json'))).isFile())
   }
   await assert.rejects(uninstallCompletedNativeInstallTransaction(f))
+  t.diagnostic(`checks_ms=${Math.round(performance.now() - checksStarted)}`)
 })
 for (const fault of ['receipt-replaced', 'startup-added', 'manifest-open'] as const) test(`post-barrier ${fault} retains evidence without unlinking artifacts`, async t => {
   const f = await fixture(t, 'darwin')
