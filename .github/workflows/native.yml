@@ -37,7 +37,7 @@ jobs:
         run: node --experimental-transform-types --test --test-concurrency=2 test/native-install.test.ts test/native-install-lock.test.ts test/native-install-intent.test.ts test/native-install-intent-store.test.ts test/native-install-reconcile.test.ts test/native-install-diagnose.test.ts test/native-install-diagnose-cli.test.ts
       - name: Native prepared transaction acceptance
         timeout-minutes: 20
-        run: node --experimental-transform-types --test --test-concurrency=2 test/native-install-transaction.test.ts test/native-install-transaction-store.test.ts test/native-install-transaction-ack.test.ts test/native-install-transaction-ack-store.test.ts test/native-install-transaction-inspect.test.ts test/native-install-transaction-inspect-cli.test.ts
+        run: node --experimental-transform-types --test --test-concurrency=2 test/native-install-transaction.test.ts test/native-install-transaction-store.test.ts test/native-install-transaction-ack.test.ts test/native-install-transaction-ack-store.test.ts test/native-install-transaction-inspect.test.ts test/native-install-transaction-inspect-cli.test.ts test/native-install-transaction-completion.test.ts
       - name: Build self-contained native distribution
         run: npm run package
       - name: Verify extracted bundle without global Node

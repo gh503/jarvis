@@ -30,7 +30,7 @@ jobs:
         run: node --experimental-transform-types --test test/native-install.test.ts
       - name: Verify prepared transaction codecs and stores
         if: matrix.group == 'transaction-storage'
-        run: node --experimental-transform-types --test --test-concurrency=2 test/native-install-transaction.test.ts test/native-install-transaction-store.test.ts test/native-install-transaction-ack.test.ts test/native-install-transaction-ack-store.test.ts
+        run: node --experimental-transform-types --test --test-concurrency=2 test/native-install-transaction.test.ts test/native-install-transaction-store.test.ts test/native-install-transaction-ack.test.ts test/native-install-transaction-ack-store.test.ts test/native-install-transaction-completion.test.ts
       - name: Verify transaction inspection and CLI
         if: matrix.group == 'transaction-inspection'
         run: node --experimental-transform-types --test --test-concurrency=2 test/native-install-transaction-inspect.test.ts test/native-install-transaction-inspect-cli.test.ts

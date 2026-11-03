@@ -20,7 +20,7 @@ const runtimeScripts = new Set([
   'snapshot-native-integration.ts', 'native-integration-snapshot.ts',
   'native-install-intent.ts', 'native-install-intent-store.ts', 'native-install-reconcile.ts',
   'native-install-transaction.ts', 'native-install-transaction-store.ts', 'native-install-transaction-ack.ts', 'native-install-transaction-ack-store.ts',
-  'native-install-transaction-inspect.ts', 'inspect-native-install-transaction.ts',
+  'native-install-transaction-inspect.ts', 'inspect-native-install-transaction.ts', 'native-install-transaction-completion.ts',
   'diagnose-native-install.ts', 'native-install-diagnose.ts',
   'asr_worker.py', 'ocr_worker.py', 'screen_capture.py',
   'backup.ts', 'restore.ts', 'backup-archive.ts', 'gen-tls.sh', 'install-service.sh',

@@ -30,7 +30,8 @@ function context(transaction: NativeInstallTransaction, integration: InstallOpti
   const bytes = encodeNativeInstallTransaction(transaction, integration)
   return { transaction: decodeNativeInstallTransaction(bytes, integration), sha256: hash(bytes) }
 }
-function identity(value: unknown, size: number): NativeInstallArtifactIdentity {
+/** Shared strict decimal identity validator for data-only observation codecs. */
+export function validateNativeInstallArtifactIdentity(value: unknown, size: number): NativeInstallArtifactIdentity {
   keys(value, FIELDS)
   const entries = FIELDS.map(key => {
     const field = value[key], timestamp = key.endsWith('Ns')
@@ -44,7 +45,8 @@ function identity(value: unknown, size: number): NativeInstallArtifactIdentity {
   if (mode > 0o177777n || (mode & 0o170000n) !== 0o100000n || result.nlink !== '1' || result.size !== String(size)) fail()
   return Object.freeze(result)
 }
-function observedIdentity(value: BigIntStats | NativeInstallArtifactIdentity, size: number): NativeInstallArtifactIdentity {
+/** Convert caller-supplied stats, retaining the same bounds and identity validation. */
+export function observeNativeInstallArtifactIdentity(value: BigIntStats | NativeInstallArtifactIdentity, size: number): NativeInstallArtifactIdentity {
   if (value && typeof (value as BigIntStats).isFile === 'function') {
     const stats = value as BigIntStats
     if (!stats.isFile()) fail()
@@ -54,9 +56,9 @@ function observedIdentity(value: BigIntStats | NativeInstallArtifactIdentity, si
       if (typeof field !== 'bigint' || field <= -INTEGER_LIMIT || field >= INTEGER_LIMIT) fail()
       return [key, field.toString()] as const
     })
-    return identity(Object.fromEntries(entries), size)
+    return validateNativeInstallArtifactIdentity(Object.fromEntries(entries), size)
   }
-  return identity(value, size)
+  return validateNativeInstallArtifactIdentity(value, size)
 }
 function validate(value: unknown, bound: ReturnType<typeof context>): NativeInstallTransactionAck {
   keys(value, ['schemaVersion', 'kind', 'transactionId', 'transactionSha256', 'artifactIndex', 'path', 'expected', 'identity', 'scope'])
@@ -68,7 +70,7 @@ function validate(value: unknown, bound: ReturnType<typeof context>): NativeInst
   keys(value.scope, Object.keys(SCOPE))
   const scope = value.scope
   if (Object.entries(SCOPE).some(([key, field]) => scope[key] !== field)) fail()
-  return Object.freeze({ schemaVersion: 1, kind: 'native-install-transaction-ack', transactionId: bound.transaction.transactionId, transactionSha256: bound.sha256, artifactIndex: value.artifactIndex as number, path: artifact.path, expected: Object.freeze({ sha256: artifact.expected.sha256, bytes: artifact.expected.bytes }), identity: identity(value.identity, artifact.expected.bytes), scope: SCOPE })
+  return Object.freeze({ schemaVersion: 1, kind: 'native-install-transaction-ack', transactionId: bound.transaction.transactionId, transactionSha256: bound.sha256, artifactIndex: value.artifactIndex as number, path: artifact.path, expected: Object.freeze({ sha256: artifact.expected.sha256, bytes: artifact.expected.bytes }), identity: validateNativeInstallArtifactIdentity(value.identity, artifact.expected.bytes), scope: SCOPE })
 }
 function serialize(value: NativeInstallTransactionAck): Buffer {
   const bytes = Buffer.from(JSON.stringify(value) + '\n')
@@ -92,7 +94,7 @@ export function createNativeInstallTransactionAck(options: {
   keys(options.observation, ['bytes', 'identity'])
   const { bytes, identity: observed } = options.observation
   if (!Buffer.isBuffer(bytes) || bytes.length !== artifact.expected.bytes || hash(bytes) !== artifact.expected.sha256) fail()
-  const result = validate({ schemaVersion: 1, kind: 'native-install-transaction-ack', transactionId: bound.transaction.transactionId, transactionSha256: bound.sha256, artifactIndex: options.artifactIndex, path: artifact.path, expected: { sha256: artifact.expected.sha256, bytes: artifact.expected.bytes }, identity: observedIdentity(observed, bytes.length), scope: SCOPE }, bound)
+  const result = validate({ schemaVersion: 1, kind: 'native-install-transaction-ack', transactionId: bound.transaction.transactionId, transactionSha256: bound.sha256, artifactIndex: options.artifactIndex, path: artifact.path, expected: { sha256: artifact.expected.sha256, bytes: artifact.expected.bytes }, identity: observeNativeInstallArtifactIdentity(observed, bytes.length), scope: SCOPE }, bound)
   serialize(result)
   return result
 }

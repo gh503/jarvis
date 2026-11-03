@@ -1,5 +1,7 @@
 # Native install intent codec, storage, and diagnosis
 
+The pure [completion codec](../scripts/native-install-transaction-completion.ts) represents `declared-completion`, not a verified completed installation. Its create API accepts `{ transaction, integration, acks, observation: { bytes, identity } }`, requiring all included acknowledgements in fixed order and exact receipt bytes. Encoding/decoding also require explicit transaction, integration and acknowledgements; the canonical JSON+LF record is capped at 16 KiB and binds transaction UUID/digest, ordered acknowledgement digests and receipt digest/size/observed identity. It shares unchanged eleven-field, 40-digit identity validation with the acknowledgement codec. Payload bytes are discarded and results deeply frozen. Missing, duplicate, reordered, sparse or mismatched acknowledgements fail. Structurally valid invented identities remain unauthenticated; decoding does not prove observation, ownership, completion or commit. No completion persistence, installer producer, uninstall/retirement lifecycle or recovery is enabled. Typecheck and relevant local suites passed 133 tests with two expected skips (Windows ACL and extracted artifact), zero failures; native execution remains pending.
+
 The [transaction inspection command](../scripts/inspect-native-install-transaction.ts) exposes the inspection API:
 
 ```sh
