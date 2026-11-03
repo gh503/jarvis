@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict'
-import { execFileSync, spawn } from 'node:child_process'
+import { execFileSync, spawn, spawnSync } from 'node:child_process'
 import { once } from 'node:events'
 import { chmod, link, lstat, mkdir, mkdtemp, readFile, realpath, rm, symlink, writeFile } from 'node:fs/promises'
 import fsPromises from 'node:fs/promises'
@@ -111,6 +111,110 @@ Set-Acl -LiteralPath $p -AclObject $acl
   await withNativeInstallLock({ controlDirectory }, async () => {})
   assert.equal(snapshot(), before)
   assert.equal(await readFile(join(controlDirectory, 'intent-store', 'intent.json'), 'utf8'), 'sentinel')
+})
+
+async function privateCheckerScripts() {
+  const source = await readFile(new URL('../scripts/native-install-lock.ts', import.meta.url), 'utf8')
+  const direct = source.match(/const windowsCheck = String\.raw`([\s\S]*?)`/)![1]!
+  // Freeze the provider implementation as the native parity oracle. Only reader
+  // plumbing differs; the exact production owner/rule policy runs in both.
+  const legacy = direct.replace('$user =', 'Import-Module "$PSHOME\\Modules\\Microsoft.PowerShell.Security\\Microsoft.PowerShell.Security.psd1" -ErrorAction Stop\n$user =')
+    .replace(/  \$attributes = \[IO.File\]::GetAttributes\(\$cursor\)[\s\S]*?  \$parent =/, `  $item = Get-Item -LiteralPath $cursor -Force
+  if ($item.Attributes -band [IO.FileAttributes]::ReparsePoint) { exit 1 }
+  if ($cursor -ne $p -and !$item.PSIsContainer) { exit 1 }
+  $parent =`)
+    .replace(/# Windows PowerShell uses[^\n]*\n\$acl = if[\s\S]*?\n\}(?=\n\$owner)/, '$acl = Get-Acl -LiteralPath $p')
+  return { source, direct, legacy }
+}
+
+test('Windows lock checker retains strict policy and bounded invocation with direct readers', async () => {
+  const { source, direct, legacy } = await privateCheckerScripts()
+  assert.match(direct, /\[IO.File\]::GetAttributes\(\$cursor\)/)
+  assert.match(direct, /\$cursor -ne \$p -and !\(\$attributes -band \[IO.FileAttributes\]::Directory\)/)
+  assert.match(direct, /\[IO.Directory\]::GetAccessControl\(\$p\)/)
+  assert.match(direct, /\[IO.File\]::GetAccessControl\(\$p\)/)
+  assert.doesNotMatch(direct, /Get-Item|Get-Acl|Import-Module|FileSystemRights\]::Read/)
+  assert.match(direct, /FileSystemRights\]::FullControl/)
+  assert.match(direct, /GetAccessRules\(\$true, \$true,/)
+  assert.match(direct, /PropagationFlags\]::InheritOnly/)
+  assert.match(direct, /\$owner -ne \$user -and !\(\$owner -eq 'S-1-5-32-544' -and \$elevated\)/)
+  assert.match(direct, /@\(\$user, 'S-1-5-18', 'S-1-5-32-544'\) -or \$rule.AccessControlType -ne 'Allow'/)
+  assert.match(legacy, /Get-Item -LiteralPath \$cursor -Force/)
+  assert.match(legacy, /Get-Acl -LiteralPath \$p/)
+  assert.doesNotMatch(legacy, /GetAttributes|GetAccessControl|leafAttributes/)
+  assert.match(source, /join\(root, 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe'\)/)
+  assert.match(source, /'-NoLogo', '-NoProfile', '-NonInteractive', '-EncodedCommand'/)
+  assert.match(source, /env: \{ \.\.\.process.env, JARVIS_INSTALL_CHECK_TARGET: path \}, windowsHide: true, timeout: 10_000, maxBuffer: 64 \* 1024, stdio: \['ignore', 'pipe', 'pipe'\]/)
+})
+
+test('native Windows lock provider and direct readers have ACL and refusal parity', { skip: process.platform !== 'win32', timeout: 120_000 }, async t => {
+  const { root } = await fixture(t)
+  const { direct, legacy } = await privateCheckerScripts()
+  const run = (script: string, path: string, expected: number) => {
+    const result = spawnSync(join(process.env.SystemRoot!, 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe'), [
+      '-NoLogo', '-NoProfile', '-NonInteractive', '-EncodedCommand', Buffer.from(script, 'utf16le').toString('base64'),
+    ], { env: { ...process.env, JARVIS_INSTALL_CHECK_TARGET: path }, windowsHide: true, timeout: 10_000, encoding: 'utf8' })
+    assert.equal(result.error, undefined, 'timeout or launch failure is not ACL refusal')
+    assert.equal(result.signal, null)
+    assert.equal(result.status, expected, result.stderr)
+  }
+  const compare = (path: string, expected: number) => {
+    const snapshot = () => windowsAclScript(path, String.raw`
+$p = $env:TEST_CONTROL
+$acl = Get-Acl -LiteralPath $p
+$direct = if ([IO.File]::GetAttributes($p) -band [IO.FileAttributes]::Directory) { [IO.Directory]::GetAccessControl($p) } else { [IO.File]::GetAccessControl($p) }
+$sections = [Security.AccessControl.AccessControlSections]'Owner, Group, Access'
+$sddl = $acl.GetSecurityDescriptorSddlForm($sections)
+if ($sddl -cne $direct.GetSecurityDescriptorSddlForm($sections)) { throw 'ACL reader parity mismatch' }
+[Console]::Write($sddl)
+`)
+    const before = snapshot()
+    run(legacy, path, expected)
+    run(direct, path, expected)
+    assert.equal(snapshot(), before, 'checks must not repair ACLs')
+  }
+  const set = (path: string, action: string) => windowsAclScript(path, String.raw`
+$p = $env:TEST_CONTROL
+$user = [Security.Principal.WindowsIdentity]::GetCurrent().User
+$acl = Get-Acl -LiteralPath $p
+$acl.SetOwner($user)
+$acl.SetAccessRuleProtection($true, $false)
+foreach ($rule in @($acl.Access)) { [void]$acl.RemoveAccessRuleSpecific($rule) }
+$action = '${action}'
+$rights = if ($action -eq 'readonly' -or $action -eq 'inheritonly') { 'ReadAndExecute' } else { 'FullControl' }
+$acl.AddAccessRule([Security.AccessControl.FileSystemAccessRule]::new($user, $rights, 'Allow'))
+foreach ($sid in @('S-1-5-18', 'S-1-5-32-544')) { $acl.AddAccessRule([Security.AccessControl.FileSystemAccessRule]::new([Security.Principal.SecurityIdentifier]::new($sid), 'ReadAndExecute', 'Allow')) }
+if ($action -eq 'shared') { $acl.AddAccessRule([Security.AccessControl.FileSystemAccessRule]::new([Security.Principal.SecurityIdentifier]::new('S-1-1-0'), 'Read', 'Allow')) }
+if ($action -eq 'deny') { $acl.AddAccessRule([Security.AccessControl.FileSystemAccessRule]::new($user, 'WriteData', 'Deny')) }
+if ($action -eq 'inheritonly' -or $action -eq 'inheritable') {
+  $propagation = if ($action -eq 'inheritonly') { 'InheritOnly' } else { 'None' }
+  $acl.AddAccessRule([Security.AccessControl.FileSystemAccessRule]::new($user, 'FullControl', 'ContainerInherit, ObjectInherit', $propagation, 'Allow'))
+}
+Set-Acl -LiteralPath $p -AclObject $acl
+`)
+  for (const directory of [false, true]) {
+    const path = join(root, directory ? 'acl-dir' : 'acl-file')
+    if (directory) await mkdir(path)
+    else await writeFile(path, 'sentinel')
+    try {
+      for (const action of ['private', 'shared', 'deny', 'readonly', ...(directory ? ['inheritonly', 'inheritable'] : [])]) {
+        set(path, action)
+        compare(path, action === 'private' || action === 'inheritable' ? 0 : 1)
+        t.diagnostic(`ACL parity: ${directory ? 'directory' : 'file'} ${action}`)
+      }
+      if (directory) {
+        const child = join(path, 'inherited-file')
+        await writeFile(child, 'inherited')
+        compare(child, 0)
+        const junction = join(root, 'junction')
+        await symlink(path, junction, 'junction')
+        for (const target of [junction, join(junction, 'inherited-file')]) {
+          run(legacy, target, 1)
+          run(direct, target, 1)
+        }
+      }
+    } finally { set(path, 'private') }
+  }
 })
 
 test('invalid options fail before any control directory creation', async t => {

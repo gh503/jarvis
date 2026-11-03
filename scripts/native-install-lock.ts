@@ -9,21 +9,26 @@ $ErrorActionPreference = 'Stop'
 $ProgressPreference = 'SilentlyContinue'
 trap { exit 1 }
 $env:PSModulePath = "$PSHOME\Modules"
-Import-Module "$PSHOME\Modules\Microsoft.PowerShell.Security\Microsoft.PowerShell.Security.psd1" -ErrorAction Stop
 $user = [Security.Principal.WindowsIdentity]::GetCurrent().User.Value
 $principal = [Security.Principal.WindowsPrincipal]::new([Security.Principal.WindowsIdentity]::GetCurrent())
 $elevated = $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
 $p = $env:JARVIS_INSTALL_CHECK_TARGET
 $cursor = $p
 while ($cursor) {
-  $item = Get-Item -LiteralPath $cursor -Force
-  if ($item.Attributes -band [IO.FileAttributes]::ReparsePoint) { exit 1 }
-  if ($cursor -ne $p -and !$item.PSIsContainer) { exit 1 }
+  $attributes = [IO.File]::GetAttributes($cursor)
+  if ($cursor -eq $p) { $leafAttributes = $attributes }
+  if ($attributes -band [IO.FileAttributes]::ReparsePoint) { exit 1 }
+  if ($cursor -ne $p -and !($attributes -band [IO.FileAttributes]::Directory)) { exit 1 }
   $parent = [IO.Directory]::GetParent($cursor)
   if (!$parent) { break }
   $cursor = $parent.FullName
 }
-$acl = Get-Acl -LiteralPath $p
+# Windows PowerShell uses .NET Framework: read ACLs without provider dispatch.
+$acl = if ($leafAttributes -band [IO.FileAttributes]::Directory) {
+  [IO.Directory]::GetAccessControl($p)
+} else {
+  [IO.File]::GetAccessControl($p)
+}
 $owner = $acl.GetOwner([Security.Principal.SecurityIdentifier]).Value
 if ($owner -ne $user -and !($owner -eq 'S-1-5-32-544' -and $elevated)) { exit 1 }
 $rules = @($acl.GetAccessRules($true, $true, [Security.Principal.SecurityIdentifier]))
