@@ -183,7 +183,7 @@ for (const platform of ['darwin', 'win32'] as const) for (const stage of ['artif
   const root = await fs.mkdtemp(join(temporary, 'completed-uninstall-'))
   let retainEvidence = true
   t.after(async () => {
-    if (retainEvidence) { t.diagnostic('Retained isolated crash fixture because setup or child termination was not confirmed'); return }
+    if (retainEvidence) { t.diagnostic('Retained isolated crash fixture because the checkpoint or evidence checks did not complete successfully'); return }
     assert.equal(dirname(root), temporary)
     assert.ok(root.startsWith(join(temporary, 'completed-uninstall-')))
     await fs.rm(root, { recursive: true, force: true })
@@ -201,7 +201,6 @@ for (const platform of ['darwin', 'win32'] as const) for (const stage of ['artif
   assert.equal(child.stderr, '')
   assert.ok(child.signal === 'SIGKILL' || (process.platform === 'win32' && typeof child.status === 'number' && child.status !== 0))
   if (process.platform !== 'win32') assert.equal(child.signal, 'SIGKILL')
-  retainEvidence = false
   const checksStarted = performance.now()
   assert.equal((await fs.lstat(lockPath, { bigint: true })).ino, inode)
   if (stage === 'artifact') assert.deepEqual(await fs.readFile(f.receiptPath), f.receipt)
@@ -216,6 +215,7 @@ for (const platform of ['darwin', 'win32'] as const) for (const stage of ['artif
   }
   await assert.rejects(uninstallCompletedNativeInstallTransaction(f))
   t.diagnostic(`checks_ms=${Math.round(performance.now() - checksStarted)}`)
+  retainEvidence = false
 })
 for (const fault of ['receipt-replaced', 'startup-added', 'manifest-open'] as const) test(`post-barrier ${fault} retains evidence without unlinking artifacts`, async t => {
   const f = await fixture(t, 'darwin')
