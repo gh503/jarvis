@@ -6,7 +6,34 @@ on:
 permissions:
   contents: read
 jobs:
+  native-transactions:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+        group: [storage, inspection, completion-0, completion-1, completion-2, completion-3]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: npm
+      - run: npm ci --ignore-scripts
+      - name: Verify transaction codecs and storage
+        if: matrix.group == 'storage'
+        run: node --experimental-transform-types --test --test-concurrency=2 test/native-install-transaction.test.ts test/native-install-transaction-store.test.ts test/native-install-transaction-ack.test.ts test/native-install-transaction-ack-store.test.ts test/native-install-transaction-completion.test.ts test/native-install-transaction-completion-partition.test.ts
+      - name: Verify transaction inspection and CLI
+        if: matrix.group == 'inspection'
+        run: node --experimental-transform-types --test --test-concurrency=2 test/native-install-transaction-inspect.test.ts test/native-install-transaction-inspect-cli.test.ts
+      - name: Verify completion store partition
+        if: startsWith(matrix.group, 'completion-')
+        env:
+          JARVIS_TEST_COMPLETION_PARTITION: ${{ fromJSON('{"completion-0":"0","completion-1":"1","completion-2":"2","completion-3":"3"}')[matrix.group] }}
+        run: node --experimental-transform-types --test --test-concurrency=1 test/native-install-transaction-completion-store.test.ts
   native-core:
+    needs: native-transactions
     strategy:
       fail-fast: false
       matrix:
@@ -35,9 +62,6 @@ jobs:
       - name: Native installation and legacy intent acceptance
         timeout-minutes: 20
         run: node --experimental-transform-types --test --test-concurrency=2 test/native-install.test.ts test/native-install-lock.test.ts test/native-install-intent.test.ts test/native-install-intent-store.test.ts test/native-install-reconcile.test.ts test/native-install-diagnose.test.ts test/native-install-diagnose-cli.test.ts
-      - name: Native prepared transaction acceptance
-        timeout-minutes: 20
-        run: node --experimental-transform-types --test --test-concurrency=2 test/native-install-transaction.test.ts test/native-install-transaction-store.test.ts test/native-install-transaction-ack.test.ts test/native-install-transaction-ack-store.test.ts test/native-install-transaction-inspect.test.ts test/native-install-transaction-inspect-cli.test.ts test/native-install-transaction-completion.test.ts test/native-install-transaction-completion-store.test.ts
       - name: Build self-contained native distribution
         run: npm run package
       - name: Verify extracted bundle without global Node
