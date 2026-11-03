@@ -106,6 +106,11 @@ jobs:
         run: node --experimental-transform-types --test test/packaged-runtime.test.ts
         env:
           JARVIS_PACKAGE_ARCHIVE: auto
+      - name: Verify extracted transaction lifecycle
+        timeout-minutes: 20
+        run: node --experimental-transform-types --test test/packaged-transaction-lifecycle.test.ts
+        env:
+          JARVIS_PACKAGE_ARCHIVE: auto
       - uses: actions/upload-artifact@v4
         with:
           name: jarvis-native-${{ runner.os }}-${{ runner.arch }}
