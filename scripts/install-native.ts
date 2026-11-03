@@ -365,7 +365,7 @@ export async function inspectNativeIntegration(options: InstallOptions): Promise
 async function refuseRetainedTransaction(directory: string, artifactCount: number): Promise<void> {
   const refused = () => new Error('Retained or unsafe native install transaction residue requires review; refusing integration mutation')
   try {
-    for (const name of ['prepared-transaction.json', ...Array.from({ length: artifactCount }, (_, index) => `prepared-artifact-${index}.json`)]) {
+    for (const name of ['prepared-transaction.json', 'prepared-completion.json', ...Array.from({ length: artifactCount }, (_, index) => `prepared-artifact-${index}.json`)]) {
       try { await lstat(join(directory, name)) } catch (error) {
         if ((error as NodeJS.ErrnoException).code === 'ENOENT') continue
         throw error
@@ -375,7 +375,7 @@ async function refuseRetainedTransaction(directory: string, artifactCount: numbe
     // Include unknown generations/indices and malformed acknowledgement names.
     // Directory entries suffice: do not follow links or inspect their contents.
     // Reserve case variants too, including on case-insensitive Windows volumes.
-    if ((await readdir(directory)).some(name => name.toLowerCase() === 'prepared-transaction.json' || /^prepared-artifact-/i.test(name))) throw refused()
+    if ((await readdir(directory)).some(name => ['prepared-transaction.json', 'prepared-completion.json'].includes(name.toLowerCase()) || /^prepared-artifact-/i.test(name))) throw refused()
   } catch { throw refused() }
 }
 

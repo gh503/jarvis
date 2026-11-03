@@ -9,6 +9,8 @@ import { dirname, join, sep } from 'node:path'
 import { createNativeInstallIntent } from '../scripts/native-install-intent.ts'
 import { writeNativeInstallIntent } from '../scripts/native-install-intent-store.ts'
 import { createNativeInstallTransaction, encodeNativeInstallTransaction } from '../scripts/native-install-transaction.ts'
+import { createNativeInstallTransactionAck } from '../scripts/native-install-transaction-ack.ts'
+import { createNativeInstallTransactionCompletion, encodeNativeInstallTransactionCompletion } from '../scripts/native-install-transaction-completion.ts'
 import { test } from 'node:test'
 import { describeNativeIntegration, inspectNativeIntegration, nativeIntegration, parseArgs, POWERSHELL_LINK, renderNativeIntegration, shellQuote, validatePackage, windowsQuote, xml } from '../scripts/install-native.ts'
 import type { InstallOptions, Platform } from '../scripts/install-native.ts'
@@ -177,24 +179,29 @@ for (const platform of ['darwin', 'win32'] as const) for (const operation of ['l
   }
   for (const path of [layout.receiptPath, ...layout.artifactPaths]) await assert.rejects(lstat(path), { code: 'ENOENT' })
 }))
-for (const platform of ['darwin', 'win32'] as const) for (const installed of [false, true]) for (const kind of ['valid', 'other-root', 'corrupt', 'orphan', 'excluded', 'unknown', 'mixed-case-unknown', 'mixed-case-preparation', 'malformed-name', 'symlink', 'directory', 'hardlink', 'fifo'] as const) test(`${platform} ${kind} transaction residue blocks both commands (${installed ? 'installed' : 'fresh'})`, { skip: process.platform === 'win32' && (kind === 'symlink' || kind === 'fifo') }, async () => fixture(platform, async options => {
+for (const platform of ['darwin', 'win32'] as const) for (const installed of [false, true]) for (const kind of ['valid', 'other-root', 'corrupt', 'orphan', 'excluded', 'unknown', 'mixed-case-unknown', 'mixed-case-preparation', 'malformed-name', 'completion-valid', 'completion-corrupt', 'completion-mixed-case', 'completion-directory', 'symlink', 'directory', 'hardlink', 'fifo'] as const) test(`${platform} ${kind} transaction residue blocks both commands (${installed ? 'installed' : 'fresh'})`, { skip: process.platform === 'win32' && (kind === 'symlink' || kind === 'fifo') }, async () => fixture(platform, async options => {
   options.runPowerShell = (_script, env) => writeFileSync(env.JARVIS_LINK_PATH!, 'fixture-link', { mode: 0o600 })
   const created = installed ? await nativeIntegration(options, ['--install']) : []
   const layout = describeNativeIntegration(options)
   const directory = join(dirname(layout.receiptPath), 'native-install-control')
   await ensurePrivateDataDirectory(directory)
   const index = kind === 'excluded' ? layout.artifactPaths.length - 1 : kind === 'unknown' ? layout.artifactPaths.length + 100 : 0
-  const name = ['orphan', 'excluded', 'unknown'].includes(kind) ? `prepared-artifact-${index}.json` : kind === 'mixed-case-unknown' ? 'PREPARED-ARTIFACT-999.JSON' : kind === 'mixed-case-preparation' ? 'Prepared-Transaction.JSON' : kind === 'malformed-name' ? 'prepared-artifact-future-secret' : 'prepared-transaction.json'
+  const name = kind.startsWith('completion-') ? (kind === 'completion-mixed-case' ? 'Prepared-Completion.JSON' : 'prepared-completion.json') : ['orphan', 'excluded', 'unknown'].includes(kind) ? `prepared-artifact-${index}.json` : kind === 'mixed-case-unknown' ? 'PREPARED-ARTIFACT-999.JSON' : kind === 'mixed-case-preparation' ? 'Prepared-Transaction.JSON' : kind === 'malformed-name' ? 'prepared-artifact-future-secret' : 'prepared-transaction.json'
   const residue = join(directory, name)
-  if (kind === 'valid' || kind === 'other-root') {
+  if (kind === 'valid' || kind === 'other-root' || kind === 'completion-valid') {
     const integration = { ...options, root: kind === 'other-root' ? join(options.root, 'other') : options.root }
     const plan = renderNativeIntegration(integration, false)
     const artifacts = plan.platform === 'darwin' ? plan.artifacts : plan.shortcuts.map(item => ({ path: item.path, bytes: Buffer.from('fixture-link'), mode: 0o600 }))
     const receipt = Buffer.from(JSON.stringify({ schemaVersion: 1, platform, root: integration.root, autostart: false, ...(platform === 'win32' ? { notificationAumid: WINDOWS_AUMID } : {}), files: artifacts.map(item => ({ path: item.path, sha256: createHash('sha256').update(item.bytes).digest('hex') })) }, null, 2) + '\n')
     const transaction = createNativeInstallTransaction({ integration, artifacts, receipt, transactionId: randomUUID() })
-    await writeFile(residue, encodeNativeInstallTransaction(transaction, integration), { mode: 0o600 })
+    if (kind === 'completion-valid') {
+      const identity = (size: number) => ({ dev: '0', ino: '123', mode: String(0o100600), nlink: '1', uid: '1000', gid: '1000', rdev: '0', size: String(size), mtimeNs: '0', ctimeNs: '0', birthtimeNs: '0' })
+      const acks = artifacts.map((artifact, artifactIndex) => createNativeInstallTransactionAck({ integration, transaction, artifactIndex, observation: { bytes: artifact.bytes, identity: identity(artifact.bytes.length) } }))
+      const completion = createNativeInstallTransactionCompletion({ integration, transaction, acks, observation: { bytes: receipt, identity: identity(receipt.length) } })
+      await writeFile(residue, encodeNativeInstallTransactionCompletion(completion, transaction, integration, acks), { mode: 0o600 })
+    } else await writeFile(residue, encodeNativeInstallTransaction(transaction, integration), { mode: 0o600 })
   } else if (kind === 'symlink') await symlink(join(directory, 'missing-secret-target'), residue)
-  else if (kind === 'directory') await mkdir(residue)
+  else if (kind === 'directory' || kind === 'completion-directory') await mkdir(residue)
   else if (kind === 'fifo') execFileSync('mkfifo', [residue])
   else {
     await writeFile(residue, '{corrupt-secret', { mode: 0o600 })
