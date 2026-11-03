@@ -36,6 +36,14 @@ async function snapshot(path: string): Promise<unknown> {
   return { bytes: stat.isFile() ? await fs.readFile(path) : undefined, ino: stat.ino, mode: stat.mode, mtime: stat.mtimeNs, ctime: stat.ctimeNs }
 }
 for (const platform of ['darwin', 'win32'] as const) {
+  test(`${platform}: relocated package root refuses without creating retirement evidence`, async t => {
+    const f = await fixture(t, platform)
+    const before = await snapshot(f.directory)
+    await assert.rejects(retireNativeInstallPreparation({ ...f, integration: { ...f.integration, root: join(f.integration.root, 'relocated') } }))
+    assert.deepEqual(await snapshot(f.directory), before)
+    assert.deepEqual(await fs.readFile(f.source), f.bytes)
+    await assert.rejects(fs.lstat(f.barrier), { code: 'ENOENT' })
+  })
   test(`${platform}: retire exact prepared-only bytes, preserve lock inode and unblock installer`, async t => {
     const f = await fixture(t, platform)
     const before = await fs.lstat(f.source, { bigint: true })
