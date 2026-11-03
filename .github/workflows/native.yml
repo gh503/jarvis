@@ -1,6 +1,12 @@
 name: Native platforms
 on:
   push:
+    # Skip push-only evidence updates; code/workflow changes still run this matrix.
+    # Keep PR runs unconditional so required checks are never left pending.
+    paths-ignore:
+      - 'docs/native-release-pipeline.md'
+      - 'docs/native-install-intent.md'
+      - 'docs/native-install.md'
   pull_request:
   workflow_dispatch:
 permissions:
