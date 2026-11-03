@@ -11,7 +11,7 @@ jobs:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, windows-latest, macos-latest]
-        group: [storage, inspection, crash, completion-0, completion-1, completion-2, completion-3]
+        group: [storage, inspection, inspection-0, inspection-1, inspection-2, inspection-3, crash, completion-0, completion-1, completion-2, completion-3]
     runs-on: ${{ matrix.os }}
     timeout-minutes: 20
     steps:
@@ -23,10 +23,15 @@ jobs:
       - run: npm ci --ignore-scripts
       - name: Verify transaction codecs and storage
         if: matrix.group == 'storage'
-        run: node --experimental-transform-types --test --test-concurrency=2 test/native-install-transaction.test.ts test/native-install-transaction-store.test.ts test/native-install-transaction-ack.test.ts test/native-install-transaction-ack-store.test.ts test/native-install-transaction-completion.test.ts test/native-install-transaction-completion-partition.test.ts
-      - name: Verify transaction inspection and CLI
+        run: node --experimental-transform-types --test --test-concurrency=2 test/native-install-transaction.test.ts test/native-install-transaction-store.test.ts test/native-install-transaction-ack.test.ts test/native-install-transaction-ack-store.test.ts test/native-install-transaction-completion.test.ts test/native-install-transaction-completion-partition.test.ts test/native-install-transaction-inspection-partition.test.ts
+      - name: Verify transaction inspection CLI
         if: matrix.group == 'inspection'
-        run: node --experimental-transform-types --test --test-concurrency=2 test/native-install-transaction-inspect.test.ts test/native-install-transaction-inspect-cli.test.ts
+        run: node --experimental-transform-types --test --test-concurrency=2 test/native-install-transaction-inspect-cli.test.ts
+      - name: Verify transaction inspection case partition
+        if: startsWith(matrix.group, 'inspection-')
+        env:
+          JARVIS_TEST_INSPECTION_PARTITION: ${{ fromJSON('{"inspection-0":"0","inspection-1":"1","inspection-2":"2","inspection-3":"3"}')[matrix.group] }}
+        run: node --experimental-transform-types --test --test-concurrency=1 test/native-install-transaction-inspect.test.ts
       - name: Verify persisted transaction process interruption
         if: matrix.group == 'crash'
         run: node --experimental-transform-types --test --test-concurrency=1 test/native-install-transaction-crash.test.ts
