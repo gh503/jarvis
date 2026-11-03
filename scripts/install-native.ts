@@ -375,7 +375,7 @@ async function refuseRetainedTransaction(directory: string, artifactCount: numbe
     // Include unknown generations/indices and malformed acknowledgement names.
     // Directory entries suffice: do not follow links or inspect their contents.
     // Reserve case variants too, including on case-insensitive Windows volumes.
-    if ((await readdir(directory)).some(name => ['prepared-transaction.json', 'prepared-completion.json'].includes(name.toLowerCase()) || /^prepared-artifact-/i.test(name))) throw refused()
+    if ((await readdir(directory)).some(name => name.toLowerCase().startsWith('prepared-'))) throw refused()
   } catch { throw refused() }
 }
 

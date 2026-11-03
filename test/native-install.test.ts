@@ -179,14 +179,14 @@ for (const platform of ['darwin', 'win32'] as const) for (const operation of ['l
   }
   for (const path of [layout.receiptPath, ...layout.artifactPaths]) await assert.rejects(lstat(path), { code: 'ENOENT' })
 }))
-for (const platform of ['darwin', 'win32'] as const) for (const installed of [false, true]) for (const kind of ['valid', 'other-root', 'corrupt', 'orphan', 'excluded', 'unknown', 'mixed-case-unknown', 'mixed-case-preparation', 'malformed-name', 'completion-valid', 'completion-corrupt', 'completion-mixed-case', 'completion-directory', 'symlink', 'directory', 'hardlink', 'fifo'] as const) test(`${platform} ${kind} transaction residue blocks both commands (${installed ? 'installed' : 'fresh'})`, { skip: process.platform === 'win32' && (kind === 'symlink' || kind === 'fifo') }, async () => fixture(platform, async options => {
+for (const platform of ['darwin', 'win32'] as const) for (const installed of [false, true]) for (const kind of ['valid', 'other-root', 'corrupt', 'orphan', 'excluded', 'unknown', 'mixed-case-unknown', 'mixed-case-preparation', 'future-record', 'future-record-case', 'malformed-name', 'completion-valid', 'completion-corrupt', 'completion-mixed-case', 'completion-directory', 'symlink', 'directory', 'hardlink', 'fifo'] as const) test(`${platform} ${kind} transaction residue blocks both commands (${installed ? 'installed' : 'fresh'})`, { skip: process.platform === 'win32' && (kind === 'symlink' || kind === 'fifo') }, async () => fixture(platform, async options => {
   options.runPowerShell = (_script, env) => writeFileSync(env.JARVIS_LINK_PATH!, 'fixture-link', { mode: 0o600 })
   const created = installed ? await nativeIntegration(options, ['--install']) : []
   const layout = describeNativeIntegration(options)
   const directory = join(dirname(layout.receiptPath), 'native-install-control')
   await ensurePrivateDataDirectory(directory)
   const index = kind === 'excluded' ? layout.artifactPaths.length - 1 : kind === 'unknown' ? layout.artifactPaths.length + 100 : 0
-  const name = kind.startsWith('completion-') ? (kind === 'completion-mixed-case' ? 'Prepared-Completion.JSON' : 'prepared-completion.json') : ['orphan', 'excluded', 'unknown'].includes(kind) ? `prepared-artifact-${index}.json` : kind === 'mixed-case-unknown' ? 'PREPARED-ARTIFACT-999.JSON' : kind === 'mixed-case-preparation' ? 'Prepared-Transaction.JSON' : kind === 'malformed-name' ? 'prepared-artifact-future-secret' : 'prepared-transaction.json'
+  const name = kind.startsWith('completion-') ? (kind === 'completion-mixed-case' ? 'Prepared-Completion.JSON' : 'prepared-completion.json') : ['orphan', 'excluded', 'unknown'].includes(kind) ? `prepared-artifact-${index}.json` : kind === 'mixed-case-unknown' ? 'PREPARED-ARTIFACT-999.JSON' : kind === 'mixed-case-preparation' ? 'Prepared-Transaction.JSON' : kind === 'future-record' ? 'prepared-future.json' : kind === 'future-record-case' ? 'PrEpArEd-Future.JSON' : kind === 'malformed-name' ? 'prepared-artifact-future-secret' : 'prepared-transaction.json'
   const residue = join(directory, name)
   if (kind === 'valid' || kind === 'other-root' || kind === 'completion-valid') {
     const integration = { ...options, root: kind === 'other-root' ? join(options.root, 'other') : options.root }
