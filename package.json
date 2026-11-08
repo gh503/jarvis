@@ -30,11 +30,11 @@
     "@modelcontextprotocol/sdk": "1.32.2",
     "ajv": "8.20.0",
     "tar": "7.5.22",
-    "ws": "8.21.3"
+    "ws": "8.22.1"
   },
   "devDependencies": {
     "@types/node": "24.13.3",
-    "@types/ws": "8.18.1",
+    "@types/ws": "8.18.2",
     "typescript": "5.9.3"
   }
 }
